@@ -94,8 +94,11 @@ jobs:
           RUSTFS_VOLUMES=/tmp/rustfs-data \
           RUSTFS_ADDRESS=127.0.0.1:9000 \
             /tmp/rustfs/rustfs > /tmp/rustfs.log 2>&1 &
+          # A ready S3 server answers an unauthenticated `GET /` with 403, not
+          # 200, so `curl -f` reports failure on a healthy server. Probe for any
+          # HTTP response instead: a connection refused is the only "not up".
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:9000/ >/dev/null 2>&1; then
+            if curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:9000/ 2>/dev/null | grep -qE '^[1-5][0-9][0-9]$'; then
               echo "rustfs is up"; exit 0
             fi
             sleep 1
