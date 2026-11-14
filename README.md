@@ -19,11 +19,14 @@ cargo build --release
 
 ## How the parts fit together
 
-Three zones, and nothing else. **Your machine** holds your passphrase, your key
-pair and the `ksp` command. **The sealed store** is a directory you own, holding
-ciphertext, the per-agent copies and the signed audit chain. **The agent's
-machine** holds the agent's own key pair and the `ksp run --consume` call that
-turns one leased copy into a value for a child process.
+Three zones, and nothing else. 
+* **Your machine** holds your passphrase, your key pair and the `ksp` command. 
+* **The sealed store** is a directory or a network backend you own, holding:
+  * ciphertext, 
+  * the per-agent copies and 
+  * the signed audit chain. 
+* **The agent's machine or process** holds the agent's own key pair and runs `ksp run --consume` to
+turn one leased copy into a real value.
 
 The line that matters is the short one from **Agent copy** down into
 `ksp run --consume`. That is the only place an agent reads a secret, it reads
@@ -31,13 +34,15 @@ only its own leased copy rather than your durable record, and the copy opens
 only with the agent's private key.
 
 <p align="center">
-  <a href="assets/keyspout-architecture.html">
+  <a href="https://docs-diagrams.bruj0.net/keyspout-architecture/overview/">
     <img src="assets/keyspout-architecture.png" alt="Keyspout architecture: your machine holds your passphrase, key pair and the ksp command; the sealed store holds ciphertext, the agent copy and the signed audit chain; the agent's machine runs ksp run --consume to hand one leased copy to a child process" width="900">
   </a>
 </p>
 
-[Open the diagram full size](assets/keyspout-architecture.html) for pan, zoom, a
-light theme and the notes on each zone.
+[Open the diagram full size](https://docs-diagrams.bruj0.net/keyspout-architecture/overview/)
+for pan, zoom, light and dark themes, and the notes on each zone. A copy also
+ships in this repository at [`assets/keyspout-architecture.html`](assets/keyspout-architecture.html),
+which works offline.
 
 ---
 
