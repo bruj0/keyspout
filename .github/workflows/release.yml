@@ -76,10 +76,15 @@ jobs:
       - name: Start RustFS
         # `ksp-backend:s3_store` needs an S3 server at 127.0.0.1:9000. The VM
         # installs the same release binary; a runner does the same.
+        #
+        # The asset name carries `-latest` in the middle, which is not obvious:
+        # `rustfs-linux-x86_64-musl-latest.zip`, not `rustfs-linux-x86_64-musl.zip`.
+        # The first version of this step used the shorter name and got a 404.
         run: |
           curl -fsSL -o /tmp/rustfs.zip \
-            https://github.com/rustfs/rustfs/releases/latest/download/rustfs-linux-x86_64-musl.zip
+            https://github.com/rustfs/rustfs/releases/latest/download/rustfs-linux-x86_64-musl-latest.zip
           unzip -q /tmp/rustfs.zip -d /tmp/rustfs
+          chmod +x /tmp/rustfs/rustfs
           RUSTFS_ACCESS_KEY=kspadmin RUSTFS_SECRET_KEY=kspadminsecret123 \
             /tmp/rustfs/rustfs /tmp/rustfs-data > /tmp/rustfs.log 2>&1 &
           for i in $(seq 1 60); do
