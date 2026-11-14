@@ -64,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake make g++ perl pkg-config libssl-dev \
-            valkey-server awscli unzip
+            valkey-server unzip curl
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -101,6 +101,17 @@ jobs:
           done
           echo "rustfs did not start; log follows"; cat /tmp/rustfs.log; exit 1
 
+      - name: Install the AWS CLI
+        # Ubuntu 24.04 has no `awscli` package (`apt-cache policy awscli` reports
+        # no candidate), so the official v2 installer is used. It is a single
+        # zip with no runtime dependencies.
+        run: |
+          curl -fsSL -o /tmp/awscliv2.zip \
+            https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update
+          aws --version
+
       - name: Create the S3 test buckets
         # `s3_store` needs two buckets that already exist, one with versioning
         # on and one with it off. The server does not create them, and a test
@@ -120,9 +131,9 @@ jobs:
           aws --endpoint-url "$ep" s3api put-bucket-versioning \
             --bucket ksp-s3-versioned \
             --versioning-configuration Status=Enabled
-          echo "--- unversioned ---"
+          echo "--- unversioned (expect no Status) ---"
           aws --endpoint-url "$ep" s3api get-bucket-versioning --bucket ksp-s3-unversioned || echo "(none, correct)"
-          echo "--- versioned ---"
+          echo "--- versioned (expect Enabled) ---"
           aws --endpoint-url "$ep" s3api get-bucket-versioning --bucket ksp-s3-versioned
 
       - name: Run the gate
