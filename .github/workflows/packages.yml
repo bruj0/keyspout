@@ -29,6 +29,13 @@ permissions:
 
 jobs:
   packages:
+    # The attest step needs these two, and neither is implied by `contents`.
+    # Granting them job-wide rather than at the top keeps the default token
+    # narrow for anything else that runs here.
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
     name: ${{ matrix.pkg }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -52,7 +59,7 @@ jobs:
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -142,6 +149,14 @@ jobs:
             echo "::error::the packaged binary reports the wrong version"
             exit 1
           fi
+
+      - name: Attest the package
+        # The build job attests the tarballs. Without this the `.deb` and `.rpm`
+        # are the only release assets a user cannot verify, which is the wrong
+        # way round: they are the ones a package manager installs.
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: "/tmp/pkg/out/*"
 
       - name: Attach the package to the release
         shell: bash

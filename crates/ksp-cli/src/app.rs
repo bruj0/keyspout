@@ -217,21 +217,41 @@ pub fn dispatch(cli: &Cli, home: &Path) -> Outcome {
             admin,
             principal,
             passphrase_file,
+            limit,
+            since,
         } => match command {
             Some(crate::commands::AuditCommand::Verify { head }) => crate::audit_verify::run(
                 &Layout::new(home.to_path_buf()),
                 crate::audit_verify::Verify { heads: head },
                 &mut Emitter::new(cli.json, std::io::stdout()),
             ),
-            None => crate::audit_view::run(
-                &Layout::new(home.to_path_buf()),
-                crate::audit_view::View {
-                    as_admin: *admin,
-                    principal: principal.as_deref(),
-                    passphrase_file: passphrase_file.as_deref(),
-                },
-                &mut Emitter::new(cli.json, std::io::stdout()),
-            ),
+            None => {
+                let mut emitter = Emitter::new(cli.json, std::io::stdout());
+                // A window is measured from now, and a duration that will not
+                // parse is the caller's mistake: it names the accepted forms
+                // rather than defaulting to a window nobody asked for.
+                let since = match since.as_deref().map(crate::audit_view::parse_since) {
+                    None => None,
+                    Some(Ok(secs)) => Some(crate::run::now_seconds() as i64 - secs as i64),
+                    Some(Err(message)) => {
+                        let _ = emitter.refusal(&message);
+                        return Outcome::Failed(exit::USAGE);
+                    }
+                };
+                crate::audit_view::run(
+                    &Layout::new(home.to_path_buf()),
+                    crate::audit_view::View {
+                        as_admin: *admin,
+                        principal: principal.as_deref(),
+                        passphrase_file: passphrase_file.as_deref(),
+                        filter: crate::audit_view::Filter {
+                            limit: *limit,
+                            since,
+                        },
+                    },
+                    &mut emitter,
+                )
+            }
         },
         Command::Run(args) => crate::run::run(args, &Layout::new(home.to_path_buf())),
         Command::Deliver(args) => crate::deliver::run(args),
@@ -431,11 +451,22 @@ fn run_admin<W: Write>(
 /// inherited by every child, and beside the one command whose stdin carries the
 /// value it cannot be stdin either. What appears is the *path* of a file the
 /// operator already protects, and a path is not a secret.
+///
+/// # Why stdin is only read from a terminal
+///
+/// A read of stdin blocks until the stream closes or delivers. A terminal closes
+/// when the operator presses Enter. A closed pipe delivers what it holds and then
+/// ends. An **open** pipe that is never written to and never closed — which is
+/// what a process supervisor hands a child by default — blocks forever, and the
+/// command produces no exit code, no message and no evidence. A hang is the worst
+/// failure shape available, so the guard refuses before the read rather than
+/// waiting on a stream that cannot answer.
+///
+/// The refusal names `--passphrase-file`, because a caller that cannot type has
+/// to be told the one way it can supply the password.
 pub(crate) fn password(file: Option<&std::path::Path>) -> Result<Vec<u8>, i32> {
     match file {
-        None => {
-            crate::admin::read_password(&mut std::io::stdin()).map_err(|error| error.exit_code())
-        }
+        None => read_password_from_stdin(),
         Some(path) => {
             // A path, not a descriptor number: a descriptor is only inherited by
             // accident across the shells and wrappers a real invocation passes
@@ -447,6 +478,67 @@ pub(crate) fn password(file: Option<&std::path::Path>) -> Result<Vec<u8>, i32> {
             };
             crate::admin::read_password(&mut file).map_err(|error| error.exit_code())
         }
+    }
+}
+
+/// How long a non-terminal stdin is given to deliver a password.
+///
+/// A pipe that already holds the password returns at once, because its writer has
+/// closed. This bound only elapses for a stream that will never deliver anything,
+/// so it costs a working caller nothing and caps the wait for a blocked one.
+const STDIN_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Read the password from stdin, refusing rather than blocking forever.
+///
+/// # Why this is not a plain read
+///
+/// A read of stdin blocks until the stream closes or delivers. A terminal closes
+/// when the operator presses Enter. A closed pipe delivers what it holds and then
+/// ends. An **open** pipe that is never written to and never closed — which is
+/// what a process supervisor hands a child by default — blocks forever, and the
+/// command produces no exit code, no message and no evidence. A hang is the worst
+/// failure shape available.
+///
+/// # Why a terminal check alone is not enough
+///
+/// `IsTerminal` says "is this a terminal", and a pipe carrying a password is not
+/// one. Refusing every non-terminal would break the shape that worked before this
+/// change: a caller that pipes the password and closes the pipe, which
+/// `QUICKSTART.md` documents. The question is not "is this a terminal" but "will a
+/// read return", so the read happens on a worker thread and the wait is bounded.
+/// A pipe holding data returns at once; an open pipe does not return at all, and
+/// the caller is told about `--passphrase-file` instead of being left waiting.
+///
+/// The worker thread is abandoned rather than joined when the bound elapses. It
+/// holds nothing but a blocked read, and the process exits when this function's
+/// caller returns, which ends it.
+fn read_password_from_stdin() -> Result<Vec<u8>, i32> {
+    use std::io::IsTerminal as _;
+    if std::io::stdin().is_terminal() {
+        // The operator types and presses Enter, so a blocking read is correct.
+        return crate::admin::read_password(&mut std::io::stdin())
+            .map_err(|error| error.exit_code());
+    }
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let outcome =
+            std::io::Read::read_to_end(&mut std::io::stdin(), &mut buffer).map(|_| buffer);
+        // A send failure means the receiver already gave up; nothing to report.
+        let _ = sender.send(outcome);
+    });
+
+    match receiver.recv_timeout(STDIN_GRACE) {
+        Ok(Ok(buffer)) => {
+            // The same trimming and empty check a file read gets, so the two
+            // sources cannot disagree about what a password is.
+            crate::admin::read_password(&mut &buffer[..]).map_err(|error| error.exit_code())
+        }
+        // The stream did not deliver in time: an open pipe with nothing in it.
+        // The caller renders `describe(MISSING_KEY)`, whose sentence names
+        // `--passphrase-file`.
+        Ok(Err(_)) | Err(_) => Err(exit::MISSING_KEY),
     }
 }
 

@@ -89,6 +89,10 @@ pub enum Command {
     /// the admin by loading the key its anchor pins. `--principal` selects a
     /// *subject* and never the caller, so it can narrow this view but never widen
     /// it.
+    ///
+    /// The tenant view needs the vault password. It is read from a terminal, or
+    /// from the file named by `--passphrase-file`; a caller with neither is
+    /// refused rather than left waiting on a stream that cannot answer.
     Audit {
         /// A subcommand. Without one, read the caller's scoped view.
         #[command(subcommand)]
@@ -100,8 +104,26 @@ pub enum Command {
         #[arg(long)]
         principal: Option<String>,
         /// Read the vault password from this file instead of stdin.
+        ///
+        /// The way to supply the password when there is no terminal to type at.
+        /// A caller that pipes the password on stdin still works; a caller that
+        /// leaves stdin open is refused, because an open pipe never delivers.
         #[arg(long)]
         passphrase_file: Option<PathBuf>,
+        /// Emit at most this many record lines. `0` reads without a bound.
+        ///
+        /// A bound is the default because the log grows without limit, and a
+        /// consumer asking "what happened recently" should not have to decode a
+        /// year of records to answer. The header reports the total beside the
+        /// emitted count, so a bounded view is never mistaken for a complete one.
+        #[arg(long, default_value_t = crate::audit_view::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Emit only records at or after this instant, as `<n><s|m|h|d>`.
+        ///
+        /// `30m`, `1h`, `7d`. The window is measured from now, and it filters by
+        /// each record's own `observed_at`.
+        #[arg(long)]
+        since: Option<String>,
     },
     /// Print the version.
     Version,

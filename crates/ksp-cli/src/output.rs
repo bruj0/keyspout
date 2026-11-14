@@ -383,7 +383,16 @@ pub struct LogView {
     /// How many records the scope holds. The records themselves are emitted one by
     /// one through [`Emitter::records`], so `--json` is one object per record (FR-041)
     /// instead of one array a consumer has to unwrap.
+    ///
+    /// This counts what this invocation *emitted*, which `--limit` may have
+    /// bounded. [`LogView::total`] is the count the scope holds, so a consumer can
+    /// tell a truncated view from a complete one rather than assuming the first
+    /// number is the whole answer.
     pub records: usize,
+    /// How many records the scope holds before any bound was applied.
+    pub total: usize,
+    /// The bound this invocation applied, when it applied one.
+    pub limit: Option<usize>,
     /// Entries that could not be read at all, counted rather than dropped (FR-042).
     pub unreadable: usize,
     /// Records of a kind this build does not know, printed from their own fields.

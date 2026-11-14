@@ -1,0 +1,20 @@
+# Keep the pinned action SHAs current.
+#
+# Every `uses:` in `.github/workflows/` is pinned to a full commit SHA, because a
+# mutable tag is a supply-chain hole with no upside: a compromised tag on an
+# action reaches the build silently. Dependabot rewrites the SHA, not just the
+# trailing comment, so an update is a reviewable commit rather than a silent
+# pull.
+#
+# A PR here that touches only the comment and not the SHA is not an update.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - supply-chain

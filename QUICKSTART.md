@@ -775,7 +775,6 @@ the tenant by opening its vault, the admin by loading the key its anchor pins.
 ```bash
 ksp audit --admin
 ```
-
 ```
 audit: scope=complete  segments=3  records=4  unknown=0  malformed=0  unreadable=0  withheld=0
 note: this view has not checked signatures or chain links; `ksp audit verify` checks them
@@ -811,6 +810,49 @@ Read the header as a list of what was *counted*, not as a verdict:
   the *same* decoded value the human view renders. A record this build cannot
   classify is emitted as `unknown-record` with its raw fields; one that will not
   decode is emitted as `malformed` with a reason. Neither is dropped.
+
+### The shape of `--json`, and how to bound the read
+
+**`--json` on the scoped view is JSONL, not one object.** It is the only command
+that behaves this way, and the reason is that a log grows without limit: one
+object per record lets a consumer read a record at a time instead of buffering the
+whole log. The first line is a header, and every later line is a record:
+
+```
+$ ksp --json audit --passphrase-file "$KSP_HOME/pw"
+{"kind":"log","records":2,"total":2,"segments":2,...}
+{"kind":"audit-record","actor":"…","component":"agent","operation":"deliver",...}
+{"kind":"audit-record","actor":"…","component":"cli","operation":"put",...}
+```
+
+A consumer reads the whole output as one JSON document and fails with
+`Extra data: line 2 column 1`. Split on newlines and branch on `kind`.
+
+**The tenant view needs the vault password.** Supply it with
+`--passphrase-file`, or pipe it on stdin. A caller that leaves stdin open and
+never writes to it is refused with exit `6` rather than left waiting: an open pipe
+never delivers, and a hang produces no exit code and no message. `audit --admin`,
+`audit verify` and `admin audit` need no password at all, which is why they are
+the cheapest paths to read.
+
+**The read is bounded by default.** `--limit` caps the record lines emitted, and
+`--limit 0` reads without a bound. The header reports `records` (what this
+invocation emitted) beside `total` (what the scope holds), so a truncated view is
+never mistaken for a complete one:
+
+```
+$ ksp --json audit --limit 1 --passphrase-file "$KSP_HOME/pw"
+{"kind":"log","records":1,"total":3,"limit":1,...}
+```
+
+**`--since` filters by each record's own timestamp**, as `<n><s|m|h|d>`:
+
+```bash
+ksp audit --since 1h --limit 50 --passphrase-file "$KSP_HOME/pw"
+```
+
+A duration that will not parse is a usage error (exit `13`) naming the accepted
+forms, rather than a window nobody asked for.
 
 ---
 

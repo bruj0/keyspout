@@ -38,6 +38,22 @@ Clear the attribute once:
 xattr -d com.apple.quarantine ./ksp
 ```
 
+## Verify a download
+
+Every release asset carries a build-provenance attestation: it records which
+repository, which workflow and which commit produced the bytes.
+
+```bash
+gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
+  --repo bruj0/keyspout \
+  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+```
+
+That proves the binary came from this repository's release workflow at a specific
+commit. It does **not** prove the commit is safe — a backdoor merged to `main`
+would produce a valid attestation. [`SECURITY.md`](SECURITY.md) states the full
+claim, what it does not cover, and the attack surface with each control.
+
 ## Agent skills
 
 Seven skills teach an agent to drive `ksp` — set it up, report status, store and

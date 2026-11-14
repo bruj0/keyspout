@@ -58,6 +58,79 @@ const NOT_VERIFIED: &str =
 const WITHHELD: &str = "record(s) of a kind this build does not know were counted and withheld: their actor \
      cannot be established, so they cannot be shown to this view";
 
+/// How many record lines a view emits when the caller names no bound.
+///
+/// A bound is the default because the log grows without limit and a consumer
+/// asking "what happened recently" should not have to decode a year of records to
+/// answer. `--limit 0` reads without a bound for a caller that wants everything.
+pub const DEFAULT_LIMIT: usize = 200;
+
+/// What the caller asked to see, beyond the scope.
+///
+/// The scope decides which records are *eligible*; this decides which of those are
+/// *emitted*. They are separate because a bound must never be mistaken for a
+/// narrower scope: the header reports both counts, so a caller can tell a
+/// truncated view from a complete one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Filter {
+    /// The most record lines to emit. `0` means no bound.
+    pub limit: usize,
+    /// Emit only records whose `observed_at` is at or after this instant.
+    pub since: Option<i64>,
+}
+
+impl Filter {
+    /// No bound and no window: what a caller that named neither gets.
+    pub fn unbounded() -> Self {
+        Self {
+            limit: 0,
+            since: None,
+        }
+    }
+
+    /// Whether this record is inside the window.
+    ///
+    /// Only a decoded record carries a timestamp, so an unknown or malformed
+    /// record is never filtered out: excluding a finding because its time could
+    /// not be read would hide the very thing the view exists to report.
+    fn admits(&self, observed_at: Option<i64>) -> bool {
+        match (self.since, observed_at) {
+            (Some(since), Some(at)) => at >= since,
+            _ => true,
+        }
+    }
+
+    /// Whether the emitted count has reached the bound.
+    fn is_full(&self, emitted: usize) -> bool {
+        self.limit != 0 && emitted >= self.limit
+    }
+}
+
+/// Parse a `--since` duration: `<n><s|m|h|d>`.
+///
+/// A bad value is the caller's mistake and names the accepted forms, because a
+/// duration that silently defaulted would answer a question the caller did not
+/// ask.
+pub fn parse_since(text: &str) -> Result<u64, String> {
+    let text = text.trim();
+    let (digits, unit) = text.split_at(text.len().saturating_sub(1));
+    let scale = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => {
+            return Err(format!(
+                "'{text}' is not a duration; use <n><s|m|h|d>, for example 30m, 1h or 7d"
+            ));
+        }
+    };
+    let count: u64 = digits.parse().map_err(|_| {
+        format!("'{text}' is not a duration; use <n><s|m|h|d>, for example 30m, 1h or 7d")
+    })?;
+    Ok(count.saturating_mul(scale))
+}
+
 /// What the caller asked for on the command line.
 pub struct View<'a> {
     /// Read the complete view, as the holder of the admin key.
@@ -66,6 +139,8 @@ pub struct View<'a> {
     pub principal: Option<&'a str>,
     /// Where the vault password is read, when it is read from a file.
     pub passphrase_file: Option<&'a Path>,
+    /// The bound and the window.
+    pub filter: Filter,
 }
 
 /// Why a view could not be produced at all.
@@ -75,7 +150,16 @@ pub enum ViewError {
     #[error("this host has no deployment")]
     NotProvisioned,
     /// The credential the caller named could not be proved.
-    #[error("the credential for this view could not be proved")]
+    ///
+    /// The sentence names the password and the flag that supplies it, because the
+    /// common cause is a caller with no terminal: it cannot type, and a refusal
+    /// that said only "the credential could not be proved" left it with nothing
+    /// to do. A caller that *did* supply a password and got this message has a
+    /// wrong password or an unreadable key, and the sentence still fits.
+    #[error(
+        "the credential for this view could not be proved: this view needs the vault \
+         password, read from a terminal, or from the file named by --passphrase-file"
+    )]
     Keys,
     /// The request names something that is not a principal UUID.
     #[error("{0} is not a principal UUID; a principal is named by its canonical UUID")]
@@ -127,13 +211,33 @@ pub fn run<W: Write>(layout: &Layout, view: View, emitter: &mut Emitter<W>) -> E
         }
     };
 
-    let read = read(layout, &scope);
+    let read = read(layout, &scope, &view.filter);
     let mut notes = vec![NOT_VERIFIED.to_string()];
     if read.segments > 1 {
         notes.push(ORDER_CAVEAT.to_string());
     }
     if read.withheld > 0 {
         notes.push(format!("{} {}", read.withheld, WITHHELD));
+    }
+    // A bounded view must say so, in the same place it says what it counted: a
+    // reader that saw only the emitted count would take a truncation for the whole
+    // answer. The note names the filter that actually truncated — the window or
+    // the bound — because naming the wrong one sends the caller to a flag that
+    // changes nothing.
+    if view.filter.limit != 0 && read.total > read.records.len() {
+        notes.push(format!(
+            "this view emitted {} of {} record(s) the window admits: raise --limit, or pass \
+             --limit 0 to read without a bound",
+            read.records.len(),
+            read.total
+        ));
+    }
+    if read.windowed_out > 0 {
+        notes.push(format!(
+            "{} record(s) are older than the --since window and were not emitted: widen the \
+             window, or omit --since to read every record",
+            read.windowed_out
+        ));
     }
     let report = Report::Log(LogView {
         scope: scope.label(),
@@ -143,6 +247,8 @@ pub fn run<W: Write>(layout: &Layout, view: View, emitter: &mut Emitter<W>) -> E
             .iter()
             .filter(|r| matches!(r, LogRecord::Known(_)))
             .count(),
+        total: read.total,
+        limit: (view.filter.limit != 0).then_some(view.filter.limit),
         unreadable: read.unreadable,
         unknown: read.unknown,
         malformed: read.malformed,
@@ -195,6 +301,14 @@ fn caller(layout: &Layout, view: &View) -> Result<Caller, ViewError> {
 struct Read {
     segments: usize,
     records: Vec<LogRecord>,
+    /// How many records the window admits, before any bound was applied.
+    total: usize,
+    /// How many records the scope permits but the window excluded.
+    ///
+    /// Counted so the view can name the filter that actually emptied it: a note
+    /// that said "raise --limit" when the bound is 200 and the window is what
+    /// excluded everything sends the caller to the wrong knob.
+    windowed_out: usize,
     unreadable: usize,
     unknown: usize,
     malformed: usize,
@@ -213,11 +327,13 @@ struct Read {
 /// Inside the directories it is entitled to read, a directory that is not a principal
 /// UUID and a segment that will not parse are counted rather than skipped: an entry
 /// silently dropped is how a log with a hole starts reading like a complete one.
-fn read(layout: &Layout, scope: &Scope) -> Read {
+fn read(layout: &Layout, scope: &Scope, filter: &Filter) -> Read {
     let chain = AuditChain::new(layout.audit_root());
     let mut read = Read {
         segments: 0,
         records: Vec::new(),
+        total: 0,
+        windowed_out: 0,
         unreadable: 0,
         unknown: 0,
         malformed: 0,
@@ -230,7 +346,7 @@ fn read(layout: &Layout, scope: &Scope) -> Read {
             let own = chain.writer_root(*principal);
             // A tenant that has never appended has no directory: an empty view, not a
             // failure, and not something to count.
-            read_actor(layout, &own, scope, &mut read);
+            read_actor(layout, &own, scope, filter, &mut read);
         }
         Scope::Complete | Scope::Subject { .. } => {
             // The audit root is `0711`: every principal traverses it and none may
@@ -272,7 +388,7 @@ fn read(layout: &Layout, scope: &Scope) -> Read {
                     unreadable(layout, &mut read, &directory);
                     continue;
                 }
-                read_actor(layout, &directory, scope, &mut read);
+                read_actor(layout, &directory, scope, filter, &mut read);
             }
         }
     }
@@ -280,7 +396,7 @@ fn read(layout: &Layout, scope: &Scope) -> Read {
 }
 
 /// Read every segment in one principal's directory, keeping what the scope permits.
-fn read_actor(layout: &Layout, directory: &Path, scope: &Scope, read: &mut Read) {
+fn read_actor(layout: &Layout, directory: &Path, scope: &Scope, filter: &Filter, read: &mut Read) {
     let Ok(files) = std::fs::read_dir(directory) else {
         // Absent is a writer who has never appended, and the view states that as
         // zero records. Anything else — including "I am not allowed to find out" —
@@ -326,7 +442,7 @@ fn read_actor(layout: &Layout, directory: &Path, scope: &Scope, read: &mut Read)
         let segment = relative(layout, &file);
         for (index, frame) in frames(&bytes).into_iter().enumerate() {
             match frame {
-                Frame::Body(body) => record(body, &segment, index, scope, read),
+                Frame::Body(body) => record(body, &segment, index, scope, filter, read),
                 Frame::Torn { index, cause } => {
                     read.malformed += 1;
                     read.records.push(LogRecord::Malformed(MalformedRecord {
@@ -341,16 +457,36 @@ fn read_actor(layout: &Layout, directory: &Path, scope: &Scope, read: &mut Read)
 }
 
 /// One framed body: a record this build decodes, a kind it does not know, or a finding.
-fn record(body: &[u8], segment: &str, index: usize, scope: &Scope, read: &mut Read) {
+fn record(
+    body: &[u8],
+    segment: &str,
+    index: usize,
+    scope: &Scope,
+    filter: &Filter,
+    read: &mut Read,
+) {
     if let Ok(signed) = SignedAuditRecord::from_bytes(body)
         && signed.domain == AUDIT_DOMAIN
     {
         if scope.permits(&signed.record) {
-            read.records.push(LogRecord::Known(Box::new(entry(
-                &signed.record,
-                segment,
-                index,
-            ))));
+            // The total counts what the *window* admits, before the bound. It is
+            // incremented after `admits` and not before, because a bound and a
+            // window are both filters and only the bound may truncate: a total
+            // that counted records the window excluded would tell a consumer it
+            // saw more than it did, which is the opposite of what the field is
+            // for.
+            if filter.admits(Some(signed.record.observed_at)) {
+                read.total += 1;
+                if !filter.is_full(read.records.len()) {
+                    read.records.push(LogRecord::Known(Box::new(entry(
+                        &signed.record,
+                        segment,
+                        index,
+                    ))));
+                }
+            } else {
+                read.windowed_out += 1;
+            }
         }
         return;
     }
@@ -363,23 +499,30 @@ fn record(body: &[u8], segment: &str, index: usize, scope: &Scope, read: &mut Re
             // Only the complete view may print one: an unknown record cannot be
             // attributed, so a narrowed view cannot know it belongs there.
             if matches!(scope, Scope::Complete) {
-                read.records.push(LogRecord::Unknown(UnknownLogRecord {
-                    domain: raw.domain,
-                    segment: segment.to_string(),
-                    index,
-                    fields: raw.fields,
-                }));
+                // An unknown record carries no timestamp this build can read, so
+                // the window cannot exclude it: a finding is never filtered out.
+                read.total += 1;
+                if !filter.is_full(read.records.len()) {
+                    read.records.push(LogRecord::Unknown(UnknownLogRecord {
+                        domain: raw.domain,
+                        segment: segment.to_string(),
+                        index,
+                        fields: raw.fields,
+                    }));
+                }
             } else {
                 read.withheld += 1;
             }
         }
         None => {
             read.malformed += 1;
-            read.records.push(LogRecord::Malformed(MalformedRecord {
-                segment: segment.to_string(),
-                index,
-                reason: "the frame does not decode as a record".to_string(),
-            }));
+            if !filter.is_full(read.records.len()) {
+                read.records.push(LogRecord::Malformed(MalformedRecord {
+                    segment: segment.to_string(),
+                    index,
+                    reason: "the frame does not decode as a record".to_string(),
+                }));
+            }
         }
     }
 }

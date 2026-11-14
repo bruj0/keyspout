@@ -306,12 +306,72 @@ ci_part() {
     step "ci: cargo clippy --all-targets -- -D warnings"
     cargo clippy --all-targets -- -D warnings
 
+    # Declared here rather than beside the test loop below, because the scanner
+    # steps above it also record failures. A `local` used before its declaration
+    # is an empty string under `set -u` in some shells and an unbound-variable
+    # abort in others, and either way the failure is not counted.
+    local -a failed=()
+    local crate_dir crate pair
+
     step "ci: cargo audit"
     cargo audit
 
+    # Dependency review. `cargo vet` needs `supply-chain/config.toml`, which
+    # `cargo vet init` writes interactively — see docs/supply-chain-vetting.md.
+    #
+    # The conditional is not a way to skip the control: before initialisation it
+    # would fail for a reason that is not a defect, and a gate that is red for a
+    # known non-defect teaches people to ignore it. After initialisation a new
+    # unvetted dependency fails the build. The message says which state this is,
+    # so the gap is visible rather than a green tick that means nothing.
+    step "ci: cargo vet"
+    if [ -f supply-chain/config.toml ]; then
+        if ! cargo vet --locked; then
+            failed+=("cargo-vet")
+        fi
+    else
+        echo "cargo vet: NOT CONFIGURED — no supply-chain/config.toml."
+        echo "           Dependency review is not running. See"
+        echo "           docs/supply-chain-vetting.md for what enabling it takes."
+    fi
+
+    # A second scanner, because the two disagree about what a vulnerability is.
+    # `cargo audit` reports the current findings as *warnings* and exits 0;
+    # OSV-Scanner reports them as vulnerabilities. Neither is wrong, and the
+    # overlap is not total.
+    #
+    # The severity policy is a separate step: OSV-Scanner has no threshold flag,
+    # so it exits 1 on any finding. `osv-gate.py` applies the policy and, on this
+    # repository, treats a finding with no analysis conclusion as reachable —
+    # the Rust call analysis cannot build this workspace, so every finding
+    # arrives without one.
+    #
+    # `--all-vulns` is required: without it the tool hides the findings the gate
+    # exists to see. `--output-file`, not `--output`, which v2.7.1 deprecates.
+    step "ci: osv-scanner"
+    if command -v osv-scanner >/dev/null 2>&1; then
+        osv-scanner scan source \
+            --call-analysis=rust --no-call-analysis=go \
+            --all-vulns \
+            --format=json --output-file=/tmp/ksp-osv.json \
+            . >/dev/null 2>&1 || true
+        # A missing output file means the scan did not run, which is a gate
+        # failure rather than a pass: an empty inventory is not a clean one.
+        if [ ! -s /tmp/ksp-osv.json ]; then
+            echo "error: osv-scanner produced no output; the scan did not run." >&2
+            echo "       An absent result is not a clean result." >&2
+            failed+=("osv-scanner")
+        elif ! python3 scripts/osv-gate.py /tmp/ksp-osv.json --fail-on high; then
+            failed+=("osv-scanner:high")
+        fi
+    else
+        echo "error: osv-scanner is not on PATH." >&2
+        echo "       Install it: https://google.github.io/osv-scanner/" >&2
+        echo "       A scanner that is absent is not a scanner that passed." >&2
+        failed+=("osv-scanner:missing")
+    fi
+
     step "ci: tests: unit targets (--no-fail-fast)"
-    local crate_dir crate pair
-    local -a failed=()
     for crate_dir in crates/*/; do
         crate="$(basename "$crate_dir")"
         if ! cargo test -p "$crate" --lib --bins --no-fail-fast; then
