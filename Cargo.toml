@@ -1,0 +1,109 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ksp-types",
+    "crates/ksp-record",
+    "crates/ksp-backend",
+    "crates/ksp-identity",
+    "crates/ksp-posture",
+    "crates/ksp-deletion",
+    "crates/ksp-key-lifecycle",
+    "crates/ksp-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "Proprietary"
+publish = false
+
+[workspace.dependencies]
+# --- Cryptography: primitives come from audited libraries only. The one
+# in-crate construction is Shamir over GF(256), a secret-sharing scheme and
+# not a primitive (plan R7).
+hpke-rs = "0.8.0"
+hpke-rs-crypto = "0.8.0"
+hpke-rs-rust-crypto = "0.8.0"
+ed25519-dalek = "3.0.0"
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
+argon2 = "0.6.0"
+chacha20poly1305 = "0.11.0"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+rand = "0.10.3"
+zeroize = { version = "1.9.1", features = ["derive"] }
+ciborium = "0.2.2"
+serde = { version = "1.0.154", features = ["derive"] }
+serde_json = "1.0.154"
+clap = { version = "4.5", features = ["derive"] }
+thiserror = "2.0.12"
+# The capability configuration file is TOML. The parser lives in
+# `ksp-cli`; `ksp-types` takes it only as a dev-dependency, so that a test
+# can prove the configuration type parses a real document without the
+# published crate gaining a parser dependency.
+toml = "1.1.8"
+libc = "0.2.191"
+landlock = "0.4.7"
+memfd = "0.6.6"
+tempfile = "3.27.0"
+redis = "1.7.1"
+# The default feature set pulls the *legacy* TLS path (`tls-rustls` ->
+# `aws-smithy-runtime/legacy-rustls-ring` -> hyper 0.14 / h2 0.3 / rustls
+# 0.21 / rustls-webpki 0.101), which carries six RustSec advisories. Keyspout
+# does not need the legacy path, so the features are pinned explicitly to the
+# current HTTP/1.1 client stack. `sigv4a` is left off deliberately: it is the
+# only thing that pulls `crypto-bigint 0.5`, which has no fixed 0.5.x release
+# for RUSTSEC-2026-0387, and Keyspout signs single-region requests only (no
+# multi-region access points). `cargo audit` must stay clean; see
+# DEVELOPMENT.md 7.5.
+aws-sdk-s3 = { version = "1.153.0", default-features = false, features = [
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+
+# --- Internal crates
+ksp-types = { path = "crates/ksp-types" }
+ksp-record = { path = "crates/ksp-record" }
+ksp-backend = { path = "crates/ksp-backend" }
+ksp-identity = { path = "crates/ksp-identity" }
+ksp-posture = { path = "crates/ksp-posture" }
+ksp-deletion = { path = "crates/ksp-deletion" }
+ksp-key-lifecycle = { path = "crates/ksp-key-lifecycle" }
+ksp-cli = { path = "crates/ksp-cli" }
+
+[workspace.lints.rust]
+# A cryptographic operation that can fail must be handled, not unwrapped.
+# `unwrap`/`expect` remain available but `clippy::unwrap_used` and
+# `clippy::expect_used` are denied in the crates that handle key material.
+#
+# `deny`, not `forbid`: `ksp-posture` must issue `memfd_secret(2)`, which
+# `libc` exposes as a syscall number and no wrapper (plan R3). A `forbid`
+# cannot be lifted by an inner `#[allow]`, so the crate could not compile at
+# all. `deny` keeps every other crate unable to write `unsafe`, and confines
+# the exemption to one module (`ksp-posture/src/sys.rs`) that carries a
+# module-scoped `allow` and a `// SAFETY:` comment on every block.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# These deny the *production* paths. Tests and examples are allowed to
+# panic: a failing assertion is exactly how they report a failure, and a
+# `Result` that a test cannot unwrap would hide the error message.
+#
+# The lints are switched off per-target below rather than switched on
+# per-test, so a new test cannot accidentally inherit a strict setting
+# that makes it unreadable.
+unwrap_used = "warn"
+expect_used = "warn"
+# A panic in a library that handles secrets is a leak vector.
+panic = "warn"
+# Ciphertext and key material must never reach a debug format.
+print_stdout = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+
+[profile.release]
+# Keyspout's threat model assumes the attacker may read the process image.
+overflow-checks = true

@@ -1,0 +1,37 @@
+[package]
+name = "ksp-types"
+description = "Shared contract types: identifiers, encodings, domains and evidence structures."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# A test-only channel that lets a test observe the erasure of a content key
+# on the real type. It retains a copy of the key bytes in a thread-local,
+# so it must never be enabled in a shipped build. The workspace enables it
+# only through a development dependency of a crate that tests the erasure.
+test-observer = []
+
+[dependencies]
+ciborium.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+# `toml` is a dev-dependency and only a dev-dependency. The capability
+# configuration is parsed by `ksp-cli`, which owns the file format; this
+# crate holds the types and must not learn what a file format is. The
+# dev-dependency exists so that a test can prove a real TOML document
+# parses into the configuration type — the published crate gains no
+# parser dependency from it.
+[dev-dependencies]
+toml.workspace = true

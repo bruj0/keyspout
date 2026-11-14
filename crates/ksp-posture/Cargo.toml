@@ -1,0 +1,36 @@
+[package]
+name = "ksp-posture"
+description = "Kernel path confinement, descriptor sanitation, memory barrier and honest posture reporting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ksp-types.workspace = true
+
+libc.workspace = true
+zeroize.workspace = true
+
+# The two Linux-only mechanism crates are gated by target (NFR-003).
+#
+# `landlock` 0.4.7 does not compile on macOS at all: it imports `libc::O_PATH`,
+# `libc::prctl` and `libc::PR_{SET,GET}_NO_NEW_PRIVS`, none of which exist in
+# Darwin's libc. The `memfd` crate opens with
+# `#![cfg(any(target_os = "android", target_os = "linux"))]`, so it is not even
+# a crate on another target.
+#
+# Gating them here is what turns "this host has no Landlock" from a *compiler
+# error* into an *adapter availability* fact (FR-017). The portable adapters
+# are compiled on every target (NFR-007), so a build for a host with no
+# dedicated mechanism still contains an adapter for every capability.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+memfd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

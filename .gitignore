@@ -1,0 +1,30 @@
+# Never commit vault state, keys, or unsealed material
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+*.vault
+secrets/
+vault/
+
+# Rust (implementation language per spec §9 Phase 1)
+target/
+**/*.rs.bk
+
+# Local scratch
+_artifacts/
+tmp/
+*.log
+.DS_Store
+
+# A default home a manual `ksp` run creates in the working directory.
+.ksp/
+
+# Archify working folders hold candidates and gate receipts, which carry
+# absolute local paths. The delivered artifact is `assets/*.html`.
+.archify/
+
+# Python bytecode from scripts/public/sync.py
+__pycache__/
+*.pyc

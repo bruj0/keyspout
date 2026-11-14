@@ -1,0 +1,35 @@
+[package]
+name = "ksp-deletion"
+description = "Deletion evidence: the key-free intent, the actor report, the absence observation, the acknowledgement journal and the consume outcome."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Lets a dependent crate observe that a delivered plaintext was wiped. It
+# retains the buffer's post-wipe contents in a thread-local, so it must never
+# be enabled in a shipped build.
+test-observer = []
+
+[dependencies]
+ksp-types.workspace = true
+
+ciborium.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# SC-008's consume-side assertion is about the proof-of-possession window,
+# which lives in S2; WP10 declares WP07 as a dependency.
+ksp-identity.workspace = true
+tempfile.workspace = true

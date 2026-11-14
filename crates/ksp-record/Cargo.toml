@@ -1,0 +1,36 @@
+[package]
+name = "ksp-record"
+description = "Record cryptography: the KEM validation gate, bound context, content blob, HPKE envelope and conditional publication."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ksp-types.workspace = true
+
+hpke-rs.workspace = true
+hpke-rs-crypto.workspace = true
+hpke-rs-rust-crypto.workspace = true
+chacha20poly1305.workspace = true
+ciborium.workspace = true
+rand.workspace = true
+serde.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# The acceptance test must observe the erasure of a content key on the
+# real type, not only on a stand-in for it. The observer lives behind the
+# `test-observer` feature, which retains a copy of the key bytes in a
+# thread-local, so it is enabled here only for the test build.
+ksp-types = { workspace = true, features = ["test-observer"] }
+
+[build-dependencies]
+# Uses the same provider guard source as the library module.

@@ -1,0 +1,35 @@
+[package]
+name = "ksp-backend"
+description = "Opaque blob storage, evidence-based lease admission and durable arming."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ksp-types.workspace = true
+ksp-record.workspace = true
+# S5 -> S3: the status surface reports the two postures, and reports them
+# through their own types rather than as backend capabilities (FR-042).
+ksp-posture.workspace = true
+# S3 -> S4 (sweep evidence): the sweep journals an acknowledgement and writes a
+# report through the same pair a consume uses.
+ksp-deletion.workspace = true
+aws-sdk-s3.workspace = true
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ciborium.workspace = true
+ed25519-dalek.workspace = true
+libc.workspace = true
+rand.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

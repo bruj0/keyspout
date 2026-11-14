@@ -1,0 +1,36 @@
+[package]
+name = "ksp-identity"
+description = "Identity: fingerprint-bound enrolment, the user vault, Shamir recovery, the agent enrolment path and the sealed delivery artifact."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ksp-backend = { workspace = true }
+ksp-types.workspace = true
+# S1 -> S2 contract: the delivery seal uses S1's HPKE adapter so the
+# low-order-point rejection is the one implementation, not a second copy.
+ksp-record.workspace = true
+
+argon2.workspace = true
+# `O_NOFOLLOW` for the issuance ledger: a file this host chose, never a symlink.
+libc.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+tempfile.workspace = true

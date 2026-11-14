@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="1024" height="1024" viewBox="0 0 1024 1024" xml:space="preserve">
+<desc>KeySpout logo</desc>
+<defs>
+</defs>
+
+<g transform="matrix(2.6 0 0 2.6 205.20 163.60)" id="keyspout-mark">
+<path style="stroke: none; stroke-width: 0.0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(39, 46, 50); fill-rule: nonzero; opacity: 1;" fill="rgb(39, 46, 50)" stroke="none" stroke-width="0.0" d="M 0 0 L 54 0 L 54 268 L 0 268 Z" stroke-linecap="round"/>
+<path style="stroke: none; stroke-width: 0.0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(0, 150, 136); fill-rule: nonzero; opacity: 1;" fill="rgb(0, 150, 136)" stroke="none" stroke-width="0.0" d="M 110 0 L 133 24 L 54 103 L 54 163 L 133 242 L 110 267 L 232 267 L 99 134 L 232 0 Z" stroke-linecap="round"/>
+</g>
+</svg>
