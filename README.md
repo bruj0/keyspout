@@ -32,12 +32,12 @@ only with the agent's private key.
 
 <p align="center">
   <a href="assets/keyspout-architecture.html">
-    <img src="assets/keyspout-architecture.png" alt="Keyspout architecture: your machine, the sealed store you own, and the agent's machine" width="100%">
+    <img src="assets/keyspout-architecture.png" alt="Keyspout architecture: your machine holds your passphrase, key pair and the ksp command; the sealed store holds ciphertext, the agent copy and the signed audit chain; the agent's machine runs ksp run --consume to hand one leased copy to a child process" width="900">
   </a>
 </p>
 
-[Open the diagram full size](assets/keyspout-architecture.html) for pan, zoom and
-the notes on each zone.
+[Open the diagram full size](assets/keyspout-architecture.html) for pan, zoom, a
+light theme and the notes on each zone.
 
 ---
 
