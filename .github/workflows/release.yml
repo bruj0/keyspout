@@ -712,6 +712,22 @@ jobs:
     # The environment must exist in the repository settings with a required
     # reviewer, or this key does nothing. See SECURITY.md.
     environment: release
+    # Creating a release and uploading its assets needs `contents: write`.
+    #
+    # The workflow default is `contents: read`, and this job never overrode it,
+    # so the publish failed at the last step with
+    #
+    #   HTTP 403: Resource not accessible by integration
+    #     (https://api.github.com/repos/bruj0/keyspout/releases)
+    #
+    # Everything before it succeeded: the manifest listed all six artifacts with
+    # their checksums and attestations, and only the API call that creates the
+    # release was refused.
+    #
+    # `id-token: write` is not needed here — the attestations were signed in the
+    # build jobs, which is where the OIDC token was used.
+    permissions:
+      "contents": "write"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: ubuntu-22.04
