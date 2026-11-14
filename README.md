@@ -34,12 +34,12 @@ only its own leased copy rather than your durable record, and the copy opens
 only with the agent's private key.
 
 <p align="center">
-  <a href="https://docs-diagrams.bruj0.net/keyspout-architecture/overview/">
+  <a href="https://docs-diagrams.bruj0.net/keyspout-architecture/overview/" target="_blank" rel="noopener noreferrer">
     <img src="assets/keyspout-architecture.png" alt="Keyspout architecture: your machine holds your passphrase, key pair and the ksp command; the sealed store holds ciphertext, the agent copy and the signed audit chain; the agent's machine runs ksp run --consume to hand one leased copy to a child process" width="900">
   </a>
 </p>
 
-[Open the diagram full size](https://docs-diagrams.bruj0.net/keyspout-architecture/overview/)
+<a href="https://docs-diagrams.bruj0.net/keyspout-architecture/overview/" target="_blank" rel="noopener noreferrer">Open the diagram full size</a>
 for pan, zoom, light and dark themes, and the notes on each zone. A copy also
 ships in this repository at [`assets/keyspout-architecture.html`](assets/keyspout-architecture.html),
 which works offline.
