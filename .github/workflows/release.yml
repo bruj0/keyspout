@@ -610,8 +610,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive=$(find target/distrib -name "ksp-*${{
-            matrix.target }}*.tar.*" | head -1)
+          # The checksum file is excluded explicitly, not by luck of ordering.
+          #
+          # `*.tar.*` matches both `…tar.xz` and `…tar.xz.sha256`, and `head -1`
+          # takes the first match `find` emits — which was the checksum. The step
+          # then ran `tar -xf` on a 103-byte text file and failed with
+          # "This does not look like a tar archive" on all six platforms.
+          #
+          # `! -name "*.sha256"` states the intent. Relying on the archive sorting
+          # first would work until a target name changed the order.
+          archive=$(find target/distrib \
+            -name "ksp-*${{ matrix.target }}*.tar.*" \
+            ! -name "*.sha256" | head -1)
           if [ -z "$archive" ]; then
             echo "::error::no archive for ${{ matrix.target }}"; exit 1
           fi
