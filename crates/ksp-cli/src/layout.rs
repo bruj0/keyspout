@@ -184,6 +184,24 @@ pub const VAULT_MODE: u32 = 0o600;
 /// rewrite it without the admin key.
 pub const POLICY_MODE: u32 = 0o644;
 
+/// The issuance ledger: what this host minted, and what it revoked.
+///
+/// `0640` — owner read/write, group read — and the group is the store's, which is
+/// the group both accounts are in.
+///
+/// Two files, and each has exactly one writer, which is why this mode is enough:
+/// `issuance.jsonl` belongs to the user principal, who appends `Issued` inside the
+/// mint's publication closure and `TokenRevoked` when she withdraws a token;
+/// `withdrawals.jsonl` belongs to the admin, who appends `GrantWithdrawn` in
+/// `admin revoke`. `run` reads both, so a withdrawal reaches the principal it
+/// withdraws from.
+///
+/// A single shared file would have to be group-*writable*, and a mint history any
+/// group member can rewrite is a history that member can forge: appending a
+/// revocation is how a token stops working, and removing one is how it starts
+/// again. Splitting it keeps the write bit with one account per file.
+pub const ISSUANCE_LEDGER_MODE: u32 = 0o640;
+
 /// A file whose content is public material every principal must read.
 ///
 /// The deployment record and the pinned anchor are identifiers and public keys.
@@ -337,6 +355,25 @@ pub fn table(root: &Path) -> Vec<RootSpec> {
             mode: POLICY_MODE,
             kind: RootKind::File,
             reason: "signed policy: readable by every principal, replaceable only with the admin key",
+            refusal: true,
+        },
+        RootSpec {
+            path: layout.issuance_ledger(),
+            mode: ISSUANCE_LEDGER_MODE,
+            kind: RootKind::File,
+            reason: "the principal's mint record: she writes it, the admin reads it",
+            // A ledger writable by a third party is a mint history that party can
+            // forge: appending a revocation is how a token stops working, and
+            // removing one is how it starts again.
+            refusal: true,
+        },
+        RootSpec {
+            path: layout.withdrawals_ledger(),
+            mode: ISSUANCE_LEDGER_MODE,
+            kind: RootKind::File,
+            reason: "the admin's withdrawal record: he writes it, the principal's run reads it",
+            // The same argument in the other direction: a withdrawal another
+            // principal can remove is a revocation that silently stops holding.
             refusal: true,
         },
     ]
@@ -669,6 +706,49 @@ pub fn level_mode(level: &ksp_types::Level) -> u32 {
     }
 }
 
+/// Create one ledger file, or repair its mode and group.
+///
+/// Provisioning calls this. The file is `0640` in the store's group, which is the
+/// group both accounts are in: the writer appends, the other account reads. The
+/// mode is set with `set_permissions`, never left to `open(2)`'s `mode`, which the
+/// caller's `umask` masks — and the ledger refuses to append to a file with any
+/// group or other write bit, so a widened file would make every later mint fail.
+///
+/// An empty file is a valid ledger: `refuse_a_torn_tail` treats zero bytes as a
+/// clean start. Creating it here rather than at first append is what keeps the
+/// deployment root `0711` a boundary — neither account needs write on it.
+pub fn ensure_ledger_file(root: &Path, path: &Path, owner: (u32, u32)) -> Result<(), LayoutError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let layout = Layout::new(root.to_path_buf());
+    let unwritable = || LayoutError::Unwritable {
+        path: path.display().to_string(),
+    };
+    // `O_NOFOLLOW`: the ledger is a file this host chose, never whatever a symlink
+    // at that path points at. `truncate(false)` because a re-run must not discard
+    // the history it is meant to preserve.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o640)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| unwritable())?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o640))
+        .map_err(|_| unwritable())?;
+    let store_gid = std::fs::metadata(layout.store_root())
+        .map(|metadata| metadata.gid())
+        .unwrap_or(owner.1);
+    std::os::unix::fs::chown(path, Some(owner.0), Some(store_gid)).map_err(|_| unwritable())?;
+    // The owner is *replaced*, not recorded once: `admin init` created this file
+    // as the account that provisioned the deployment, and `admin user add` moves
+    // it to the account that writes it. Recording it a second time would be
+    // refused as a conflicting claim, which is the right rule for a file whose
+    // owner is meant to stay put and the wrong one for a handover.
+    rebind_file_owner(root, path, owner.0)
+}
+
 /// Create the store's arm journal, or repair its mode and group.
 ///
 /// Provisioning calls this; `share` does not. The mint arms as the user principal,
@@ -977,6 +1057,25 @@ pub fn rebind_directory_owner(root: &Path, path: &Path, owner: u32) -> Result<()
         .into_iter()
         .find(|spec| spec.path == path)
         .filter(|spec| spec.kind == RootKind::Directory)
+        .ok_or_else(|| LayoutError::UnknownRoot {
+            path: path.display().to_string(),
+        })?;
+    let mut record = read_record(root);
+    record.replace_owner(&spec.path, owner);
+    write_record(root, &record)
+}
+
+/// Replace the recorded owner of one file row, on purpose.
+///
+/// The file counterpart of [`rebind_directory_owner`]: a handover that moves a
+/// file from the account that provisioned it to the account that writes it has to
+/// *replace* the claim, because keeping the old owner would report the binding as
+/// drift on the next `status` — the opposite of recording it.
+pub fn rebind_file_owner(root: &Path, path: &Path, owner: u32) -> Result<(), LayoutError> {
+    let spec = table(root)
+        .into_iter()
+        .find(|spec| spec.path == path)
+        .filter(|spec| spec.kind == RootKind::File)
         .ok_or_else(|| LayoutError::UnknownRoot {
             path: path.display().to_string(),
         })?;

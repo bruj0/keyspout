@@ -136,8 +136,21 @@ impl Layout {
     ///
     /// Beside the deployment because it is this host's own record, never a
     /// registry: no command publishes it and nothing listens for it.
+    ///
+    /// This is the principal's file. The admin's withdrawals live beside it, in
+    /// [`Self::withdrawals_ledger`], so each file has exactly one writer.
     pub fn issuance_ledger(&self) -> PathBuf {
         self.root.join("issuance.jsonl")
+    }
+
+    /// The withdrawals the admin recorded, beside the issuance ledger.
+    ///
+    /// A separate file because the two writers are different accounts: the
+    /// principal appends issuances and token marks, the admin appends grant
+    /// withdrawals. Sharing one file would need it group-writable, and a mint
+    /// history any group member can rewrite is one that member can forge.
+    pub fn withdrawals_ledger(&self) -> PathBuf {
+        self.root.join("withdrawals.jsonl")
     }
 
     /// The blob store root.

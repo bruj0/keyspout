@@ -35,6 +35,10 @@ pub enum AdminError {
     #[error("the admin key file could not be used")]
     Keys(#[from] KeyError),
     /// A pin or the deployment file could not be read.
+    ///
+    /// `Absent` is split out in [`Self::exit_code`] rather than here: a host
+    /// with no deployment has missing key material, not a corrupt file, and
+    /// every other surface already says so.
     #[error("the deployment is not readable")]
     Pin(#[from] PinError),
     /// The vault could not be created or opened.
@@ -295,6 +299,14 @@ impl AdminError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Keys(error) if error.failure().is_missing_key_material() => exit::MISSING_KEY,
+            // A host with no deployment has missing key material, not a broken
+            // tool. `secret ls`, `agent pubkey` and `audit verify` all report
+            // `6` for this state; `admin list` reported `1` and was the only
+            // surface an agent could not branch on. The remaining `PinError`
+            // variants are a corrupt or mismatched pin, which is still an
+            // internal failure: re-running setup will not fix a file that is
+            // there and wrong.
+            Self::Pin(PinError::Absent) => exit::MISSING_KEY,
             Self::Keys(_)
             | Self::Pin(_)
             | Self::Write
@@ -420,6 +432,25 @@ pub fn init(
         use std::os::unix::fs::MetadataExt;
         let me = std::fs::metadata(layout.root()).map_err(|_| AdminError::Write)?;
         crate::layout::ensure_audit_writer(layout.root(), collector, (me.uid(), me.gid()))?;
+    }
+
+    // The two ledger files, created here because provisioning creates *every*
+    // protected root: a home is never half-laid-out because a later command only
+    // needed part of it. They are created owned by whoever runs `admin init`, and
+    // `admin user add` re-owns them to the accounts that will write them.
+    //
+    // They are two files rather than one because their writers are different
+    // accounts: the principal appends issuances and token marks, the admin appends
+    // grant withdrawals. One shared file would have to be group-*writable*, and a
+    // mint history any group member can rewrite is one that member can forge.
+    // `0640` in the store's group gives each account read of the other's file —
+    // which `run` and `audit verify` both need — and write of only its own.
+    {
+        use std::os::unix::fs::MetadataExt;
+        let me = std::fs::metadata(layout.root()).map_err(|_| AdminError::Write)?;
+        let owner = (me.uid(), me.gid());
+        crate::layout::ensure_ledger_file(layout.root(), &layout.issuance_ledger(), owner)?;
+        crate::layout::ensure_ledger_file(layout.root(), &layout.withdrawals_ledger(), owner)?;
     }
 
     Ok(Initialised {
@@ -655,7 +686,45 @@ fn bind_principal_roots(
         })?;
     }
     crate::layout::ensure_audit_writer(layout.root(), deployment.user, owner)?;
+
+    // The two ledger files, each created as the account that writes it.
+    //
+    // `publish_recorded` appends the issuance file inside the mint's publication
+    // closure — the record precedes the token, so a mint that cannot append must
+    // not publish — and the file is created lazily on that first append. Creating
+    // it needs write on the deployment root, which is `0711` and belongs to the
+    // admin on purpose, so a user's `secret share` failed with
+    // `the issuance ledger at <root>/issuance.jsonl could not be used: Permission
+    // denied`, naming the ledger for a refusal that was really about the directory
+    // above it.
+    //
+    // The two ledger files were created by `admin init`, owned by whoever ran it.
+    // Each is re-owned here to the account that will write it: the issuance file
+    // to the principal, the withdrawals file to the admin. The group stays the
+    // store's, which is what gives each account read of the other's file.
+    //
+    // They are two files rather than one because their writers are different
+    // accounts. One shared file would have to be group-*writable*, and a mint
+    // history any group member can rewrite is one that member can forge: appending
+    // a revocation is how a token stops working, and removing one is how it starts
+    // again. `0640` gives each account read of the other's file — which `run` and
+    // `audit verify` both need — and write of only its own.
+    crate::layout::ensure_ledger_file(layout.root(), &layout.issuance_ledger(), owner)?;
+    // The admin's own uid, taken from the key root it already owns: that directory
+    // is `0700`, it exists before this step, and it is the one place on this host
+    // that is unambiguously the admin's.
+    let admin_owner = admin_root_owner(layout)?;
+    crate::layout::ensure_ledger_file(layout.root(), &layout.withdrawals_ledger(), admin_owner)?;
     Ok(())
+}
+
+/// The uid and gid of the admin key root, which is the admin's own account.
+fn admin_root_owner(layout: &Layout) -> Result<(u32, u32), AdminError> {
+    use std::os::unix::fs::MetadataExt;
+
+    std::fs::metadata(layout.admin_key_root())
+        .map(|metadata| (metadata.uid(), metadata.gid()))
+        .map_err(|_| AdminError::Write)
 }
 
 /// Put the principal's account in the group that owns the store.

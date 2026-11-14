@@ -26,17 +26,34 @@
 //! this host has no record of it would be a false accusation, and it would break
 //! every deployment where the mint and the run are different machines.
 //!
-//! # Why a local file, and why owner-only
+//! # Why a local file, and why the deployment's two accounts and no one else
 //!
 //! There is no registry service here: no listening socket, no replication, no
 //! publishing command. The ledger is a file beside the deployment, readable by
-//! the commands on this host and by nothing else. It is opened `0600` and an
-//! existing ledger whose mode has widened is refused rather than appended to.
+//! the commands on this host and by nothing else.
+//!
+//! It has **three** writers, and they are not one account: `Issued` is appended by
+//! the user principal inside the mint's publication closure, `TokenRevoked` by
+//! whoever holds the token record, and `GrantWithdrawn` by the admin in
+//! `admin revoke`. `run` then reads the file to decide whether a token may still
+//! be used. One shared file is therefore the only shape that keeps a withdrawal
+//! visible to the principal it withdraws from — a per-principal ledger would put
+//! the admin's decision where the user's `run` cannot see it, and revocation
+//! would stop working while every command still reported success.
+//!
+//! It is opened `0640` — owner read/write, group read — and the group is the
+//! store's, which is the group both accounts are in. An existing ledger that is
+//! writable by group or other is refused rather than appended to, because a file
+//! a third party can rewrite is a mint history that third party can forge:
+//! appending a revocation is how a token stops working, and removing one is how
+//! it starts again. Group *read* is deliberate and is what lets the admin verify
+//! a chain without running as the principal.
+//!
 //! Entries carry identifiers and deadlines only — no key, no content key, no
-//! value — so the check is about the trust state staying local, not about
-//! protecting a plaintext that was never there. The file is opened `O_NOFOLLOW`
-//! and a directory created for it is `0700`, so the claim covers the path and
-//! the name, not only the mode of the file the path resolves to.
+//! value — so the check is about the trust state staying inside the deployment,
+//! not about protecting a plaintext that was never there. The file is opened
+//! `O_NOFOLLOW` and a directory created for it is `0750`, so the claim covers the
+//! path and the name, not only the mode of the file the path resolves to.
 //!
 //! # A crash can cut the tail, and nothing else
 //!
@@ -319,8 +336,11 @@ pub enum LedgerError {
         /// The one-based line number.
         line: usize,
     },
-    /// The ledger is readable by someone other than its owner.
-    #[error("the issuance ledger has mode {mode:o}: it must not be readable by anyone else")]
+    /// The ledger is writable by someone other than its owner.
+    #[error(
+        "the issuance ledger has mode {mode:o}: group and other must not be able to write it, \
+         because a writable ledger is a mint history its writer can forge"
+    )]
     InsecurePermissions {
         /// The mode that was found.
         mode: u32,
@@ -391,7 +411,7 @@ impl<E: fmt::Display> fmt::Display for PublishError<E> {
     }
 }
 
-/// One event in the append-only ledger file.
+/// One event in an append-only ledger file.
 ///
 /// The file is a log, not a mutable document: a revocation appends a decision
 /// rather than rewriting an entry, so a crash can only ever cut the tail, never
@@ -404,23 +424,55 @@ enum LedgerEvent {
     GrantWithdrawn { withdrawal: GrantWithdrawal },
 }
 
-/// The ledger file this host writes beside its deployment.
+/// The withdrawals file's name, beside the issuance file.
+///
+/// Fixed rather than configurable: the two files are one ledger, and a caller
+/// that could name them separately could point the admin's decisions at a file the
+/// principal never reads.
+const WITHDRAWALS_FILE: &str = "withdrawals.jsonl";
+
+/// The ledger files this host writes beside its deployment.
+///
+/// Two files, and each has exactly one writer. That is the whole design: the
+/// deployment's two accounts are not the same account, so a single file would
+/// have to be group-writable, and a mint history any group member can rewrite is
+/// a history that member can forge — appending a revocation is how a token stops
+/// working, and removing one is how it starts again.
+///
+/// - `issuance.jsonl` is the user principal's: she appends `Issued` inside the
+///   mint's publication closure, and `TokenRevoked` when she withdraws a token she
+///   minted.
+/// - `withdrawals.jsonl` is the admin's: `admin revoke` appends `GrantWithdrawn`.
+///
+/// Both are `0640` in the store's group, so each account *reads* what the other
+/// wrote — `run` has to see a withdrawal, and the admin's `audit verify` has to
+/// see an issuance — while neither can write the other's file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuanceLedger {
-    path: PathBuf,
+    issued: PathBuf,
+    withdrawn: PathBuf,
 }
 
 impl IssuanceLedger {
-    /// A ledger at `path`. No file is created until the first entry.
+    /// A ledger whose issuance file is `path`, with the withdrawals beside it.
+    ///
+    /// The sibling name is derived rather than passed so that every existing
+    /// caller — and every fixture that builds a ledger from one path — keeps
+    /// working, and so the two files cannot be pointed at unrelated directories.
     pub fn at(path: impl AsRef<Path>) -> Self {
-        Self {
-            path: path.as_ref().to_path_buf(),
-        }
+        let issued = path.as_ref().to_path_buf();
+        let withdrawn = issued.with_file_name(WITHDRAWALS_FILE);
+        Self { issued, withdrawn }
     }
 
-    /// The path this ledger reads and writes.
+    /// The path the issuance file reads and writes.
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.issued
+    }
+
+    /// The path the withdrawals file reads and writes.
+    pub fn withdrawals_path(&self) -> &Path {
+        &self.withdrawn
     }
 
     /// Seal first, record second, and only then hand the artifact back.
@@ -555,8 +607,36 @@ impl IssuanceLedger {
         })
     }
 
+    /// Fold both files into one view.
+    ///
+    /// The two files are read together because every question this module answers
+    /// spans them: `standing` needs the issuance *and* the withdrawal that covers
+    /// it, and `run` must refuse a token the admin withdrew. Reading one file and
+    /// answering from it would report a withdrawn grant as live.
+    ///
+    /// A missing file is not an error — a host that has never minted has no
+    /// issuance file, and a host where the admin never revoked has no withdrawals
+    /// file — so `present` is true when *either* exists.
     fn read(&self) -> Result<Contents, LedgerError> {
-        let bytes = match fs::read(&self.path) {
+        let mut contents = Contents {
+            present: false,
+            torn_tail: false,
+            issuances: Vec::new(),
+            marks: Vec::new(),
+            withdrawals: Vec::new(),
+        };
+        let issued = self.read_one(&self.issued)?;
+        let withdrawn = self.read_one(&self.withdrawn)?;
+        contents.present = issued.present || withdrawn.present;
+        contents.torn_tail = issued.torn_tail || withdrawn.torn_tail;
+        contents.issuances = issued.issuances;
+        contents.marks = issued.marks;
+        contents.withdrawals = withdrawn.withdrawals;
+        Ok(contents)
+    }
+
+    fn read_one(&self, path: &Path) -> Result<Contents, LedgerError> {
+        let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return Ok(Contents {
@@ -567,10 +647,10 @@ impl IssuanceLedger {
                     withdrawals: Vec::new(),
                 });
             }
-            Err(error) => return Err(self.io(&error)),
+            Err(error) => return Err(self.io(path, &error)),
         };
         let text = String::from_utf8(bytes).map_err(|_| LedgerError::Io {
-            path: self.path.clone(),
+            path: path.to_path_buf(),
             cause: "the file is not text".to_string(),
         })?;
 
@@ -604,11 +684,25 @@ impl IssuanceLedger {
         Ok(contents)
     }
 
+    /// Append one event to the file its writer owns.
+    ///
+    /// The routing is the single-writer rule: `GrantWithdrawn` is the admin's
+    /// decision and goes to the withdrawals file, everything else is the
+    /// principal's and goes to the issuance file. A caller cannot choose, so no
+    /// command can write into the file it does not own.
     fn append(&self, event: &LedgerEvent) -> Result<(), LedgerError> {
-        self.refuse_a_torn_tail()?;
+        let path = match event {
+            LedgerEvent::GrantWithdrawn { .. } => &self.withdrawn,
+            _ => &self.issued,
+        };
+        self.append_to(path, event)
+    }
+
+    fn append_to(&self, path: &Path, event: &LedgerEvent) -> Result<(), LedgerError> {
+        self.refuse_a_torn_tail(path)?;
 
         let mut line = serde_json::to_string(event).map_err(|error| LedgerError::Io {
-            path: self.path.clone(),
+            path: path.to_path_buf(),
             cause: error.to_string(),
         })?;
         line.push('\n');
@@ -617,16 +711,16 @@ impl IssuanceLedger {
         // parent directory needs syncing: a new file whose directory entry has
         // not reached the disk can vanish in a power loss, which would be a token
         // without the record this module promises precedes it.
-        let existed = self.path.exists();
+        let existed = path.exists();
 
-        let mut file = self.open_for_append()?;
+        let mut file = self.open_for_append(path)?;
         // One write of one short line: the smallest window a crash can tear, and
         // the reason a torn tail is the only damage this file can suffer.
         file.write_all(line.as_bytes())
-            .map_err(|error| self.io(&error))?;
-        file.sync_all().map_err(|error| self.io(&error))?;
+            .map_err(|error| self.io(path, &error))?;
+        file.sync_all().map_err(|error| self.io(path, &error))?;
         if !existed {
-            self.sync_parent_directory()?;
+            self.sync_parent_directory(path)?;
         }
         Ok(())
     }
@@ -635,22 +729,22 @@ impl IssuanceLedger {
     ///
     /// Reads the last byte rather than trusting the parse: a complete line that
     /// lost its newline parses fine and still cannot be appended to.
-    fn refuse_a_torn_tail(&self) -> Result<(), LedgerError> {
-        match fs::read(&self.path) {
+    fn refuse_a_torn_tail(&self, path: &Path) -> Result<(), LedgerError> {
+        match fs::read(path) {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(self.io(&error)),
+            Err(error) => Err(self.io(path, &error)),
             Ok(bytes) if bytes.is_empty() => Ok(()),
             Ok(bytes) if bytes.last().is_some_and(|byte| *byte != b'\n') => {
                 Err(LedgerError::TornTail {
-                    path: self.path.clone(),
+                    path: path.to_path_buf(),
                 })
             }
             Ok(_) => Ok(()),
         }
     }
 
-    fn open_for_append(&self) -> Result<File, LedgerError> {
-        if let Some(parent) = self.path.parent()
+    fn open_for_append(&self, path: &Path) -> Result<File, LedgerError> {
+        if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             self.create_owner_only_directory(parent)?;
@@ -663,20 +757,27 @@ impl IssuanceLedger {
             use std::os::unix::fs::OpenOptionsExt;
             // `O_NOFOLLOW`: the ledger is a file this host chose, never whatever a
             // symlink at that path points at.
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            options.mode(0o640).custom_flags(libc::O_NOFOLLOW);
         }
-        let file = options.open(&self.path).map_err(|error| self.io(&error))?;
+        let file = options.open(path).map_err(|error| self.io(path, &error))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = file
                 .metadata()
-                .map_err(|error| self.io(&error))?
+                .map_err(|error| self.io(path, &error))?
                 .permissions()
                 .mode()
                 & 0o777;
-            if mode & 0o077 != 0 {
+            // Group *read* is required, not a widening: the other account has to
+            // read what this one wrote — `run` must see a withdrawal, and the
+            // admin's `audit verify` must see an issuance. Group and other *write*
+            // are what must be refused, and that is now the whole of the rule:
+            // each file has exactly one writer, so a write bit for anyone else is
+            // a second writer, and a mint history with a second writer is a
+            // history that writer can forge.
+            if mode & 0o022 != 0 {
                 return Err(LedgerError::InsecurePermissions { mode });
             }
         }
@@ -685,20 +786,16 @@ impl IssuanceLedger {
 
     /// Make the new file's directory entry as durable as its contents.
     #[cfg(unix)]
-    fn sync_parent_directory(&self) -> Result<(), LedgerError> {
-        let Some(parent) = self
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-        else {
+    fn sync_parent_directory(&self, path: &Path) -> Result<(), LedgerError> {
+        let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) else {
             return Ok(());
         };
-        let directory = File::open(parent).map_err(|error| self.io(&error))?;
-        directory.sync_all().map_err(|error| self.io(&error))
+        let directory = File::open(parent).map_err(|error| self.io(path, &error))?;
+        directory.sync_all().map_err(|error| self.io(path, &error))
     }
 
     #[cfg(not(unix))]
-    fn sync_parent_directory(&self) -> Result<(), LedgerError> {
+    fn sync_parent_directory(&self, _path: &Path) -> Result<(), LedgerError> {
         Ok(())
     }
 
@@ -706,24 +803,25 @@ impl IssuanceLedger {
     fn create_owner_only_directory(&self, parent: &Path) -> Result<(), LedgerError> {
         use std::os::unix::fs::DirBuilderExt;
 
-        // `0700` for the directory as well as `0600` for the file: a `0755`
-        // directory would publish the ledger's name even though its contents
-        // stay private.
+        // `0750`, matching the file's `0640`: the group that reads the ledger has
+        // to be able to traverse to it, and nobody outside that group learns the
+        // name. A `0755` directory would publish the ledger's name to every local
+        // account even though its contents stay inside the deployment.
         fs::DirBuilder::new()
             .recursive(true)
-            .mode(0o700)
+            .mode(0o750)
             .create(parent)
-            .map_err(|error| self.io(&error))
+            .map_err(|error| self.io(parent, &error))
     }
 
     #[cfg(not(unix))]
     fn create_owner_only_directory(&self, parent: &Path) -> Result<(), LedgerError> {
-        fs::create_dir_all(parent).map_err(|error| self.io(&error))
+        fs::create_dir_all(parent).map_err(|error| self.io(parent, &error))
     }
 
-    fn io(&self, error: &std::io::Error) -> LedgerError {
+    fn io(&self, path: &Path, error: &std::io::Error) -> LedgerError {
         LedgerError::Io {
-            path: self.path.clone(),
+            path: path.to_path_buf(),
             cause: error.to_string(),
         }
     }

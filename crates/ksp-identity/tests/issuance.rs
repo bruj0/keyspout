@@ -776,18 +776,23 @@ fn a_token_minted_after_the_grant_was_restored_is_not_revoked() {
 }
 
 // ---------------------------------------------------------------------------
-// The file's own properties — owner-only, and honest about a torn append
+// The file's own properties — one writer, group-readable, honest about a torn
+// append
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
 #[test]
-fn the_ledger_refuses_to_append_to_a_file_others_can_read() {
+fn the_ledger_refuses_to_append_to_a_file_others_can_write() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = TempDir::new().unwrap();
     let ledger = ledger_in(&dir);
     record(&ledger);
-    std::fs::set_permissions(ledger.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+    // `0664`, not `0644`: group *read* is required, because the other account has
+    // to read what this one wrote. Group *write* is the refusal — it would be a
+    // second writer, and a mint history with a second writer is one that writer
+    // can forge.
+    std::fs::set_permissions(ledger.path(), std::fs::Permissions::from_mode(0o664)).unwrap();
 
     let refusal = ledger.revoke("jti-1", 1_600).unwrap_err();
     assert!(
@@ -798,7 +803,25 @@ fn the_ledger_refuses_to_append_to_a_file_others_can_read() {
 
 #[cfg(unix)]
 #[test]
-fn a_new_ledger_is_owner_only() {
+fn the_ledger_appends_to_a_file_the_other_account_can_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let ledger = ledger_in(&dir);
+    record(&ledger);
+    // `0640` is the deployment's mode: the writer appends, the other account
+    // reads. A `0600` ledger would make the admin's `audit verify` refuse, which
+    // is the failure this mode exists to prevent.
+    std::fs::set_permissions(ledger.path(), std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    ledger
+        .revoke("jti-1", 1_600)
+        .expect("a group-readable ledger is appendable by its writer");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_ledger_is_readable_by_the_group_and_writable_only_by_its_owner() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = TempDir::new().unwrap();
@@ -809,7 +832,10 @@ fn a_new_ledger_is_owner_only() {
         .permissions()
         .mode()
         & 0o777;
-    assert_eq!(mode, 0o600, "the ledger must be owner-only");
+    assert_eq!(
+        mode, 0o640,
+        "the writer writes, the other account reads, and nobody else gets either"
+    );
 }
 
 #[test]
@@ -921,7 +947,7 @@ fn a_symlinked_ledger_is_not_written_through() {
 
 #[cfg(unix)]
 #[test]
-fn a_directory_created_for_the_ledger_is_owner_only() {
+fn a_directory_created_for_the_ledger_is_traversable_by_the_group_only() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = TempDir::new().unwrap();
@@ -932,7 +958,16 @@ fn a_directory_created_for_the_ledger_is_owner_only() {
 
     for path in [&outer, &inner] {
         let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700, "{} must be owner-only", path.display());
+        // `0750`: the group that reads the ledger has to traverse to it, and
+        // nobody outside that group learns the name. `0700` would make the other
+        // account's read fail; `0755` would publish the name to every local
+        // account.
+        assert_eq!(
+            mode,
+            0o750,
+            "{} must be group-traversable only",
+            path.display()
+        );
     }
 }
 
@@ -1062,11 +1097,19 @@ fn retrying_admin_revoke_after_a_lost_policy_write_repeats_one_record() {
         first.withdrawal, second.withdrawal,
         "the retry must report the record that is already in force"
     );
-    let text = std::fs::read_to_string(ledger.path()).unwrap();
+    // The withdrawal is the admin's decision, so it lands in the admin's file and
+    // not in the principal's. Reading `path()` here would pass on a single-file
+    // ledger and prove nothing about the split.
+    let withdrawn = std::fs::read_to_string(ledger.withdrawals_path()).unwrap();
     assert_eq!(
-        text.matches("\"grant_withdrawn\"").count(),
+        withdrawn.matches("\"grant_withdrawn\"").count(),
         1,
-        "one decision, one record: {text}"
+        "one decision, one record: {withdrawn}"
+    );
+    let issued = std::fs::read_to_string(ledger.path()).unwrap();
+    assert!(
+        !issued.contains("grant_withdrawn"),
+        "the principal's file must not carry the admin's decision: {issued}"
     );
 }
 
