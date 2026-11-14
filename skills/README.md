@@ -70,9 +70,16 @@ See the [main README](../README.md) for the other platforms.
 
 ## What a skill may not contain
 
-These are enforced by `scripts/ksp-skills.sh` in the repository, which fails when
-a skill names a command the binary does not have, or whose frontmatter name
-disagrees with its folder.
+Two checks enforce this, and they run at different times on purpose.
+
+`scripts/ksp-skills.sh` fails when a skill names a `ksp` subcommand the binary
+does not have, when its frontmatter `name` disagrees with its folder, or when the
+folder is not kebab-case. It runs in the gate, against the built binary.
+
+`crates/ksp-cli/tests/skills_public.rs` fails when a skill names something the
+public tree does not carry. It reads its marker list from the sync's own
+configuration, so the commit-time check and the publish-time scrub cannot drift
+apart.
 
 - an internal path, a design-spec citation or an absolute path on the author's
   machine

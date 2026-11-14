@@ -415,7 +415,21 @@ fn run_admin<W: Write>(
                 Outcome::Failed(error.exit_code())
             }
         },
-        AdminCommand::Policy { agents, secrets } => {
+        AdminCommand::Policy {
+            agents,
+            secrets,
+            show,
+        } => {
+            // The read-back. It writes nothing and needs no admin key: the
+            // policy is public material every principal reads, and a caller that
+            // must hold the admin key to *see* what it may do cannot check a
+            // grant it was told about.
+            if *show {
+                return match crate::admin::show_policy(layout) {
+                    Ok(view) => report_or_internal(emitter, &Report::Policy(view)),
+                    Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+                };
+            }
             // No password: the keys this policy names are public halves the
             // deployment recorded at enrolment (FR-020). Asking for the user's
             // password here made the admin depend on a secret only she has.

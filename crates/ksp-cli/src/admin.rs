@@ -815,6 +815,46 @@ pub fn read_policy(layout: &Layout) -> Result<Policy, AdminError> {
     ksp_identity::decode_policy(&bytes).map_err(|_| AdminError::NoPolicy)
 }
 
+/// What the policy this host holds says, for a reader that cannot ask.
+///
+/// # Why this exists
+///
+/// `admin policy` replaces the whole grant set: a revision names every grant it
+/// carries, so a call that names one agent withdraws every other. Before this
+/// read-back an agent had to hold the current grants in its own context, which a
+/// fresh session does not, so granting a second agent silently revoked the
+/// first.
+///
+/// # What it verifies, and what it does not
+///
+/// The issuer is checked against the pinned anchor, and the result is reported
+/// rather than enforced: a policy that does not verify is still printed, because
+/// a reader needs to see what it says to know why it is refused. The grants are
+/// not otherwise validated — that is the mint's job, and a read-back that
+/// second-guessed it would be a second answer to the same question.
+pub fn show_policy(layout: &Layout) -> Result<crate::output::PolicyView, AdminError> {
+    let policy = read_policy(layout)?;
+    let anchor = crate::keys::Anchor::load(&layout.admin_anchor_file())?;
+    Ok(crate::output::PolicyView {
+        revision: policy.revision(),
+        vault: policy.vault().to_string(),
+        user: policy.user().to_string(),
+        shareable_secrets: policy
+            .shareable_secrets()
+            .iter()
+            .map(|secret| secret.to_string())
+            .collect(),
+        shareable_agents: policy
+            .shareable_agents()
+            .iter()
+            .map(|agent| agent.to_string())
+            .collect(),
+        not_before: policy.body().not_before(),
+        not_after: policy.body().not_after(),
+        issuer_verified: policy.verify_issuer(&anchor.key),
+    })
+}
+
 /// Write a signed policy to the file this host reads, owner-only.
 pub fn write_signed_policy(layout: &Layout, policy: &Policy) -> Result<(), AdminError> {
     let bytes = ksp_types::cbor::encode(policy).map_err(|_| AdminError::Write)?;

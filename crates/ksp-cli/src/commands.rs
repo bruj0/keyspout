@@ -191,7 +191,13 @@ pub enum AdminCommand {
         #[command(subcommand)]
         command: AdminUserCommand,
     },
-    /// Re-sign the policy with the grants named here.
+    /// Re-sign the policy with the grants named here, or read the one this host
+    /// holds.
+    ///
+    /// The write replaces the whole grant set: a revision names every grant it
+    /// carries, so a call that names one agent withdraws every other. Read what
+    /// is there with `--show` before re-signing, or a second grant silently
+    /// revokes the first.
     Policy {
         /// Grant a delivery to this agent. Repeatable.
         #[arg(long = "agent")]
@@ -199,6 +205,14 @@ pub enum AdminCommand {
         /// Grant this secret. Repeatable.
         #[arg(long = "secret")]
         secrets: Vec<String>,
+        /// Print the policy this host holds instead of re-signing it.
+        ///
+        /// Reads `policy.cbor`, verifies the issuer against the pinned anchor,
+        /// and prints the revision, the grants and the validity window. It
+        /// writes nothing and needs no admin key: the policy is public material
+        /// every principal reads.
+        #[arg(long)]
+        show: bool,
     },
     /// Put one version of a `user`-level secret. The value is read from stdin.
     ///

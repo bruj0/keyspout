@@ -570,6 +570,8 @@ pub enum Report {
         /// The records this listing names, in the order the store returned them.
         records: Vec<RecordMetadata>,
     },
+    /// The policy this host holds, as a read-back rather than a write.
+    Policy(PolicyView),
     /// What one token says about itself.
     Token(TokenInspection),
     /// What this host minted, and what it holds against each.
@@ -606,6 +608,40 @@ pub enum Report {
         /// The operation that completed.
         operation: String,
     },
+}
+
+/// The policy this host holds, as a read-back rather than a write.
+///
+/// Every field is public by construction: a policy names grants and public key
+/// IDs, and it is the material a user principal reads to learn what she may do.
+/// Nothing that could be a private half has a route into this structure.
+///
+/// The grants are two lists rather than a matrix because the policy carries two
+/// lists: `shareable_secrets` and `shareable_agents`. A reader that wants "may
+/// this agent have this secret" asks `Policy::grants`, which is the same
+/// question the mint asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PolicyView {
+    /// The revision this policy carries.
+    pub revision: u64,
+    /// The vault the policy governs.
+    pub vault: String,
+    /// The user principal whose records it governs.
+    pub user: String,
+    /// The secrets an agent may be given.
+    pub shareable_secrets: Vec<String>,
+    /// The agents that may be given a secret.
+    pub shareable_agents: Vec<String>,
+    /// The earliest instant this policy is valid.
+    pub not_before: u64,
+    /// The instant it stops being valid.
+    pub not_after: u64,
+    /// Whether the issuer verified against the pinned anchor.
+    ///
+    /// A policy that does not verify is still printed — a reader needs to see
+    /// what it says to know why it is refused — but the field says so rather
+    /// than leaving the reader to assume the grants are in force.
+    pub issuer_verified: bool,
 }
 
 /// What a sealed vault file states without a password.
@@ -874,6 +910,36 @@ fn render(report: &Report) -> String {
             "{}  level={}  version={}",
             record.record, record.level, record.version
         ),
+        Report::Policy(policy) => {
+            // One grant per line, because the two lists are what a reader acts
+            // on: a line that joined them would make "which agent may have which
+            // secret" unreadable, and the policy does not carry that pairing
+            // anyway — it carries two independent lists.
+            let mut lines = vec![
+                format!("policy:      revision={}", policy.revision),
+                format!("vault:       {}", policy.vault),
+                format!("user:        {}", policy.user),
+                format!("validity:    {}..{}", policy.not_before, policy.not_after),
+                format!(
+                    "issuer:      {}",
+                    if policy.issuer_verified {
+                        "verified against the pinned anchor"
+                    } else {
+                        "NOT verified against the pinned anchor: the grants below are not in force"
+                    }
+                ),
+            ];
+            for secret in &policy.shareable_secrets {
+                lines.push(format!("secret:      {secret}"));
+            }
+            for agent in &policy.shareable_agents {
+                lines.push(format!("agent:       {agent}"));
+            }
+            if policy.shareable_secrets.is_empty() && policy.shareable_agents.is_empty() {
+                lines.push("grants:      none — this policy authorises no delivery".to_owned());
+            }
+            lines.join("\n")
+        }
         Report::Records { records } => records
             .iter()
             .map(|record| {

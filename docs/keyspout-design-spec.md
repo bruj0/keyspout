@@ -60,7 +60,7 @@ Three rules keep these markers honest:
 
 ### Implementation snapshot — 2026-11-14
 
-Verified against the merged tree on `main`. Features `001`–`009` are implemented;
+Verified against the merged tree on `main`. Features `001`–`011` are implemented;
 `003` is research only and shipped no code.
 
 | Area | Marker | Evidence |
@@ -84,6 +84,9 @@ Verified against the merged tree on `main`. Features `001`–`009` are implement
 | Consume ordering, delete-after-read, honest outcome | **[Implemented]** | `crates/ksp-deletion/src/consume.rs`; `crates/ksp-cli/src/consume.rs` |
 | Per-writer audit chain, append-before-effect, chain verification | **[Implemented]** | `crates/ksp-deletion/src/audit.rs`; `crates/ksp-cli/src/audit_verify.rs` |
 | Scoped audit view: the caller's own records, another principal refused | **[Implemented]** | `crates/ksp-cli/src/audit_view.rs`; test `crates/ksp-cli/tests/audit_scope.rs` |
+| Machine-readable output: one JSON object per invocation, a documented exit code per refusal, and a usage code that names the accepted form | **[Implemented]** | `crates/ksp-cli/src/output.rs`, `exit.rs`; tests `crates/ksp-cli/tests/agent_contract.rs`, `wired_surface.rs`. Feature `010-agent-parseable-output-and-exit-codes`. |
+| Bounded audit retrieval: `--limit` bounds the record lines and `--since` filters by each record's own `observed_at`, with the header reporting the total after the window and before the bound | **[Implemented]** | `crates/ksp-cli/src/audit_view.rs`, `app.rs`; test `crates/ksp-cli/tests/audit_scope.rs`. Feature `011-audit-retrieval-for-agents`. |
+| Policy read-back: `ksp admin policy --show` prints the revision, issuer key id, validity window, anchor verification and one line per grant, without the policy-signing key | **[Implemented]** | `crates/ksp-cli/src/admin.rs` (`show_policy`), `output.rs` (`PolicyView`); test `crates/ksp-cli/tests/policy_read_back.rs`. |
 | Sweep arming record, `backend arm-sweep`, signed sweep proof, proof gate, freshness and grace | **[Implemented]** | `crates/ksp-backend/src/proof.rs`, `sweeper.rs`; `crates/ksp-cli/src/sweep.rs`, `arm.rs` |
 | Principal UUIDs, per-principal roots, cross-UID vault binding | **[Implemented]** | `crates/ksp-cli/src/layout.rs`, `admin.rs`; test `crates/ksp-cli/tests/principals.rs` |
 | Durable owner-only key lifecycle for agent and admin identities | **[Implemented]** | `crates/ksp-key-lifecycle/src/` |
@@ -2767,10 +2770,13 @@ proves freshness when all state comes from untrusted storage.
 > policy decision), because a caller responds differently to each.
 
 ```
-ksp admin      init | user add | policy | put | list | revoke | audit
+ksp admin      init | user add | policy [--show] | put | list | revoke | audit
                                         # admin audit = the deletion acknowledgement journal
-ksp audit      [--admin] [--principal UUID] [--json]
+                                        # policy --show = read the revision this host holds
+ksp audit      [--admin] [--principal UUID] [--limit N] [--since D] [--json]
                                         # the signed log, scoped to the caller
+                                        # --limit bounds the record lines; --limit 0 is unbounded
+                                        # --since filters by each record's own observed_at
 ksp vault      init | unseal | seal | status | rekey    # rekey = rotate Shamir shares (§4.1.1)
                init --recovery-threshold K --recovery-shares N
 ksp agent      start | stop | status | lock-timeout     # optional session agent (§3.6)
@@ -2812,6 +2818,16 @@ Every command takes `--json` where machine consumption is plausible.
 > chains is each writer's timestamp claim. Merging them would answer "what did this
 > deployment acknowledge" and "what did it do" with one view and one set of
 > qualifications.
+
+> **`ksp admin policy --show` is a read-back, and it needs no admin key.** A write
+> replaces every grant at once, so before it there was no way to learn what the
+> host currently holds except to read the store by hand. `--show` prints the
+> revision, the issuing admin's key id, the validity window, the verification
+> result against the loaded anchor, and one line per grant. It writes nothing and
+> signs nothing, so it runs without the policy-signing private key; the anchor is
+> still required, because a grant list is only meaningful when the signature over
+> it verifies. `--show` and a write are mutually exclusive: an invocation that
+> carries both is refused as a usage error rather than guessed at.
 
 > **`ksp agent` carries two unrelated meanings.** `start | stop | status |
 > lock-timeout` operate the *user's* session agent (§3.6); `enroll | pubkey |
