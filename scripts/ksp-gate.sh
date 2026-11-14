@@ -301,6 +301,34 @@ ci_part() {
     step "ci: cargo fmt --check"
     cargo fmt --check
 
+    # A workflow that GitHub refuses to parse reports `failure` with zero jobs
+    # and no annotation, so the only symptom is a release that never starts.
+    # That cost sixteen failed tag pushes on the first 1.0.0 attempt. The cause
+    # was `${{ env.HOME }}` in a job-level `env:` block, where the `env` context
+    # is not available; `actionlint` names that line immediately.
+    #
+    # Skipped when not installed, because a gate that cannot run is not a gate
+    # that failed. `-shellcheck=` disables the shellcheck pass on purpose: those
+    # are style findings inside `run:` blocks, they are not why GitHub rejects a
+    # file, and they would leave this gate permanently red — which teaches a
+    # contributor to ignore it. The expression-context check is the one that
+    # matters, and it is the one that would have caught this.
+    #
+    # Guarded on the directory because the workflows live only in the public
+    # tree: this repository has no `.github/workflows/` and `actionlint` exits 3
+    # when it finds no file, which would fail the gate in the tree that must not
+    # carry a workflow at all.
+    if [ -d .github/workflows ]; then
+        if command -v actionlint > /dev/null 2>&1; then
+            step "ci: actionlint (workflow syntax and expression contexts)"
+            actionlint -shellcheck=
+        else
+            echo "actionlint not installed; skipping workflow lint"
+        fi
+    else
+        echo "no .github/workflows/ here; skipping workflow lint"
+    fi
+
     # This is the copy of clippy that matters: only on Linux are the
     # `cfg(target_os = "linux")` branches compiled and linted at all.
     step "ci: cargo clippy --all-targets -- -D warnings"
