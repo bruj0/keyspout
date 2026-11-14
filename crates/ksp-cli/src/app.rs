@@ -1218,6 +1218,12 @@ fn run_secret<W: Write>(
                 // of audit output. `get` writes it to stdout and nowhere else —
                 // and only when `--reveal` asked for it, because stdout is a file
                 // a shell redirects and a terminal scrolls back.
+                //
+                // The document is built here rather than as a `Report` variant
+                // for that reason: a value with a route into `Report` is a value
+                // in the log. `--json` still has to mean something, though — it
+                // used to be accepted and ignored, so an agent that passed it and
+                // parsed stdout got a tab-separated line.
                 Ok((name, value)) => {
                     let shown = if *reveal {
                         value.as_slice()
@@ -1225,11 +1231,29 @@ fn run_secret<W: Write>(
                         crate::secret::REDACTED
                     };
                     let mut out = std::io::stdout();
-                    if out.write_all(&name).is_err()
-                        || out.write_all(b"\t").is_err()
-                        || out.write_all(shown).is_err()
-                        || out.write_all(b"\n").is_err()
-                    {
+                    let written = if emitter.is_json() {
+                        let document = serde_json::json!({
+                            "kind": "secret",
+                            "record": id,
+                            "name": String::from_utf8_lossy(&name),
+                            "version": version,
+                            "revealed": reveal,
+                            "value": String::from_utf8_lossy(shown),
+                        });
+                        match serde_json::to_vec(&document) {
+                            Ok(bytes) => out
+                                .write_all(&bytes)
+                                .and_then(|()| out.write_all(b"\n"))
+                                .is_ok(),
+                            Err(_) => false,
+                        }
+                    } else {
+                        out.write_all(&name).is_ok()
+                            && out.write_all(b"\t").is_ok()
+                            && out.write_all(shown).is_ok()
+                            && out.write_all(b"\n").is_ok()
+                    };
+                    if !written {
                         return Outcome::Failed(exit::INTERNAL);
                     }
                     let _ = emitter;

@@ -346,6 +346,61 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// An unprovisioned host reports missing key material, on every surface.
+///
+/// `admin list` was the outlier. On a host with no deployment it exited `1` —
+/// "unexpected internal failure" — while `secret ls`, `agent pubkey` and
+/// `audit verify` all exited `6` for the identical state. Three surfaces agreed
+/// and one did not, and the one that disagreed is the one a status skill calls
+/// first.
+///
+/// The distinction is not cosmetic. `1` tells an agent the tool broke and there
+/// is nothing to do; `6` tells it the host has no deployment and setup is the
+/// next step. An agent that reads `1` reports a bug to the operator instead of
+/// offering to run the quickstart.
+///
+/// The cause was one line: `AdminError::Pin` was grouped with the write
+/// failures. `PinError::Absent` is the absent-deployment case and belongs with
+/// the other missing-key surfaces; the remaining `PinError` variants are a
+/// corrupt or mismatched pin, which is still an internal failure and keeps `1`.
+#[test]
+fn an_unprovisioned_host_reports_missing_key_material_on_every_surface() {
+    let home = tempfile::tempdir().unwrap();
+    // `init` writes the capability configuration and nothing else, so the host
+    // is configured but has no deployment — the state after `ksp init` and
+    // before `ksp admin init`.
+    let (code, output) = ksp_in(home.path(), &["init"], None);
+    assert_eq!(code, exit::SUCCESS, "init failed: {output}");
+
+    for args in [
+        vec!["secret", "ls"],
+        vec!["admin", "list"],
+        vec!["agent", "pubkey", "--agent", "laptop"],
+        vec!["audit", "verify"],
+        vec!["token", "list"],
+    ] {
+        let (code, output) = ksp_in(home.path(), &args, None);
+        let named = args.join(" ");
+        assert_ne!(
+            code,
+            exit::INTERNAL,
+            "`ksp {named}` reported an internal failure on a host with no \
+             deployment. An agent cannot tell a broken tool from an unconfigured \
+             host when both return 1: {output}"
+        );
+    }
+
+    // The listing specifically: it is the one that was wrong, and it is the one
+    // a status report calls to count what exists.
+    let (code, output) = ksp_in(home.path(), &["admin", "list"], None);
+    assert_eq!(
+        code,
+        exit::MISSING_KEY,
+        "`ksp admin list` on a host with no deployment must report missing key \
+         material, as `secret ls` does: {output}"
+    );
+}
+
 /// Both documents that publish the exit-code table name the new code.
 ///
 /// A code an agent must learn is useless if the two places a reader looks do not

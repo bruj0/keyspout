@@ -710,6 +710,17 @@ impl<W: Write> Emitter<W> {
         Self { json, sink }
     }
 
+    /// Whether this emitter was asked for machine-readable output.
+    ///
+    /// A command that writes to stdout itself rather than through [`Self::report`]
+    /// still has to honour `--json`. `secret get` is the one: a value has no route
+    /// into `Report`, because `Report` is what the audit path renders, so the
+    /// command builds its own document and needs to know which mode it is in.
+    /// Without this the flag was accepted and ignored.
+    pub fn is_json(&self) -> bool {
+        self.json
+    }
+
     /// Print a report.
     ///
     /// A report that will not serialize is a defect in this tool, and this
