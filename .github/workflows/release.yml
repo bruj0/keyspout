@@ -59,6 +59,41 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
           rustup default 1.99.1
 
+      - name: Cache cargo registry and dependency builds
+        # Measured: the gate's 5m22s is now almost entirely compilation. The tests
+        # themselves run in about 90 seconds; the rest is building 322 crates, and
+        # `aws-lc-sys` alone compiles a large body of C for the TLS stack.
+        #
+        # `rust-cache` caches `~/.cargo` and the *dependency* artifacts in the
+        # target directory. It deliberately does not cache this workspace's own
+        # crates, because a workspace crate changes on almost every commit and a
+        # restored artifact for it would be thrown away — so the saving is the
+        # dependency graph, which is exactly the expensive part here.
+        #
+        # `workspaces` must name the gate's real target directory. The gate
+        # defaults to `/tmp/ksp-gate-target`, not `./target`, and `rust-cache`
+        # defaults to `./target` — so without this line the cache would be saved
+        # and restored against a directory the build never writes to, and every
+        # run would look like a cache miss while reporting a healthy cache.
+        #
+        # The key includes `Cargo.lock`, `rust-toolchain.toml` and any `RUST*`
+        # environment variable, so a dependency bump or a toolchain change misses
+        # the cache rather than restoring artifacts built from something else.
+        # That matters here: the release job sets `RUSTFLAGS` for path remapping,
+        # and a cache keyed without it would restore artifacts whose embedded
+        # paths differ from what the release is supposed to contain.
+        #
+        # `save-if` is limited to `main` so a tag build does not race a branch
+        # build to write the same key.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> /tmp/ksp-gate-target"
+          # The gate also builds under sudo into a separate directory for the
+          # two-account tests. That one is root-owned and rebuilt each run; it is
+          # a few crates, not the dependency graph, so it is not worth caching.
+          cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Install build dependencies
         # A timeout on this step, not only on the job.
         #
