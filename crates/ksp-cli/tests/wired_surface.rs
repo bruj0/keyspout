@@ -283,6 +283,95 @@ fn a_value_reaches_stdout_only_when_reveal_asked_for_it() {
     );
 }
 
+/// `--json` on `secret get` emits a document, not the human line.
+///
+/// The flag was accepted and ignored: the command printed `name<TAB>value` and
+/// exited `0` whatever `--json` said. An agent that passed `--json` and parsed
+/// stdout got a tab-separated line where it expected an object, which is the
+/// same silent-plausible-output failure feature 010 removed from the listing
+/// commands.
+///
+/// The value still does not enter `Report`, and that is deliberate: `Report` is
+/// what the audit path renders, and a value with a route into it is a value in
+/// the log. The object is built in the command arm that already holds the value
+/// and writes it straight to stdout, so the invariant holds and the flag works.
+///
+/// Both halves are asserted: the redacted form must not carry the value, and the
+/// revealed form must. A test that only checked the shape would pass on an
+/// implementation that printed `{"value":""}`.
+#[test]
+fn json_on_get_emits_a_document_and_still_honours_reveal() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+    let passphrase = password_file(home.path());
+    let passphrase = passphrase.to_str().unwrap();
+
+    let (code, output) = ksp_in(
+        home.path(),
+        &[
+            "secret",
+            "set",
+            "db_password",
+            "--name",
+            "db_password",
+            "--passphrase-file",
+            passphrase,
+        ],
+        Some(VALUE),
+    );
+    assert_eq!(code, exit::SUCCESS, "secret set failed: {output}");
+
+    let (code, output) = ksp_in(
+        home.path(),
+        &[
+            "--json",
+            "secret",
+            "get",
+            "db_password",
+            "--passphrase-file",
+            passphrase,
+        ],
+        None,
+    );
+    assert_eq!(code, exit::SUCCESS, "secret get --json failed: {output}");
+    let parsed: serde_json::Value = serde_json::from_str(output.trim())
+        .unwrap_or_else(|error| panic!("`--json` did not emit a document: {error}\n{output}"));
+    assert_eq!(parsed["kind"], "secret");
+    assert_eq!(parsed["record"], "db_password");
+    assert_eq!(parsed["name"], "db_password");
+    assert_eq!(parsed["revealed"], false);
+    assert!(
+        !output.contains(VALUE),
+        "the redacted document carried the value: {output}"
+    );
+
+    let (code, output) = ksp_in(
+        home.path(),
+        &[
+            "--json",
+            "secret",
+            "get",
+            "db_password",
+            "--reveal",
+            "--passphrase-file",
+            passphrase,
+        ],
+        None,
+    );
+    assert_eq!(
+        code,
+        exit::SUCCESS,
+        "secret get --json --reveal failed: {output}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(output.trim())
+        .unwrap_or_else(|error| panic!("`--json` did not emit a document: {error}\n{output}"));
+    assert_eq!(parsed["revealed"], true);
+    assert_eq!(
+        parsed["value"], VALUE,
+        "`--reveal` with `--json` did not carry the value: {output}"
+    );
+}
+
 #[test]
 fn a_listing_names_the_versions_that_are_stored_and_a_removal_takes_one() {
     let home = tempfile::tempdir().unwrap();
@@ -830,6 +919,20 @@ fn a_host_with_no_ledger_runs_and_says_it_cannot_tell_whether_the_token_was_revo
     provision_vault(home.path());
     let agent = enrol(home.path(), "agent-7");
     let (token, _) = write_token(home.path(), agent);
+
+    // `admin init` creates both ledger files, because provisioning creates every
+    // protected root. The state this test is about is a host that has no ledger at
+    // all — one where the files were removed, or where the deployment predates
+    // them — so the files are removed here rather than assumed absent.
+    //
+    // Removing them is the honest fixture: the code path that answers "cannot
+    // judge" still exists and still has to be reachable, and a test that only
+    // passed because provisioning happened not to create the file would stop
+    // covering it the moment provisioning changed.
+    let layout = ksp_cli::config::Layout::new(home.path().to_path_buf());
+    for path in [layout.issuance_ledger(), layout.withdrawals_ledger()] {
+        let _ = std::fs::remove_file(&path);
+    }
 
     let (code, output) = ksp_in(
         home.path(),

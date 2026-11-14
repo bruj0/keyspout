@@ -344,15 +344,21 @@ fn a_refused_mint_leaves_the_ledger_byte_identical() {
 /// memory and the append fails. A token on disk with no ledger row would be a
 /// live credential nothing can revoke.
 ///
-/// The ledger path is made a directory, so the append fails with `EISDIR` and
+/// The ledger is replaced by a directory, so the append fails with `EISDIR` and
 /// nothing else in the home is affected. Chmod on the home would block the token
 /// write as well, which is a different finding.
+///
+/// `admin init` creates the ledger now, so the path is occupied by removing the
+/// file first: `create_dir_all` on a path that is already a file fails with
+/// `AlreadyExists`, which would fail the fixture rather than the behaviour under
+/// test.
 #[test]
 fn a_ledger_that_cannot_be_written_returns_no_token() {
     let home = tempfile::tempdir().unwrap();
     let agent = proven_deployment(home.path());
     let layout = Layout::new(home.path().to_path_buf());
     let ledger = layout.issuance_ledger();
+    std::fs::remove_file(&ledger).expect("provisioning created the ledger");
     std::fs::create_dir_all(&ledger).expect("the ledger path is occupied by a directory");
 
     let token = home.path().join("unwritable.token");
