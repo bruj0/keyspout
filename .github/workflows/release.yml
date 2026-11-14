@@ -232,29 +232,12 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
-      # Reproducibility and privacy. Both are measured, not assumed.
-      #
-      # `trim-paths = "all"` is the RFC 3127 profile setting, and this toolchain
-      # (cargo 1.99.1) rejects it: "the package requires the Cargo feature called
-      # `trim-paths`, but that feature is not stabilized in this version". So the
-      # remap is done with RUSTFLAGS, which is stable.
-      #
-      # Three roots leak, not one. Remapping only the workspace left 207
-      # occurrences of the builder's home in the release binary: the rest were
-      # `~/.cargo/registry/...` and `~/.rustup/toolchains/...`. Remapping all
-      # three takes it to 0.
-      #
-      # SOURCE_DATE_EPOCH pins any timestamp a build script or dependency would
-      # otherwise read from the clock. It must be the *commit* date, not the push
-      # date: a push timestamp changes on every push and would make two builds of
-      # the same commit differ, which is the opposite of the point.
-      #
-      # The value is resolved by the step below, from the tagged commit, and
-      # exported to $GITHUB_ENV so `dist build` inherits it.
-      RUSTFLAGS: >-
-        --remap-path-prefix=${{ github.workspace }}=/build/keyspout
-        --remap-path-prefix=${{ env.HOME }}/.cargo=/build/cargo
-        --remap-path-prefix=${{ env.HOME }}/.rustup=/build/rustup
+      # RUSTFLAGS is NOT set here. The `env` context is not available in a job's
+      # own `env:` block, so `${{ env.HOME }}` made GitHub reject this whole
+      # workflow at parse time: every run reported zero jobs and `failure`, with
+      # no annotation to read. `github.workspace` is allowed here but `HOME` has
+      # no context at all, so the flags are built in a shell step below, where
+      # `$HOME` expands, and exported through $GITHUB_ENV.
     permissions:
       "attestations": "write"
       "contents": "read"
@@ -276,11 +259,28 @@ jobs:
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
 
-      - name: Pin SOURCE_DATE_EPOCH to the commit date
-        # A build script or a dependency that reads the clock produces a
-        # different binary on every run. The commit date is the one timestamp
-        # that is the same for two builds of the same commit, so it is the only
-        # correct value here.
+      - name: Pin SOURCE_DATE_EPOCH and remap build paths
+        # Two build-environment values, both measured rather than assumed.
+        #
+        # SOURCE_DATE_EPOCH: a build script or a dependency that reads the clock
+        # produces a different binary on every run. The commit date is the one
+        # timestamp that is the same for two builds of the same commit, so it is
+        # the only correct value. It must be the *commit* date, not the push
+        # date: a push timestamp changes on every push and would make two builds
+        # of the same commit differ, which is the opposite of the point.
+        #
+        # RUSTFLAGS: `trim-paths = "all"` is the RFC 3127 profile setting, and
+        # this toolchain (cargo 1.99.1) rejects it: "the package requires the
+        # Cargo feature called `trim-paths`, but that feature is not stabilized
+        # in this version". So the remap is done with RUSTFLAGS, which is stable.
+        #
+        # Three roots leak, not one. Remapping only the workspace left 207
+        # occurrences of the builder's home in the release binary: the rest were
+        # `~/.cargo/registry/...` and `~/.rustup/toolchains/...`. Remapping all
+        # three takes it to 0.
+        #
+        # These are set here rather than in the job's `env:` block because the
+        # `env` context is unavailable there, and `$HOME` has no context at all.
         shell: bash
         run: |
           set -euo pipefail
@@ -290,6 +290,12 @@ jobs:
           fi
           echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$epoch ($(date -u -d "@$epoch" 2>/dev/null || date -u -r "$epoch"))"
+
+          flags="--remap-path-prefix=${GITHUB_WORKSPACE}=/build/keyspout"
+          flags="$flags --remap-path-prefix=${HOME}/.cargo=/build/cargo"
+          flags="$flags --remap-path-prefix=${HOME}/.rustup=/build/rustup"
+          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=$flags"
 
       - name: Fetch local artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
