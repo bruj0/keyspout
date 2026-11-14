@@ -42,18 +42,13 @@ jobs:
   # release definition and the local definition cannot diverge.
   # ---------------------------------------------------------------------------
   gate:
-    runs-on: ubuntu-22.04
+    # ubuntu-24.04, not 22.04: the gate runs tests, it does not produce release
+    # artifacts, so the glibc floor that forces 22.04 on the build jobs does not
+    # apply here. 24.04 packages `valkey-server`, which
+    # `ksp-backend:valkey_durability` spawns from a hardcoded
+    # `/usr/bin/valkey-server` path.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
-    services:
-      valkey:
-        image: valkey/valkey:8
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,7 +63,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake make g++ perl pkg-config libssl-dev
+            cmake make g++ perl pkg-config libssl-dev \
+            valkey-server awscli unzip
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -104,6 +100,30 @@ jobs:
             sleep 1
           done
           echo "rustfs did not start; log follows"; cat /tmp/rustfs.log; exit 1
+
+      - name: Create the S3 test buckets
+        # `s3_store` needs two buckets that already exist, one with versioning
+        # on and one with it off. The server does not create them, and a test
+        # that made its own bucket would be proving the wrong thing: the
+        # admission classifier reads the bucket's configuration, so the
+        # configuration has to be real.
+        env:
+          AWS_ACCESS_KEY_ID: kspadmin
+          AWS_SECRET_ACCESS_KEY: kspadminsecret123
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          set -euo pipefail
+          ep=http://127.0.0.1:9000
+          for bucket in ksp-s3-unversioned ksp-s3-versioned; do
+            aws --endpoint-url "$ep" s3 mb "s3://$bucket" || true
+          done
+          aws --endpoint-url "$ep" s3api put-bucket-versioning \
+            --bucket ksp-s3-versioned \
+            --versioning-configuration Status=Enabled
+          echo "--- unversioned ---"
+          aws --endpoint-url "$ep" s3api get-bucket-versioning --bucket ksp-s3-unversioned || echo "(none, correct)"
+          echo "--- versioned ---"
+          aws --endpoint-url "$ep" s3api get-bucket-versioning --bucket ksp-s3-versioned
 
       - name: Run the gate
         run: bash scripts/ksp-gate.sh ci < /dev/null
