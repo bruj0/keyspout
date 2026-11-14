@@ -77,16 +77,23 @@ jobs:
         # `ksp-backend:s3_store` needs an S3 server at 127.0.0.1:9000. The VM
         # installs the same release binary; a runner does the same.
         #
-        # The asset name carries `-latest` in the middle, which is not obvious:
-        # `rustfs-linux-x86_64-musl-latest.zip`, not `rustfs-linux-x86_64-musl.zip`.
-        # The first version of this step used the shorter name and got a 404.
+        # Two things about this are not obvious, and each cost a failed tag:
+        #
+        #   * the asset name carries `-latest` in the middle —
+        #     `rustfs-linux-x86_64-musl-latest.zip`, not `...-musl.zip`;
+        #   * the data directory is `RUSTFS_VOLUMES`, not a positional
+        #     argument. Without it the server exits with `VolumeNotFound`.
         run: |
           curl -fsSL -o /tmp/rustfs.zip \
             https://github.com/rustfs/rustfs/releases/latest/download/rustfs-linux-x86_64-musl-latest.zip
           unzip -q /tmp/rustfs.zip -d /tmp/rustfs
           chmod +x /tmp/rustfs/rustfs
-          RUSTFS_ACCESS_KEY=kspadmin RUSTFS_SECRET_KEY=kspadminsecret123 \
-            /tmp/rustfs/rustfs /tmp/rustfs-data > /tmp/rustfs.log 2>&1 &
+          mkdir -p /tmp/rustfs-data
+          RUSTFS_ACCESS_KEY=kspadmin \
+          RUSTFS_SECRET_KEY=kspadminsecret123 \
+          RUSTFS_VOLUMES=/tmp/rustfs-data \
+          RUSTFS_ADDRESS=127.0.0.1:9000 \
+            /tmp/rustfs/rustfs > /tmp/rustfs.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:9000/ >/dev/null 2>&1; then
               echo "rustfs is up"; exit 0
