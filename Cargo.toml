@@ -116,3 +116,26 @@ dbg_macro = "warn"
 [profile.release]
 # Keyspout's threat model assumes the attacker may read the process image.
 overflow-checks = true
+
+# The profile `dist build` compiles with.
+#
+# Without it the release fails at the build step, not before:
+#
+#   error: profile `dist` is not defined
+#     × failed to find bin ksp for path+file:///…/crates/ksp-cli#1.0.0
+#
+# `dist` asks cargo for a profile named `dist` and cargo refuses an undefined
+# one. The `help: did the above build fail?` line points at the build rather than
+# at the missing profile, which is why this reads as a compile error.
+#
+# `inherits = "release"` keeps `overflow-checks = true` above, which is a
+# deliberate control rather than a performance default: a wrapping add in a
+# length or offset calculation is a memory-safety bug this project would rather
+# panic on than propagate.
+#
+# `lto = "thin"` is what `dist init` generates. It is not `"fat"`: thin LTO gets
+# most of the cross-crate inlining for a fraction of the link time, and the
+# release builds six targets on every tag.
+[profile.dist]
+inherits = "release"
+lto = "thin"
