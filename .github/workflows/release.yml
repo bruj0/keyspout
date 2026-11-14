@@ -66,8 +66,12 @@ jobs:
             cmake make g++ perl pkg-config libssl-dev \
             valkey-server unzip curl
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - name: Install cargo-audit and cargo-vet
+        # `cargo vet` runs inside the gate, so it has to be here before the gate
+        # step or the gate reports NOT CONFIGURED and reviews nothing.
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-vet --locked
 
       - name: Install OSV-Scanner
         # Pinned by version, and the downloaded binary is checked against the

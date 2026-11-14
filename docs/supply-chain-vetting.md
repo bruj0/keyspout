@@ -1,51 +1,91 @@
 # Dependency review — `cargo-vet`
 
-**Status:** not initialised. This file records what the control is, why it is not
-enabled yet, and exactly what enabling it requires.
+**Status:** configured and enforced. **No crate has been audited yet.**
+
+```
+$ cargo vet --locked
+Vetting Succeeded (314 exempted)
+
+$ grep -c '^\[\[exemptions\.' supply-chain/config.toml
+314
+
+$ grep -c '^\[\[audits\.' supply-chain/audits.toml
+0
+```
+
+Read those two numbers together. **314 exempted, 0 audited** means the ledger
+exists and enforces something, and that nothing in it is a review.
 
 ## What it is
 
-`cargo-vet` is a review ledger for dependencies. Every crate in the tree needs an
-audit entry that says a human read it and judged it acceptable, or a
-`exemptions` entry that says nobody has yet. A new dependency with neither fails
-`cargo vet`.
+`cargo-vet` is a review ledger for dependencies. Every crate in the tree needs
+either an **audit** — a record that a human read it and judged it acceptable — or
+an **exemption**, which records that nobody has yet.
 
 It is the only control in the hardening plan that catches a **compromised
 dependency** (T2) before it ships. A scanner finds *known* bad versions; `cargo
 vet` is your own review of *what the code does*, which is what catches a typosquat
-or a hijacked maintainer account that no advisory has named yet.
+or a hijacked maintainer account that no advisory has named.
 
-## Why it is not enabled
+## What the current state enforces
 
-`cargo vet init` is interactive: it asks which audit sets to trust and writes
-`supply-chain/config.toml` from the answers. Running it non-interactively
-produces nothing, and writing the config by hand would mean inventing audit
-entries — a ledger that claims reviews nobody performed is worse than no ledger,
-because it looks like evidence.
+An exemption is not a pass. It is a recorded decision to defer, and the gate
+still does something useful with it:
 
-So the work package ships the **check** and leaves the **initialisation** to a
-human, which is the only honest split.
+- **A new dependency fails the gate.** Adding a crate requires someone to write an
+  exemption or an audit. That is a decision made in a commit rather than a silent
+  pull, which is exactly the control this work package wanted.
+- **A version bump of an exempted crate also fails**, because the exemption is
+  pinned to a version. A bump is a new crate as far as the ledger is concerned.
 
-## What enabling it requires
+  This happened on 2026-11-14 and is the clearest demonstration of the control.
+  Upgrading `rustix` 1.1.5 → 1.1.6 to fix `RUSTSEC-2026-0486` made `cargo vet`
+  fail:
 
-1. Run `cargo vet init` at the repository root and answer the prompts. It writes
-   `supply-chain/config.toml` and `supply-chain/audits.toml`.
-2. Choose an audit set to trust. The Mozilla and Google sets cover a large part
-   of the ecosystem; trusting one means you accept their reviewers rather than
-   doing the review yourself. That is a real decision, not a formality.
-3. Run `cargo vet suggest` to see the cheapest reviews to do first.
-4. Commit both files. The CI check below then enforces them.
+  ```
+  $ cargo vet --locked
+  1 unvetted dependencies:
+    rustix:1.1.6 missing ["safe-to-deploy"]
+  ```
 
-## The check
+  The exemption was pinned to 1.1.5, so the fixed version counted as a new crate.
+  The gate refused the upgrade until someone moved the exemption. That is the
+  behaviour the work package wanted: a dependency change cannot happen without a
+  recorded decision.
 
-`scripts/ksp-gate.sh ci` runs `cargo vet --locked` **only when
-`supply-chain/config.toml` exists**. That is deliberate:
+What it does **not** do is review anything. The 314 exemptions are the size of the
+backlog, not a measure of coverage, and the gate prints both numbers on every run
+so a reader cannot mistake "Vetting Succeeded" for "everything was reviewed".
 
-- Before initialisation, the check would fail for a reason that is not a defect,
-  and a gate that is red for a known non-defect teaches people to ignore it.
-- After initialisation, the check runs and a new unvetted dependency fails the
-  build.
+## Reducing the backlog
 
-The conditional is not a way to skip the control. It is a way to make the
-control's absence visible: `cargo vet` prints that it is not configured, so a
-reader sees the gap rather than a green tick that means nothing.
+```bash
+cargo vet suggest          # the cheapest reviews first, by dependent count
+cargo vet                  # interactive review, records the audit entry
+```
+
+Start with the crates that have the most dependents — `serde`, `libc`, `sha2`.
+Each review replaces an exemption with an audit entry that says what was checked.
+
+The Mozilla and Google audit sets cover a large part of the ecosystem. Trusting
+one means you accept their reviewers rather than doing the review yourself. That
+is a real decision with a real trade-off, and it is worth stating in the commit
+that makes it rather than being assumed.
+
+## The files
+
+| File | Role |
+|---|---|
+| `supply-chain/config.toml` | The exemptions, one per crate, each `safe-to-deploy` |
+| `supply-chain/audits.toml` | The audits. **Empty today.** |
+| `supply-chain/imports.lock` | Pins the audit sets that are trusted |
+
+All three are `authored` in `sync.json`. They live in the downstream tree and a
+sync must never overwrite or delete them — a `cargo vet` ledger that a sync
+replaced would silently reset the review state.
+
+## Why this is in the downstream tree
+
+The ledger describes the tree that is released, and the release runs downstream.
+Keeping it upstream would mean the gate that enforces it and the ledger it
+enforces are in different repositories.

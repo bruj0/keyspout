@@ -38,6 +38,71 @@ fails it.
 
 The `.deb` and `.rpm` are attested too. Use the same command on them.
 
+### 1.1 The signature is keyless Sigstore, and you can check that
+
+There is **no long-lived signing key**. Signing is Sigstore keyless: the workflow
+requests a short-lived OIDC token from GitHub, exchanges it at Fulcio for a
+certificate that lives for minutes, and records the signature in the Rekor
+transparency log. Nothing is stored that could leak, and there is no key to
+rotate or revoke.
+
+That is a claim, so here is how to check it rather than take it.
+
+**Check the trusted root.** `gh` ships the Sigstore trust material it verifies
+against. Ask it what that is:
+
+```bash
+gh attestation trusted-root | head -1 | jq '{
+  mediaType,
+  tlogs: [.tlogs[].baseUrl],
+  cas: [.certificateAuthorities[].uri]
+}'
+```
+
+You should see Sigstore's own roots, not a private CA:
+
+```json
+{
+  "mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+  "tlogs": ["https://rekor.sigstore.dev", "https://log2025-1.rekor.sigstore.dev"],
+  "cas": ["https://fulcio.sigstore.dev", "https://fulcio.sigstore.dev"]
+}
+```
+
+If a project signed with a long-lived key, verification would not go through
+Fulcio at all and this root would be irrelevant to it.
+
+**Check the certificate identity.** The attestation carries the certificate
+Fulcio issued, and its identity is the workflow rather than a person. Download
+the bundle for a file you already have, then read the certificate:
+
+```bash
+gh attestation download ./ksp-x86_64-unknown-linux-musl.tar.xz --repo bruj0/keyspout
+# The bundle is JSONL; the certificate is under the signature it carries.
+jq -r 'select(.verificationResult) |
+       .verificationResult.signature.certificate |
+       {issuer, subject: .subjectAlternativeName}' ./*.jsonl
+```
+
+The issuer is `https://token.actions.githubusercontent.com` and the subject is
+the release workflow path. That is what "keyless" means concretely: the signer is
+an OIDC identity that existed for the length of one job, not a key anyone holds.
+
+**Verify offline.** The same download gives you a bundle that verifies without
+network access to GitHub:
+
+```bash
+gh attestation verify ./ksp-x86_64-unknown-linux-musl.tar.xz \
+  --bundle ./*.jsonl \
+  --repo bruj0/keyspout \
+  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+```
+
+**Check the transparency log.** Rekor is append-only and public, so the entry can
+be found without trusting this repository at all. Search
+`https://search.sigstore.dev` for the artifact's digest. A signature that is not
+in the log is not a signature this project produced.
+
 ### If you do not have `gh`
 
 The attestation is a Sigstore bundle verifiable with `cosign`:
@@ -96,9 +161,13 @@ fast and it runs on every commit.
 
 `OSV-Scanner` reads the same lockfile against a wider advisory set (OSV.dev
 aggregates RustSec, the GitHub Advisory Database and NVD) and gates on severity.
-The two disagree about what counts as a vulnerability — `cargo audit` currently
-classifies two findings in this tree as *warnings* and exits 0, while OSV-Scanner
-reports them as vulnerabilities — which is why both run.
+The two disagree about what counts as a vulnerability, which is why both run.
+
+That disagreement found a real one. `cargo audit` classified `rustix` 1.1.5
+`RUSTSEC-2026-0486` as an *unsound* warning and exited 0; OSV-Scanner reported it
+as a vulnerability. It was real — the xattr functions marked unwritten bytes as
+initialised when given a zero-length buffer — and it is **fixed**: the tree is on
+`rustix` 1.1.6, the version the advisory names.
 
 **The blind spot, stated plainly.** OSV-Scanner has an experimental Rust
 call-graph analysis that is meant to answer "does this vulnerable function
@@ -126,7 +195,7 @@ unreachable: it cannot, yet.
 | # | Attack | Control | Residual risk |
 |---|---|---|---|
 | **T1** | A maintainer commits a backdoor | Code review | **Not covered by any tool.** The attestation proves the binary matches the commit; it cannot prove the commit is honest. |
-| **T2** | A dependency is compromised | `Cargo.lock` pinning, `cargo audit`, OSV-Scanner, and `cargo-vet` once initialised (§6) | A compromised crate that no advisory names yet ships until someone reviews it. `cargo-vet` is the control for that, and it is not enabled. |
+| **T2** | A dependency is compromised | `Cargo.lock` pinning, `cargo audit`, OSV-Scanner, and `cargo-vet` (§6) | A compromised crate that no advisory names yet ships until someone reviews it. `cargo-vet` is the control for that, and it is configured but has **no audits yet** — see §6. |
 | **T3** | The build workflow is modified | Every action pinned to a commit SHA; Dependabot bumps them as reviewable commits; the gate runs before any build | Someone with write access to `.github/` can still change it. The change is visible in the repository history. |
 | **T4** | A published binary is replaced | Attestation makes it detectable | Release immutability is unavailable on this repository. Detection, not prevention. |
 | **T5** | A binary is built elsewhere and published as if from CI | Provenance attestation names the workflow and commit; the `release` environment requires human approval before publish | A leaked token cannot publish without the approval, but an approved publish of a bad build is still a publish. |
@@ -140,18 +209,41 @@ Two things follow from the table, and they are the honest summary:
 
 ---
 
-## 6. Dependency review is not enabled
+## 6. Dependency review: configured, with no audits yet
 
 `cargo-vet` is the control that catches a compromised dependency before an
 advisory names it — it is your own review of what the code does, rather than a
 database lookup.
 
-It is **not initialised on this repository**. `cargo vet init` is interactive and
-writes a ledger of audit entries; writing that ledger by hand would mean claiming
-reviews nobody performed, which is worse than having no ledger at all.
+It is **configured and enforced in CI**. `cargo vet --locked` runs on every gate
+and fails when a dependency has neither an audit nor an exemption.
 
-The gate prints `cargo vet: NOT CONFIGURED` on every run rather than skipping
-silently. `docs/supply-chain-vetting.md` records what enabling it takes.
+**But it currently reviews nothing.** The state, measured:
+
+```
+$ cargo vet --locked
+Vetting Succeeded (314 exempted)
+$ wc -l supply-chain/audits.toml
+```
+
+`supply-chain/config.toml` carries **314 exemptions** — one per crate in the
+tree, each marked `safe-to-deploy` — and `supply-chain/audits.toml` is **empty**.
+An exemption is a record that nobody has reviewed the crate yet. It is the honest
+starting state, not a review.
+
+What that means for you:
+
+- **A new dependency fails the gate.** That is the control working: adding a crate
+  requires someone to write an exemption or an audit, which is a decision made in
+  a commit rather than a silent pull.
+- **The existing 314 crates are not reviewed.** An exemption says "not yet", and
+  the count is the size of the backlog, not a measure of coverage.
+
+To reduce the backlog, `cargo vet suggest` lists the cheapest reviews to do
+first — usually the crates with the most dependents. Each review replaces an
+exemption with an audit entry that says what was checked.
+
+`docs/supply-chain-vetting.md` records the mechanics.
 
 ---
 

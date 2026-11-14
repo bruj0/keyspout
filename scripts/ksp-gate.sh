@@ -329,6 +329,17 @@ ci_part() {
         if ! cargo vet --locked; then
             failed+=("cargo-vet")
         fi
+        # The exemption count is the size of the review backlog, not a measure of
+        # coverage. Printing it means a reader sees how much is unreviewed rather
+        # than reading "Vetting Succeeded" as "everything was reviewed".
+        exempted=$(grep -c '^\[\[exemptions\.' supply-chain/config.toml || true)
+        audited=$(grep -c '^\[\[audits\.' supply-chain/audits.toml 2>/dev/null || true)
+        echo "cargo vet: ${exempted} exempted (not reviewed), ${audited} audited"
+        if [ "${audited:-0}" -eq 0 ]; then
+            echo "           Every dependency is exempted, so the gate enforces"
+            echo "           'a new crate needs a decision' and nothing more."
+            echo "           docs/supply-chain-vetting.md says how to reduce it."
+        fi
     else
         echo "cargo vet: NOT CONFIGURED — no supply-chain/config.toml."
         echo "           Dependency review is not running. See"
