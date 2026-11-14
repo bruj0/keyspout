@@ -10,6 +10,20 @@
 #   dist init --yes
 #   dist plan            # what a release would do, without doing it
 
+# Which crate `dist` builds, and what the release is called.
+#
+# `dist` refuses a config with neither `[workspace]` nor `[package]`:
+#
+#   × We encountered an issue trying to read your workspace
+#   ╰─▶ dist-workspace.toml must have one of [workspace] or [package]
+#
+# The section is required even though the real `[workspace]` is in `Cargo.toml`:
+# this file describes the *release*, and `dist` reads the members from there. No
+# member is listed, so `dist` builds the workspace's default members — which is
+# `ksp-cli`, the only crate with a `[[bin]]`.
+[workspace]
+members = ["cargo:crates/ksp-cli"]
+
 [dist]
 # The dist version CI pins. A newer local `dist` warns rather than silently
 # producing a different workflow.
@@ -34,6 +48,11 @@ installers = ["shell", "homebrew"]
 # has a default branch. The token that pushes to it cannot be `GITHUB_TOKEN`:
 # the default token cannot write to a different repository.
 tap = "bruj0/homebrew-tap"
+
+# Which publishing jobs `dist` generates. Without this line `dist` warns
+# "A Homebrew tap was specified but the Homebrew publish job is disabled" and
+# emits no formula job at all, so the tap is configured and never written to.
+publish-jobs = ["homebrew"]
 
 # The six targets from the plan §5.1.
 #

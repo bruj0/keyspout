@@ -15,6 +15,13 @@ repository.workspace = true
 [lints]
 workspace = true
 
+# `dist` skips a package with `publish = false`, which this workspace sets for
+# every crate because none of them goes to crates.io. Without this line `dist
+# plan` refuses the release with "This workspace doesn't have anything for dist
+# to Release", and the release job never runs.
+[package.metadata.dist]
+dist = true
+
 [[bin]]
 name = "ksp"
 path = "src/main.rs"
