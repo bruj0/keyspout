@@ -3,7 +3,69 @@
 How a Keyspout release is built, how you can check that the binary you downloaded
 came from the source you can read, and what that check does **not** prove.
 
-Read the third section before you rely on the first two.
+Read §3 before you rely on §1 and §2.
+
+---
+
+## Verify a release — all the commands, in one place
+
+Copy these in order. Each one is explained below, and each is a claim you can
+check rather than take on trust.
+
+```bash
+# --- 1. Download an artifact and its checksum list -------------------------
+gh release download v0.1.0 --repo bruj0/keyspout \
+  --pattern 'ksp-x86_64-unknown-linux-musl.tar.xz'
+gh release download v0.1.0 --repo bruj0/keyspout --pattern 'sha256.sum'
+
+# --- 2. Prove which commit and workflow built it --------------------------
+gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
+  --repo bruj0/keyspout \
+  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+
+# --- 3. Check the bytes against the published checksums -------------------
+sha256sum --check sha256.sum --ignore-missing
+
+# --- 4. Confirm the signature is keyless Sigstore, not a private key ------
+gh attestation trusted-root | head -1 | jq '{
+  mediaType,
+  tlogs: [.tlogs[].baseUrl],
+  cas: [.certificateAuthorities[].uri]
+}'
+# expect: rekor.sigstore.dev + fulcio.sigstore.dev
+
+# --- 5. Read the certificate identity ------------------------------------
+gh attestation download ./ksp-x86_64-unknown-linux-musl.tar.xz \
+  --repo bruj0/keyspout
+jq -r 'select(.verificationResult) |
+       .verificationResult.signature.certificate |
+       {issuer, subject: .subjectAlternativeName}' ./*.jsonl
+# expect: issuer https://token.actions.githubusercontent.com
+#         subject .../bruj0/keyspout/.github/workflows/release.yml
+
+# --- 6. Verify offline, without GitHub --------------------------------
+gh attestation verify ./ksp-x86_64-unknown-linux-musl.tar.xz \
+  --bundle ./*.jsonl \
+  --repo bruj0/keyspout \
+  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+
+# --- 7. Read what is inside the binary --------------------------------
+gh release download v0.1.0 --repo bruj0/keyspout --pattern '*sbom.cdx.json'
+jq '.components[] | {name, version}' ksp-*-sbom.cdx.json | head
+
+# --- 8. Check the transparency log yourself ---------------------------
+# Open https://search.sigstore.dev and search for the artifact's sha256.
+# A signature that is not in Rekor is not a signature this project produced.
+```
+
+**What this proves:** the binary was built by that workflow, in that repository,
+from a specific commit, and the bytes you hold are the bytes that build produced.
+
+**What it does not prove:** that the commit is safe. A backdoor merged to `main`
+produces a valid attestation. §3 is the section to read.
+
+Steps 1–3 are explained in §1, step 4–6 in §1.1, step 7 in §4, and step 8 in
+§1.1. The rest of this document is the reasoning behind them.
 
 ---
 
@@ -152,41 +214,101 @@ new bytes fail step 2 — but not impossible.
 
 ---
 
-## 4. The vulnerability scanner, and its blind spot
+## 4. The vulnerability scanners, and the current state
 
-Two scanners run on every release.
+Three checks run on every release, and the state they report today is **zero
+vulnerabilities**.
 
-`cargo audit` reads `Cargo.lock` against the RustSec advisory database. It is
-fast and it runs on every commit.
+| Check | What it reads | Current result |
+|---|---|---|
+| `cargo audit` | `Cargo.lock` against RustSec | **0 vulnerabilities**, 1 advisory-class warning |
+| OSV-Scanner | the same lockfile against OSV.dev (RustSec + GitHub Advisory + NVD) | **0 vulnerabilities**, 1 advisory-class note |
+| `cargo vet` | the review ledger | 3 audited, 311 exempted |
 
-`OSV-Scanner` reads the same lockfile against a wider advisory set (OSV.dev
-aggregates RustSec, the GitHub Advisory Database and NVD) and gates on severity.
-The two disagree about what counts as a vulnerability, which is why both run.
+### 4.1 The one remaining finding, and why it is not a vulnerability
 
-That disagreement found a real one. `cargo audit` classified `rustix` 1.1.5
-`RUSTSEC-2026-0486` as an *unsound* warning and exited 0; OSV-Scanner reported it
-as a vulnerability. It was real — the xattr functions marked unwritten bytes as
-initialised when given a zero-length buffer — and it is **fixed**: the tree is on
-`rustix` 1.1.6, the version the advisory names.
+```
+Crate:     proc-macro-error2
+Version:   2.0.1
+Warning:   unmaintained
+ID:        RUSTSEC-2026-0173
+Title:     proc-macro-error2 is unmaintained
+```
 
-**The blind spot, stated plainly.** OSV-Scanner has an experimental Rust
-call-graph analysis that is meant to answer "does this vulnerable function
-actually reach our code?". **On this repository it does not work**: it cannot
-build the workspace, so every finding arrives with no analysis conclusion.
+`unmaintained` is an advisory **class**, not a severity. It says nobody is
+patching the crate; it does not say the crate has a flaw. RustSec records it as a
+warning and `cargo audit` exits 0 on it.
 
-The gate therefore treats **a finding with no analysis conclusion as
-reachable**. That is the conservative direction, and it means:
+It also cannot be removed. It is a transitive dependency of the HPKE
+implementation the record format depends on:
+
+```
+proc-macro-error2 v2.0.1
+└── hax-lib-macros v0.3.7 (proc-macro)
+    └── hax-lib v0.3.7 → core-models → libcrux-intrinsics
+        → libcrux-sha3 → hpke-rs 0.8.0 → ksp-record
+```
+
+**And it does not reach you.** It is a proc-macro: it runs at compile time and
+produces no code in the output. Measured against the release binary:
+
+```bash
+$ strings target/release/ksp | grep -c 'proc-macro-error'
+0
+$ strings target/release/ksp | grep -c 'hax'
+0
+```
+
+So the honest statement is: **no vulnerability reaches a user**, and one
+compile-time-only dependency is unmaintained. The gate reports it and does not
+fail, which is the correct treatment — failing on it would make an unmaintained
+build tool as urgent as a remote code execution, and the first person to hit that
+adds an ignore rather than a fix.
+
+### 4.2 Two findings this pipeline already fixed
+
+The scanners are not decoration. Both of these were found and closed here:
+
+| Advisory | What it was | Fix |
+|---|---|---|
+| `RUSTSEC-2026-0486` (`rustix` 1.1.5) | xattr functions marked unwritten bytes as initialised when given a zero-length buffer. `cargo audit` called it an *unsound* **warning** and exited 0; OSV-Scanner called it a vulnerability. | upgraded to `rustix` 1.1.6, the version the advisory names |
+| `crypto-bigint` 0.7.6 **yanked** | the version was withdrawn upstream | upgraded to `crypto-bigint` 0.7.11 |
+
+The first is the argument for running two scanners: the tool that was already in
+the gate classified a real defect as a warning and passed it.
+
+### 4.3 The blind spot, stated plainly
+
+OSV-Scanner has an experimental Rust call-graph analysis meant to answer "does
+this vulnerable function actually reach our code?". **On this repository it does
+not work**: it cannot build the workspace, so every finding arrives with no
+analysis conclusion.
+
+The gate therefore treats **a finding with no analysis conclusion as reachable**.
+That is the conservative direction, and it means:
 
 - what the gate buys today is a **severity-filtered presence check** over a wider
   advisory set than `cargo audit`;
-- it does **not** buy reachability analysis, and a green gate does not mean the
-  vulnerable functions are unreachable;
-- an advisory class that is not a code weakness — `unmaintained`, `yanked` — is
-  reported and does not fail the gate. `unsound` **does** fail it, because it is
-  a real code weakness.
+- it does **not** buy reachability analysis. A green gate does not mean the
+  vulnerable functions are unreachable — it means no advisory at or above `high`
+  names a crate in the lockfile;
+- `unsound` **does** fail the gate, because it is a real code weakness.
+  `unmaintained` and `yanked` are reported and do not.
 
 If you are relying on the scanner to tell you a vulnerable dependency is
 unreachable: it cannot, yet.
+
+### 4.4 Checking this yourself
+
+Every claim above is reproducible from a clone:
+
+```bash
+cargo audit                       # RustSec
+cargo vet --locked                # the review ledger
+osv-scanner scan source --call-analysis=rust --no-call-analysis=go \
+  --all-vulns --format=json --output-file=/tmp/osv.json .
+python3 scripts/osv-gate.py /tmp/osv.json --fail-on high
+```
 
 ---
 
@@ -195,7 +317,7 @@ unreachable: it cannot, yet.
 | # | Attack | Control | Residual risk |
 |---|---|---|---|
 | **T1** | A maintainer commits a backdoor | Code review | **Not covered by any tool.** The attestation proves the binary matches the commit; it cannot prove the commit is honest. |
-| **T2** | A dependency is compromised | `Cargo.lock` pinning, `cargo audit`, OSV-Scanner, and `cargo-vet` (§6) | A compromised crate that no advisory names yet ships until someone reviews it. `cargo-vet` is the control for that, and it is configured but has **no audits yet** — see §6. |
+| **T2** | A dependency is compromised | `Cargo.lock` pinning, `cargo audit`, OSV-Scanner, and `cargo-vet` (§6) | A compromised crate that no advisory names yet ships until someone reviews it. `cargo-vet` is the control for that: 3 crates are audited, 311 are exempted — see §6. |
 | **T3** | The build workflow is modified | Every action pinned to a commit SHA; Dependabot bumps them as reviewable commits; the gate runs before any build | Someone with write access to `.github/` can still change it. The change is visible in the repository history. |
 | **T4** | A published binary is replaced | Attestation makes it detectable | Release immutability is unavailable on this repository. Detection, not prevention. |
 | **T5** | A binary is built elsewhere and published as if from CI | Provenance attestation names the workflow and commit; the `release` environment requires human approval before publish | A leaked token cannot publish without the approval, but an approved publish of a bad build is still a publish. |
@@ -209,7 +331,7 @@ Two things follow from the table, and they are the honest summary:
 
 ---
 
-## 6. Dependency review: configured, with no audits yet
+## 6. Dependency review: 3 audited, 311 exempted
 
 `cargo-vet` is the control that catches a compromised dependency before an
 advisory names it — it is your own review of what the code does, rather than a
@@ -218,32 +340,36 @@ database lookup.
 It is **configured and enforced in CI**. `cargo vet --locked` runs on every gate
 and fails when a dependency has neither an audit nor an exemption.
 
-**But it currently reviews nothing.** The state, measured:
+The state, measured:
 
 ```
 $ cargo vet --locked
-Vetting Succeeded (314 exempted)
-$ wc -l supply-chain/audits.toml
+Vetting Succeeded (3 fully audited, 311 exempted)
 ```
 
-`supply-chain/config.toml` carries **314 exemptions** — one per crate in the
-tree, each marked `safe-to-deploy` — and `supply-chain/audits.toml` is **empty**.
-An exemption is a record that nobody has reviewed the crate yet. It is the honest
-starting state, not a review.
+Read those two numbers together. **3 audited** comes from Google's Chromium audit
+set, which is trusted via `supply-chain/imports.lock` and covers `core-foundation-sys`,
+`nom` and `num-traits`. **311 exempted** is the backlog: an exemption records that
+nobody has reviewed the crate yet.
 
-What that means for you:
+An exemption is not a pass. It is a recorded decision to defer, and the gate still
+does something useful with it:
 
-- **A new dependency fails the gate.** That is the control working: adding a crate
-  requires someone to write an exemption or an audit, which is a decision made in
-  a commit rather than a silent pull.
-- **The existing 314 crates are not reviewed.** An exemption says "not yet", and
-  the count is the size of the backlog, not a measure of coverage.
+- **A new dependency fails the gate.** Adding a crate requires someone to write an
+  exemption or an audit, which is a decision made in a commit rather than a silent
+  pull.
+- **A version bump of an exempted crate also fails**, because the exemption is
+  pinned to a version. This happened twice during this hardening work — `rustix`
+  1.1.5 → 1.1.6 and `crypto-bigint` 0.7.6 → 0.7.11 — and both times the gate
+  refused the upgrade until the exemption was moved.
 
-To reduce the backlog, `cargo vet suggest` lists the cheapest reviews to do
-first — usually the crates with the most dependents. Each review replaces an
-exemption with an audit entry that says what was checked.
+What it does **not** do is review 311 crates. That count is the size of the
+backlog, not a measure of coverage.
 
-`docs/supply-chain-vetting.md` records the mechanics.
+To reduce it, `cargo vet suggest` lists the cheapest reviews first — usually the
+crates with the most dependents. Each review replaces an exemption with an audit
+entry that says what was checked. `docs/supply-chain-vetting.md` records the
+mechanics.
 
 ---
 

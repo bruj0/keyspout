@@ -4,6 +4,9 @@
 [cargo-vet]
 version = "0.10"
 
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
 [[exemptions.aead]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
@@ -264,10 +267,6 @@ criteria = "safe-to-deploy"
 version = "0.10.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.core-foundation-sys]]
-version = "0.8.7"
-criteria = "safe-to-deploy"
-
 [[exemptions.core-models]]
 version = "0.0.7"
 criteria = "safe-to-deploy"
@@ -297,7 +296,7 @@ version = "0.2.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.crypto-bigint]]
-version = "0.7.6"
+version = "0.7.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.crypto-common]]
@@ -313,7 +312,7 @@ version = "0.10.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.ctutils]]
-version = "0.4.5"
+version = "0.4.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.curve25519-dalek]]
@@ -692,10 +691,6 @@ criteria = "safe-to-deploy"
 version = "1.2.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.nom]]
-version = "7.1.3"
-criteria = "safe-to-deploy"
-
 [[exemptions.num-bigint]]
 version = "0.4.8"
 criteria = "safe-to-deploy"
@@ -710,10 +705,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.num-integer]]
 version = "0.1.47"
-criteria = "safe-to-deploy"
-
-[[exemptions.num-traits]]
-version = "0.2.19"
 criteria = "safe-to-deploy"
 
 [[exemptions.once_cell]]

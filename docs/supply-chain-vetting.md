@@ -72,6 +72,29 @@ one means you accept their reviewers rather than doing the review yourself. That
 is a real decision with a real trade-off, and it is worth stating in the commit
 that makes it rather than being assumed.
 
+## A trap: `cargo vet` can write an audit nobody performed
+
+When a version bump is small, `cargo vet --locked` may **auto-record a delta
+audit** attributed to the repository owner:
+
+```toml
+[[audits.ctutils]]
+who = "Rodrigo DL <ramakandra@gmail.com>"
+criteria = "safe-to-deploy"
+delta = "0.4.5 -> 0.4.8"
+```
+
+That happened here on 2026-11-14, when `crypto-bigint` moved to 0.7.11 and pulled
+`ctutils` 0.4.8 with it. Nobody read the diff. The entry says someone did.
+
+It is removed, and the crate is exempted instead. An exemption is honest — it
+records that the review has not happened. **Check `audits.toml` after any
+dependency bump**, and treat an entry you did not write as a claim to delete
+rather than a convenience to keep.
+
+This is the one place where the tool's convenience works against the property the
+ledger exists to provide.
+
 ## The files
 
 | File | Role |
