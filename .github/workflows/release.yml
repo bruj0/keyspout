@@ -60,20 +60,43 @@ jobs:
           rustup default 1.99.1
 
       - name: Install build dependencies
+        # A timeout on this step, not only on the job.
+        #
+        # `apt-get update` against the Ubuntu archive has hung for 25+ minutes on
+        # this runner image, and with no step timeout the job sat there until its
+        # 90-minute limit. A hung step and a slow build look identical from
+        # outside, and the log blob is not readable while a step is running, so
+        # the only symptom was a gate that never finished.
+        #
+        # `Acquire::Retries` and the per-acquire timeouts turn a stalled mirror
+        # into a retry or a failure rather than an indefinite wait. Ten minutes is
+        # generous for an install that normally takes thirty seconds.
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30
           sudo apt-get install -y --no-install-recommends \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
             cmake make g++ perl pkg-config libssl-dev \
             valkey-server unzip curl
 
       - name: Install cargo-audit and cargo-vet
         # `cargo vet` runs inside the gate, so it has to be here before the gate
         # step or the gate reports NOT CONFIGURED and reviews nothing.
+        #
+        # Both compile from source, so a stalled crates.io fetch or a wedged
+        # build script would otherwise sit here until the job's 90-minute limit.
+        timeout-minutes: 20
         run: |
           cargo install cargo-audit --locked
           cargo install cargo-vet --locked
 
       - name: Install OSV-Scanner
+        # A download with no timeout is a hang that looks like a slow network.
+        timeout-minutes: 5
         # Pinned by version, and the downloaded binary is checked against the
         # release's own checksum before it is used. A scanner fetched over the
         # network without a check is a supply-chain hole in the step that exists
@@ -111,6 +134,8 @@ jobs:
           osv-scanner --version
 
       - name: Start RustFS
+        # The wait loop below is bounded, but the download above it is not.
+        timeout-minutes: 5
         # `ksp-backend:s3_store` needs an S3 server at 127.0.0.1:9000. The VM
         # installs the same release binary; a runner does the same.
         #
@@ -143,6 +168,7 @@ jobs:
           echo "rustfs did not start; log follows"; cat /tmp/rustfs.log; exit 1
 
       - name: Install the AWS CLI
+        timeout-minutes: 5
         # Ubuntu 24.04 has no `awscli` package (`apt-cache policy awscli` reports
         # no candidate), so the official v2 installer is used. It is a single
         # zip with no runtime dependencies.
