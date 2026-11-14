@@ -841,6 +841,20 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     steps:
+      # `dist` is not on the runner image, and this job had no install step, so it
+      # failed with
+      #
+      #   line 1: dist: command not found
+      #   Process completed with exit code 127
+      #
+      # It was the last job to run and the only one that never installed the tool
+      # it calls. The version matches the `cargo-dist-version` pinned in
+      # `dist-workspace.toml`, so the announce step cannot disagree with the plan
+      # that produced the release.
+      - name: Install dist
+        shell: bash
+        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/cargo-dist-installer.sh | sh"
+
       - name: Announce
         run: |
           dist host ${{ needs.plan.outputs.tag-flag }} --allow-dirty --steps=announce
