@@ -668,15 +668,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ldd "$KSP_BIN" 2>&1 | grep -q "not a dynamic executable"; then
-            echo "statically linked"
-          elif ldd "$KSP_BIN" 2>&1 | grep -q "Not a valid dynamic program"; then
-            echo "statically linked (musl ldd)"
-          else
-            echo "::error::the musl build links a dynamic loader"
-            ldd "$KSP_BIN" || true
+          # The property is "no shared-library dependencies", tested directly.
+          #
+          # This used to grep `ldd` output for one of two phrases, and the musl
+          # runner printed a third — `statically linked` — so a correctly static
+          # binary failed the check on both musl targets. Enumerating another
+          # program's wording is how that happens: `ldd` also exits non-zero for
+          # a static binary, so `set -e` and the pipeline both had to be reasoned
+          # about at once.
+          #
+          # A static ELF has no `NEEDED` entries in its dynamic section. Measured
+          # both ways in the Linux VM: a `gcc -static` binary reports 0, and
+          # `/usr/bin/readelf` reports 6.
+          #
+          # `readelf` comes from binutils, which a minimal runner image may not
+          # carry. It is installed here rather than assumed, because a missing tool
+          # would make `grep -c` count zero and the check would pass while testing
+          # nothing.
+          if ! command -v readelf > /dev/null 2>&1; then
+            sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+            sudo apt-get install -y --no-install-recommends binutils
+          fi
+          needed=$(readelf -d "$KSP_BIN" 2>/dev/null | grep -c NEEDED || true)
+          if [ "$needed" -ne 0 ]; then
+            echo "::error::the musl build links $needed shared libraries"
+            readelf -d "$KSP_BIN" | grep NEEDED || true
             exit 1
           fi
+          echo "no shared-library dependencies: this binary is static"
 
   host:
     needs:
