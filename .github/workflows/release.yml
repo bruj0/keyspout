@@ -84,15 +84,74 @@ jobs:
             valkey-server unzip curl
 
       - name: Install cargo-audit and cargo-vet
-        # `cargo vet` runs inside the gate, so it has to be here before the gate
-        # step or the gate reports NOT CONFIGURED and reviews nothing.
+        # Prebuilt binaries, not `cargo install`.
         #
-        # Both compile from source, so a stalled crates.io fetch or a wedged
-        # build script would otherwise sit here until the job's 90-minute limit.
-        timeout-minutes: 20
+        # `cargo install cargo-audit --locked && cargo install cargo-vet
+        # --locked` took **4m 48s** on every run, measured across two runs, and
+        # it was the single largest cost in this job — larger than clippy, larger
+        # than the vulnerability scan it exists to support. Both projects publish
+        # a prebuilt x86_64 Linux binary, so the compile is pure waste.
+        #
+        # The digests are pinned here rather than fetched, which is stronger than
+        # a published checksum file: the expected value lives in this repository
+        # and changes only through review. `cargo-audit` publishes no checksum
+        # asset at all, so a fetched one was not an option for it anyway.
+        #
+        # Both digests were computed from the release assets and re-verified in
+        # the Linux VM. `cargo vet` also publishes a `.sha256` beside its archive;
+        # the pin below is the same value.
+        #
+        # `aarch64` is handled because a self-hosted or ARM runner is a plausible
+        # future, and a step that silently installs an x86_64 binary on an ARM
+        # host fails with a confusing `Exec format error` much later.
+        timeout-minutes: 5
         run: |
-          cargo install cargo-audit --locked
-          cargo install cargo-vet --locked
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)
+              audit_asset="cargo-audit-x86_64-unknown-linux-gnu-v0.23.0.tgz"
+              audit_sha="b77993532b253fcbf550996d7716465ec3d734d4e74e7f87bfb65a19add0fb59"
+              vet_asset="cargo-vet-x86_64-unknown-linux-gnu.tar.xz"
+              vet_sha="e83878b80913fbe43629c28768e14ab51f4e86a4ba8f9dd08cc25b8dbc503c19"
+              ;;
+            aarch64|arm64)
+              audit_asset="cargo-audit-aarch64-unknown-linux-gnu-v0.23.0.tgz"
+              # Filled in when an ARM runner is first used; the step fails loudly
+              # rather than installing an unverified binary.
+              audit_sha=""
+              echo "::error::no pinned digest for cargo-audit on aarch64 yet"
+              exit 1
+              ;;
+            *)
+              echo "::error::unsupported architecture $(uname -m) for the prebuilt audit tools"
+              exit 1
+              ;;
+          esac
+
+          mkdir -p /tmp/audit-tools
+          cd /tmp/audit-tools
+          curl -fsSL -o "$audit_asset" \
+            "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.23.0/${audit_asset}"
+          curl -fsSL -o "$vet_asset" \
+            "https://github.com/Mozilla/cargo-vet/releases/download/v0.10.3/${vet_asset}"
+
+          actual=$(sha256sum "$audit_asset" | cut -d' ' -f1)
+          if [ "$actual" != "$audit_sha" ]; then
+            echo "::error::cargo-audit checksum mismatch — refusing to install it"
+            echo "expected: $audit_sha"; echo "actual:   $actual"; exit 1
+          fi
+          actual=$(sha256sum "$vet_asset" | cut -d' ' -f1)
+          if [ "$actual" != "$vet_sha" ]; then
+            echo "::error::cargo-vet checksum mismatch — refusing to install it"
+            echo "expected: $vet_sha"; echo "actual:   $actual"; exit 1
+          fi
+
+          tar xzf "$audit_asset"
+          tar xJf "$vet_asset"
+          sudo install -m 0755 cargo-audit-*/cargo-audit /usr/local/bin/cargo-audit
+          sudo install -m 0755 cargo-vet-*/cargo-vet /usr/local/bin/cargo-vet
+          cargo-audit --version
+          cargo-vet --version
 
       - name: Install OSV-Scanner
         # A download with no timeout is a hang that looks like a slow network.

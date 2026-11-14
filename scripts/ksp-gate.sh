@@ -410,30 +410,48 @@ ci_part() {
         failed+=("osv-scanner:missing")
     fi
 
+    # One `cargo test` per phase, not one per target.
+    #
+    # The loop form ran 67 separate `cargo test` invocations and took 6m32s in
+    # CI, while the tests themselves execute in about 90 seconds. The other five
+    # minutes were cargo's own startup and fingerprint check, paid 67 times.
+    #
+    # `--no-fail-fast` is what makes this safe: it keeps going after a failing
+    # binary and reports every failure, which is the property the loop was
+    # written to get. Proven by breaking one test deliberately — the batched run
+    # named the test, the file, the line and the target, and still ran the other
+    # target:
+    #
+    #   test deliberate_batch_probe ... FAILED
+    #   panicked at crates/ksp-types/tests/fixtures.rs:183:31
+    #   error: 1 target failed:
+    #
+    # The trade-off, stated so it is not discovered later: `failed+=("$crate:lib")`
+    # used to record one entry per failing target and the summary printed them
+    # all. A batched run exits once, so the summary records the phase rather than
+    # each target inside it. The per-target detail is still in the log, in the
+    # `error: N target failed:` block cargo prints.
     step "ci: tests: unit targets (--no-fail-fast)"
-    for crate_dir in crates/*/; do
-        crate="$(basename "$crate_dir")"
-        if ! cargo test -p "$crate" --lib --bins --no-fail-fast; then
-            failed+=("$crate:lib")
-        fi
-    done
+    if ! cargo test --workspace --lib --bins --no-fail-fast; then
+        failed+=("workspace:unit")
+    fi
 
     step "ci: tests: doc targets (--no-fail-fast)"
-    for crate_dir in crates/*/; do
-        crate="$(basename "$crate_dir")"
-        if ! cargo test -p "$crate" --doc --no-fail-fast; then
-            failed+=("$crate:doc")
-        fi
-    done
+    if ! cargo test --workspace --doc --no-fail-fast; then
+        failed+=("workspace:doc")
+    fi
 
     # Every integration target, including the ones the host part skips. A target
     # named in VM_TARGETS whose file has vanished fails here rather than being
     # skipped, for the same reason the vm part checks it.
     #
-    # `ksp-cli:principals` is excluded from this loop on purpose: it asserts
-    # `geteuid() == 0` and refuses to run otherwise, so running it here would
-    # fail every time. It runs once, under sudo, in the step below.
+    # `ksp-cli:principals` is excluded on purpose: it asserts `geteuid() == 0`
+    # and refuses to run otherwise, so running it here would fail every time. It
+    # runs once, under sudo, in the step below. The other VM targets are excluded
+    # because they need a Linux mechanism this host may not have; the `vm` and
+    # `ci` parts run them where the mechanism exists.
     step "ci: tests: integration targets (--no-fail-fast)"
+    local -a integration_args=()
     while IFS= read -r pair; do
         if [ "$pair" = "ksp-cli:principals" ]; then
             continue
@@ -444,12 +462,17 @@ ci_part() {
                 echo "       Move it in scripts/ksp-gate.sh rather than letting it vanish." >&2
                 exit 1
             fi
+            # No `part` check here: this function *is* the `ci` part, which runs
+            # on a Linux runner where every VM mechanism exists. The `host` part
+            # is the one that skips them, and it has its own loop.
         fi
-        printf '\n-- %s\n' "$pair"
-        if ! run_target "$pair"; then
-            failed+=("$pair")
-        fi
+        integration_args+=(-p "${pair%%:*}" --test "${pair##*:}")
     done < <(all_targets)
+    if [ "${#integration_args[@]}" -gt 0 ]; then
+        if ! cargo test "${integration_args[@]}" --no-fail-fast; then
+            failed+=("workspace:integration")
+        fi
+    fi
 
     # The two-account boundary, under sudo with its own target directory. A
     # root-owned `target/` breaks every later non-root build, which is why the
