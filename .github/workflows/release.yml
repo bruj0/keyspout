@@ -233,8 +233,29 @@ jobs:
           path: ~/.cargo/bin/dist
 
       - id: plan
+        # `--allow-dirty` is required, not a convenience.
+        #
+        # `dist` compares the committed workflow against what `dist init` would
+        # generate and refuses to plan when they differ:
+        #
+        #   × .github/workflows/release.yml has out of date contents and needs to
+        #     be regenerated ... help: ('allow-dirty' in Cargo.toml to ignore out
+        #     of date contents)
+        #
+        # They differ on purpose. This workflow is hand-edited with the hardening
+        # work — pinned action SHAs, path remapping, per-target SBOMs, build
+        # provenance attestations, a separate `packages.yml` for `.deb` and
+        # `.rpm` — none of which `dist init` emits. Regenerating it would discard
+        # every one of those controls, and the release would publish unattested
+        # binaries from unpinned actions.
+        #
+        # The trade-off is real and worth stating: `dist` will not warn again when
+        # its own generated portion drifts from the pinned `cargo-dist-version`.
+        # The workflow's structure is therefore reviewed by hand, and the version
+        # is pinned in `dist-workspace.toml` so a local `dist` warns rather than
+        # silently producing something different.
         run: |
-          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --allow-dirty --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -341,7 +362,7 @@ jobs:
 
       - name: Build artifacts
         run: |
-          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
 
       - name: Generate an SBOM per target
@@ -427,7 +448,7 @@ jobs:
       - id: cargo-dist
         shell: bash
         run: |
-          dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
+          dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
           dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
