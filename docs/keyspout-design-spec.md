@@ -27,7 +27,8 @@ extended with the feature set specified by the operator on 2026-10-18.
 subject: the feature set in §3, keys, tokens and storage in §4, the memory
 barrier in §4A, the threat model in §5, and the acceptance inventory in
 §10. The sections in this file are §1–§11, §13, §14 and §15.
-**There is no §12**, and the gap is not a sign that one was lost.
+**There is no §12**, and the gap is not a sign that one was lost. The narrative
+those rules replaced has been removed; this file is the whole of the design.
 
 ---
 
@@ -54,14 +55,13 @@ Three rules keep these markers honest:
 2. **A marker never changes a normative rule.** Each normative rule lives in the
    section that owns its subject, and that section wins over any historical text
    wherever the two disagree.
-3. **A marker is dated.** The snapshot below was taken on **2026-10-31**, after
-   features `001-keyspout-mvp` (21 work packages),
-   `002-file-os-split-sweeper` (13 work packages) and
-   `004-os-capability-adapters` (8 work packages) merged into `main`.
+3. **A marker is dated.** The snapshot below was taken on **2026-11-14**, after
+   features `001`–`009` merged into `main`.
 
-### Implementation snapshot — 2026-10-31
+### Implementation snapshot — 2026-11-14
 
-Verified against the merged tree at commit `ceb15fe` on `main`.
+Verified against the merged tree on `main`. Features `001`–`009` are implemented;
+`003` is research only and shipped no code.
 
 | Area | Marker | Evidence |
 |---|---|---|
@@ -79,7 +79,7 @@ Verified against the merged tree at commit `ceb15fe` on `main`.
 | Sealed delivery artifact, recipient sealing, issuer signature | **[Implemented]** | `crates/ksp-identity/src/delivery.rs`, `header.rs`, `signature.rs` |
 | Proof of possession, deterministic preimage, time buckets, compliant run path | **[Implemented]** | `crates/ksp-identity/src/pop.rs`, `run.rs`; `crates/ksp-cli/src/run_gate.rs` |
 | Mint sequence: admission, arm-before-publication, fingerprint refusal | **[Implemented]** | `crates/ksp-identity/src/mint.rs`; `crates/ksp-cli/src/token.rs` |
-| Issuance ledger: one row per minted lease, appended by `publish_recorded` so `token list` and `token revoke` have a subject. On `file`, admission refuses every lease, so `token mint` and `secret share` are unreachable from the CLI on this host | **[Implemented]** | `crates/ksp-identity/src/issuance.rs`, `mint.rs`; `crates/ksp-cli/src/token.rs`; the refusal is `crates/ksp-backend/src/admission.rs` |
+| Issuance ledger: one row per minted lease, appended by `publish_recorded` so `token list` and `token revoke` have a subject. On `file`, a lease is admitted only once a sweep proof exists, so `token mint` and `secret share` refuse until the schedule has run | **[Implemented]** | `crates/ksp-identity/src/issuance.rs`, `mint.rs`; `crates/ksp-cli/src/token.rs`; the refusal is `crates/ksp-backend/src/admission.rs` |
 | Deletion intent, actor report, absence observation, acknowledgement journal | **[Implemented]** | `crates/ksp-deletion/src/` |
 | Consume ordering, delete-after-read, honest outcome | **[Implemented]** | `crates/ksp-deletion/src/consume.rs`; `crates/ksp-cli/src/consume.rs` |
 | Per-writer audit chain, append-before-effect, chain verification | **[Implemented]** | `crates/ksp-deletion/src/audit.rs`; `crates/ksp-cli/src/audit_verify.rs` |
@@ -1282,10 +1282,11 @@ in-memory key holding at all sets `lock_timeout` to 0 and accepts retyping.
 
 ---
 
-### 3.7 The lease model — moved to the history document
+### 3.7 The lease model
 
-The earlier lease argument, its diagram and its exact-erasure, deadline-bound
-and single-use claims were withdrawn. **The current contract is §4.5.**
+The lease contract is §4.5. An earlier argument for exact erasure, a
+deadline-bound deletion and single use was withdrawn by the 2026-10-21
+revision; none of those claims is a rule.
 
 ### 3.7.2 Why the holder-with-everything case is impossible, not merely unsolved
 > **Status: [Design only] — an argument, not a control.** This section reasons
@@ -2310,8 +2311,8 @@ cannot sign as Alice, an agent or a collector merely because its native timer
 expired. Neither intent nor absence alone proves deletion.
 
 
-The withdrawn requirement table is not reproduced here. **The current
-contract is this section.**
+A requirement table that named a withdrawal deadline was withdrawn by the
+2026-10-21 revision. **The current contract is this section.**
 
 ### 4A.1 The problem, stated precisely
 

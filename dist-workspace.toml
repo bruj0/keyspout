@@ -1,0 +1,76 @@
+# Release configuration for `cargo-dist` (the `dist` binary).
+#
+# `dist init` reads this file and generates `.github/workflows/release.yml` from
+# it. The generated workflow is committed, but it is a build product: hand edits
+# to it are lost on the next `dist init`. Anything that must survive a
+# regeneration belongs here, or in a separate workflow (see `packages.yml` for
+# the `.deb` and `.rpm` stage that `dist` cannot build).
+#
+# Regenerate with:
+#   dist init --yes
+#   dist plan            # what a release would do, without doing it
+
+[dist]
+# The dist version CI pins. A newer local `dist` warns rather than silently
+# producing a different workflow.
+cargo-dist-version = "0.34.0"
+
+# Where the release runs. The downstream repository is the one whose visibility
+# flips and whose release assets users download.
+ci = "github"
+hosting = "github"
+
+# The installers `dist` generates. `shell` is the one-liner; `homebrew` needs a
+# tap repository and a token, both documented in the plan §5.8.
+#
+# Deliberately absent:
+#   * `powershell` and `msi`: no Windows target, because the design spec does
+#     not claim Windows support and `ksp-posture` has no Windows adapter.
+#   * `npm`: `publish = false`, and a binary wrapper adds a registry account for
+#     no gain over the shell installer.
+installers = ["shell", "homebrew"]
+
+# The Homebrew tap. It must exist before the first release, with a README so it
+# has a default branch. The token that pushes to it cannot be `GITHUB_TOKEN`:
+# the default token cannot write to a different repository.
+tap = "bruj0/homebrew-tap"
+
+# The six targets from the plan §5.1.
+#
+# The gnu targets back the `.deb`; the musl targets back the `.rpm` and the
+# static tarball. Both are needed: a gnu binary will not start on RHEL 8 or 9,
+# whose glibc is older than any current runner image, and a musl binary has no
+# glibc floor at all.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
+
+# Run only the plan step on a pull request. That catches a broken release
+# configuration before a tag is pushed, without building six targets on every
+# PR.
+pr-run-mode = "plan"
+
+# No self-updater. Homebrew and the distribution package manager already own
+# updates, and a second updater fights them.
+install-updater = false
+
+# Build-provenance attestations, so a user can run
+# `gh attestation verify <file> --repo bruj0/keyspout`.
+github-attestations = true
+
+# Where installers put the binary.
+install-path = "CARGO_HOME"
+
+# The musl builds need a C toolchain for `aws-lc-sys`, which `rustls` pulls in
+# through `aws-lc-rs`. Without these the link step fails with an error that names
+# neither musl nor the C compiler.
+[dist.dependencies.apt]
+musl-tools = { stage = ["build"] }
+cmake = { stage = ["build"] }
+build-essential = { stage = ["build"] }
+perl = { stage = ["build"] }

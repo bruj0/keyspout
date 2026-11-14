@@ -49,7 +49,15 @@
 #   scripts/ksp-gate.sh          # everything: the host part, then the VM part
 #   scripts/ksp-gate.sh host     # the host part alone
 #   scripts/ksp-gate.sh vm       # the VM part alone (also what the re-exec runs)
+#   scripts/ksp-gate.sh ci       # the gate as a GitHub Linux runner runs it
 #   CARGO_TARGET_DIR=/tmp/mine scripts/ksp-gate.sh
+#
+# The `ci` part exists because the release workflow must not reimplement the
+# gate. It runs every check the VM part runs, natively, and adds nothing: a test
+# that only CI runs is a test the operator never sees fail. The difference is in
+# what each part assumes, not in what it checks — the VM part re-executes into
+# colima and expects Valkey and RustFS to be up, because the VM starts them at
+# boot; the `ci` part runs where it lands and starts nothing.
 #
 # The unprivileged and privileged runs use separate target directories on
 # purpose: a root-owned `target/` breaks every later non-root build.
@@ -146,6 +154,15 @@ host_part() {
     step "host: scripts/ksp-markers.sh"
     ./scripts/ksp-markers.sh --selftest
     ./scripts/ksp-markers.sh
+
+    # A shipped skill is instructions to run `ksp`, so a skill that names a
+    # command the binary does not have is a broken product with no compiler to
+    # catch it. This runs after the build so the binary it checks against is the
+    # one in this tree. Exit 2 means there are no skills yet, which is not a
+    # failure.
+    step "host: scripts/ksp-skills.sh"
+    ./scripts/ksp-skills.sh --selftest
+    ./scripts/ksp-skills.sh || [ $? -eq 2 ]
 
     step "host: cargo fmt --check"
     cargo fmt --check
@@ -260,6 +277,104 @@ vm_part() {
     fi
 }
 
+# The CI part. This is the gate as it runs on a GitHub Actions Linux runner, and
+# it exists so that the release workflow and this script cannot disagree about
+# what "the gate passed" means.
+#
+# It is a third part rather than a flag on the VM part because the two differ in
+# what they assume, not in what they check:
+#
+#   * the VM part re-executes into colima, which a runner does not have;
+#   * the VM part expects Valkey and RustFS to be running already, because the
+#     VM starts them at boot. A runner starts them here, and waits for them.
+#
+# Everything the VM part checks is checked here. Nothing is added: a test that
+# only CI runs is a test the operator never sees fail.
+ci_part() {
+    check_disk
+    export CARGO_TARGET_DIR="$target"
+
+    step "ci: scripts/ksp-markers.sh"
+    ./scripts/ksp-markers.sh --selftest
+    ./scripts/ksp-markers.sh
+
+    step "ci: cargo fmt --check"
+    cargo fmt --check
+
+    # This is the copy of clippy that matters: only on Linux are the
+    # `cfg(target_os = "linux")` branches compiled and linted at all.
+    step "ci: cargo clippy --all-targets -- -D warnings"
+    cargo clippy --all-targets -- -D warnings
+
+    step "ci: cargo audit"
+    cargo audit
+
+    step "ci: tests: unit targets (--no-fail-fast)"
+    local crate_dir crate pair
+    local -a failed=()
+    for crate_dir in crates/*/; do
+        crate="$(basename "$crate_dir")"
+        if ! cargo test -p "$crate" --lib --bins --no-fail-fast; then
+            failed+=("$crate:lib")
+        fi
+    done
+
+    step "ci: tests: doc targets (--no-fail-fast)"
+    for crate_dir in crates/*/; do
+        crate="$(basename "$crate_dir")"
+        if ! cargo test -p "$crate" --doc --no-fail-fast; then
+            failed+=("$crate:doc")
+        fi
+    done
+
+    # Every integration target, including the ones the host part skips. A target
+    # named in VM_TARGETS whose file has vanished fails here rather than being
+    # skipped, for the same reason the vm part checks it.
+    step "ci: tests: integration targets (--no-fail-fast)"
+    while IFS= read -r pair; do
+        if is_vm_target "$pair" && [ "$pair" != "ksp-cli:principals" ]; then
+            if [ ! -f "crates/${pair%%:*}/tests/${pair##*:}.rs" ]; then
+                echo "error: ${pair} is listed as a VM target but has no test file." >&2
+                echo "       Move it in scripts/ksp-gate.sh rather than letting it vanish." >&2
+                exit 1
+            fi
+        fi
+        printf '\n-- %s\n' "$pair"
+        if ! run_target "$pair"; then
+            failed+=("$pair")
+        fi
+    done < <(all_targets)
+
+    # The two-account boundary, under sudo with its own target directory. A
+    # root-owned `target/` breaks every later non-root build, which is why the
+    # directory is separate rather than shared.
+    step "ci: tests: two-account boundary (root, principals.rs)"
+    if [ "$(id -u)" -eq 0 ]; then
+        CARGO_TARGET_DIR="$root_target" cargo test -p ksp-cli --test principals --no-fail-fast \
+            || failed+=("ksp-cli:principals")
+    else
+        if ! sudo -n true 2>/dev/null; then
+            echo "error: the two-account tests need root and 'sudo -n' is unavailable." >&2
+            echo "       A GitHub runner has passwordless sudo; a local run needs it granted." >&2
+            exit 69
+        fi
+        sudo -n env \
+            HOME="$HOME" \
+            PATH="$HOME/.cargo/bin:$PATH" \
+            RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+            CARGO_TARGET_DIR="$root_target" \
+            cargo test -p ksp-cli --test principals --no-fail-fast \
+            || failed+=("ksp-cli:principals")
+    fi
+
+    if [ "${#failed[@]}" -gt 0 ]; then
+        printf '\n== ci: %d target(s) failed\n' "${#failed[@]}" >&2
+        printf '   %s\n' "${failed[@]}" >&2
+        return 1
+    fi
+}
+
 case "$part" in
 host)
     host_part
@@ -270,13 +385,17 @@ vm)
     vm_part
     printf '\n== vm part passed\n'
     ;;
+ci)
+    ci_part
+    printf '\n== ci part passed\n'
+    ;;
 all)
     host_part
     printf '\n== host part passed; running the VM part\n'
     exec "${script_dir}/ksp-vm.sh" "${script_dir}/ksp-gate.sh" vm
     ;;
 *)
-    echo "usage: $(basename "$0") [host|vm]" >&2
+    echo "usage: $(basename "$0") [host|vm|ci]" >&2
     exit 64
     ;;
 esac

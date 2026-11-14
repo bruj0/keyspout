@@ -971,14 +971,73 @@ account is resolvable before the next step: `id keyspout` must print a uid.
 
 ---
 
-## Build and install
+## Install
 
-Only needed if `ksp version` failed at the top. The workspace builds natively on
-both platforms; the Linux-only adapters are target-gated, so a Mac build simply
-lacks them.
+Only needed if `ksp version` failed at the top. Pick the row for your platform.
+
+| Platform | Command |
+|---|---|
+| macOS (Homebrew) | `brew install bruj0/tap/ksp` |
+| macOS or Linux, any | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bruj0/keyspout/releases/latest/download/ksp-installer.sh \| sh` |
+| Debian / Ubuntu | [download the `.deb`](https://github.com/bruj0/keyspout/releases/latest), then `sudo apt install ./ksp_*_amd64.deb` |
+| Fedora / RHEL / Rocky / Alma / openSUSE | [download the `.rpm`](https://github.com/bruj0/keyspout/releases/latest), then `sudo dnf install ./ksp-*.rpm` |
+| Any, with Rust | `cargo install --git https://github.com/bruj0/keyspout ksp-cli` |
+
+```
+ksp 0.1.0
+```
+
+**The tap is `bruj0/tap`, not homebrew-core.** The command is longer than
+`brew install ksp` for that reason, and it is not a typo.
+
+**The `.deb` and `.rpm` do not update themselves.** They come from the release
+page, not from a package repository, so `apt upgrade` will not move them. Download
+the next version when you want it.
+
+**macOS, downloaded in a browser:** the binaries are unsigned, so Gatekeeper
+refuses one that Safari quarantined. Homebrew and `curl` installs are unaffected.
+Clear the attribute once:
 
 ```bash
-git clone git@github.com:bruj0/keyspout.git && cd keyspout
+xattr -d com.apple.quarantine ./ksp
+```
+
+### Agent skills
+
+Seven skills teach an agent to drive `ksp` — set it up, report status, store and
+share secrets, enrol agents, switch backends, recover, and read the audit log.
+
+```bash
+npx skills add bruj0/keyspout
+```
+
+`npx skills` needs Node 22.20 or later. It installs for every agent it detects and
+keeps one canonical copy under `~/.agents/skills/`. **Verify the install** rather
+than trusting the exit code — the CLI symlinks into `~/.claude/skills/` for Claude
+Code and there are open issues where that symlink is never created:
+
+```bash
+npx skills list -g
+ls ~/.agents/skills/keyspout-quickstart/SKILL.md
+```
+
+If the canonical copy is there and Claude Code still cannot see the skill, install
+through its own plugin system instead:
+
+```
+/plugin marketplace add bruj0/keyspout
+```
+
+See [`skills/README.md`](skills/README.md) for the manual `cp -r` fallback.
+
+### Build from source
+
+Only if you want to modify the code. The workspace builds natively on both
+platforms; the Linux-only adapters are target-gated, so a Mac build simply lacks
+them.
+
+```bash
+git clone https://github.com/bruj0/keyspout.git && cd keyspout
 cargo build -p ksp-cli
 
 mkdir -p ~/.local/bin
@@ -990,10 +1049,6 @@ source ~/.zshrc
 > **Linux note:** write the `PATH` line into `~/.bashrc` instead of `~/.zshrc`
 > if `bash` is your shell — `grep -q '.local/bin' ~/.bashrc || echo …`. The
 > rest is identical.
-
-```
-ksp 0.1.0
-```
 
 The toolchain is pinned by `rust-toolchain.toml`. `cargo clean` breaks the
 symlink — `ksp version` then says `no such file or directory`, which means the

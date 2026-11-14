@@ -15,8 +15,17 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
-license = "Proprietary"
+# MIT, matching the `LICENSE` the public tree ships. The field said
+# `Proprietary` while the licence file said MIT; a generated Homebrew formula
+# reads this field, so the two cannot disagree. `publish = false` stays: the
+# crates are not on crates.io and the binary ships as a release artifact.
+license = "MIT"
 publish = false
+# Read by the release tooling. `repository` names the downstream tree, because
+# that is the canonical project URL a user or a package manager resolves.
+description = "A serverless, contract-based secret manager for agents"
+homepage = "https://github.com/bruj0/keyspout"
+repository = "https://github.com/bruj0/keyspout"
 
 [workspace.dependencies]
 # --- Cryptography: primitives come from audited libraries only. The one

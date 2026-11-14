@@ -1,11 +1,16 @@
 [package]
 name = "ksp-cli"
-description = "The ksp binary: the command surface, the exit-code contract and the redacting output point."
+# The user-facing description, because this is the crate the release tooling
+# reads to build the Homebrew formula and the package metadata. The internal
+# role of the crate is in the module docs.
+description = "A serverless, contract-based secret manager for agents"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 [lints]
 workspace = true
@@ -40,3 +45,32 @@ zeroize.workspace = true
 libc.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+
+# Native package metadata. Both tools read this section and neither is part of
+# the Rust build, so a change here cannot break `cargo build`.
+#
+# The `.deb` is built from the gnu tarball and the `.rpm` from the musl one; see
+# .github/workflows/packages.yml for why.
+[package.metadata.deb]
+maintainer = "Rodrigo DL <ramakandra@gmail.com>"
+copyright = "2026 Rodrigo DL"
+license-file = ["../../LICENSE", "0"]
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/ksp", "usr/bin/ksp", "755"],
+]
+extended-description = """\
+A serverless, contract-based secret manager for agents. Secrets live in a sealed
+store you own; an agent gets a short-lived, sealed copy instead of a long-lived
+credential. There is no Keyspout service in the trust path."""
+
+[package.metadata.generate-rpm]
+# The musl binary is static, so rpm must not invent shared-library Requires from
+# it. Without this the package depends on libraries it does not link.
+auto-req = "no"
+license = "MIT"
+summary = "A serverless, contract-based secret manager for agents"
+assets = [
+    { source = "target/release/ksp", dest = "/usr/bin/ksp", mode = "755" },
+]

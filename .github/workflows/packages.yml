@@ -1,0 +1,153 @@
+# Build `.deb` and `.rpm` packages and attach them to an existing release.
+#
+# `cargo-dist` does not build these (axodotdev/cargo-dist#76, open since 2023),
+# so this workflow does. It runs after `release.yml` has published the release,
+# downloads the tarballs that workflow produced, and attaches two more artifacts
+# per architecture.
+#
+# Why two different binaries:
+#
+#   * the `.deb` is built from the **gnu** tarball, because Debian and Ubuntu
+#     users are on a known-recent glibc;
+#   * the `.rpm` is built from the **musl** tarball, because RHEL 9 ships glibc
+#     2.34 and RHEL 8 ships 2.28 — both older than any current runner image. A
+#     gnu `.rpm` would install and then fail to start with `GLIBC_x.y not found`.
+
+name: Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach packages to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  packages:
+    name: ${{ matrix.pkg }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: deb
+            arch: amd64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - pkg: deb
+            arch: arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - pkg: rpm
+            arch: x86_64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - pkg: rpm
+            arch: aarch64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve the tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$tag" ]; then
+            echo "::error::no tag: neither a release event nor a dispatch input"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the tarball this package is built from
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          target="${{ matrix.target }}"
+          # The archive name is what `cargo-dist` produces: ksp-<target>.tar.xz
+          asset="ksp-${target}.tar.xz"
+          echo "downloading $asset from $tag"
+          gh release download "$tag" --pattern "$asset" --dir /tmp/pkg --repo "$GITHUB_REPOSITORY"
+          mkdir -p /tmp/pkg/root
+          tar -xf "/tmp/pkg/$asset" -C /tmp/pkg/root
+          bin=$(find /tmp/pkg/root -name ksp -type f | head -1)
+          if [ -z "$bin" ]; then
+            echo "::error::the archive contains no ksp binary"
+            exit 1
+          fi
+          chmod +x "$bin"
+          echo "binary: $bin"
+          "$bin" version
+
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake make g++ perl pkg-config dpkg-dev rpm
+          cargo install cargo-deb --locked
+          cargo install cargo-generate-rpm --locked
+
+      - name: Build the .deb
+        if: matrix.pkg == 'deb'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `cargo-deb` reads [package.metadata.deb] and rewrites the asset path
+          # to the per-target directory, so the binary it packages is the one
+          # just downloaded rather than a fresh build.
+          cargo deb -p ksp-cli --no-build --target "${{ matrix.target }}" \
+            --output /tmp/pkg/out
+          ls -la /tmp/pkg/out
+
+      - name: Build the .rpm
+        if: matrix.pkg == 'rpm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-rpm -p crates/ksp-cli --target "${{ matrix.target }}" \
+            --output /tmp/pkg/out
+          ls -la /tmp/pkg/out
+
+      - name: Verify the package installs and runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.tag.outputs.version }}"
+          if [ "${{ matrix.pkg }}" = "deb" ]; then
+            sudo dpkg -i /tmp/pkg/out/*.deb
+            got=$(ksp version)
+          else
+            # rpm cannot install a musl-built package without its own db in a
+            # container, so extract and run the binary the package carries.
+            rpm2cpio /tmp/pkg/out/*.rpm | cpio -idmv -D /tmp/rpmroot 2>/dev/null || true
+            got=$(/tmp/rpmroot/usr/bin/ksp version)
+          fi
+          echo "installed binary reports: $got"
+          if [ "$got" != "ksp $version" ]; then
+            echo "::error::the packaged binary reports the wrong version"
+            exit 1
+          fi
+
+      - name: Attach the package to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.tag.outputs.tag }}" /tmp/pkg/out/* \
+            --repo "$GITHUB_REPOSITORY" --clobber

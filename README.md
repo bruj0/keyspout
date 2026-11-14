@@ -10,10 +10,48 @@ Secrets live in a sealed store you own. Your agents get a short-lived, sealed
 copy instead of a long-lived credential. Nothing phones home, and there is no
 Keyspout service in the trust path.
 
+## Install
+
+| Platform | Command |
+|---|---|
+| macOS (Homebrew) | `brew install bruj0/tap/ksp` |
+| macOS or Linux, any | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bruj0/keyspout/releases/latest/download/ksp-installer.sh \| sh` |
+| Debian / Ubuntu | [download the `.deb`](https://github.com/bruj0/keyspout/releases/latest), then `sudo apt install ./ksp_*_amd64.deb` |
+| Fedora / RHEL / Rocky / Alma / openSUSE | [download the `.rpm`](https://github.com/bruj0/keyspout/releases/latest), then `sudo dnf install ./ksp-*.rpm` |
+| Any, with Rust | `cargo install --git https://github.com/bruj0/keyspout ksp-cli` |
+
+Then set up a deployment:
+
 ```bash
-cargo build --release
-./target/release/ksp init
+ksp init
 ```
+
+The tap is `bruj0/tap`, not homebrew-core, which is why the Homebrew command is
+longer than usual. The `.deb` and `.rpm` come from the release page rather than
+a package repository, so they do not update themselves; re-download to upgrade.
+
+**macOS, downloaded in a browser:** the binaries are unsigned, so Gatekeeper
+refuses one that Safari quarantined. Homebrew and `curl` installs are unaffected.
+Clear the attribute once:
+
+```bash
+xattr -d com.apple.quarantine ./ksp
+```
+
+## Agent skills
+
+Seven skills teach an agent to drive `ksp` — set it up, report status, store and
+share secrets, enrol agents, switch backends, recover, and read the audit log.
+
+```bash
+npx skills add bruj0/keyspout
+```
+
+They are plain `SKILL.md` folders in the open
+[agentskills.io](https://agentskills.io) format, read by Claude Code, GitHub
+Copilot, Cursor, OpenAI Codex and Gemini CLI. See
+[`skills/README.md`](skills/README.md) for per-agent install and how to verify it
+worked.
 
 ---
 
@@ -385,7 +423,10 @@ behalf is the thing this design removes.
 
 ---
 
-## Build and install
+## Build from source
+
+The install commands above are the supported path. Build from source only if you
+want to modify the code.
 
 ```bash
 git clone https://github.com/bruj0/keyspout.git
