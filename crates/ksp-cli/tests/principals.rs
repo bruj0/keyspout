@@ -278,6 +278,16 @@ fn the_two_principal_boundary_is_a_mode_and_not_an_intention() {
     // this process; the two principals are then given the ones they own, which is
     // what a two-account deployment looks like after provisioning.
     let temp = tempfile::tempdir().unwrap();
+    // The temporary root is created owner-only, and the second account has to
+    // reach the home below it. Without this the run fails with `EACCES` on the
+    // issuance ledger, which reads as a product bug and is not one: the test
+    // never gave the account a way in.
+    //
+    // This is the same step the other two-account test does, and it was missing
+    // here. It passed on a machine whose `TMPDIR` happened to be traversable and
+    // failed on a clean CI runner, which is the worst kind of test bug: green
+    // where it was written, red where it is trusted.
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     let home = temp.path().join("ksp");
     layout::ensure(&home).unwrap();
     std::os::unix::fs::chown(&home, Some(admin.uid), Some(admin.gid)).unwrap();

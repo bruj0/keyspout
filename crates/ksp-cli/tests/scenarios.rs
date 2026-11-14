@@ -370,6 +370,11 @@ fn us2_two_of_three_shares_recover_a_deleted_vault_and_the_value_inside_it() {
 /// Enrolment issues one UUID. A second enrolment under the same name is refused
 /// and names the principal that already holds it, rather than minting a second
 /// identity a human cannot tell apart from the first.
+///
+/// The refusal exits `USAGE`, not `INTERNAL`: the caller asked for something the
+/// enrolment cannot do, and the message names the principal that holds the name.
+/// `INTERNAL` told an agent to report a crash where the right response was to use
+/// the UUID it was given.
 #[test]
 fn a_repeated_display_name_does_not_mint_a_second_principal() {
     let home = tempfile::TempDir::new().unwrap();
@@ -383,7 +388,7 @@ fn a_repeated_display_name_does_not_mint_a_second_principal() {
     );
     assert_eq!(
         code,
-        exit::INTERNAL,
+        exit::USAGE,
         "a repeated display name must not enrol a second principal: {output}"
     );
     assert!(

@@ -22,7 +22,6 @@ use std::io::Write;
 
 use ksp_backend::status::StatusReport;
 use serde::Serialize;
-use serde_json::Value;
 
 /// What an audit event records about one operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -552,7 +551,16 @@ pub enum Report {
     /// The admin anchor this host pinned.
     Anchor(PinnedAnchor),
     /// A list of records' metadata.
-    Records(Vec<RecordMetadata>),
+    ///
+    /// A struct variant rather than a newtype: `Report` is internally tagged, and
+    /// serde cannot tag a newtype variant that wraps a sequence. The failure was
+    /// silent — `to_value` returned `Err` and the emitter substituted a string —
+    /// so `secret ls --json` emitted `"unserializable"` and every caller read it
+    /// as an empty listing.
+    Records {
+        /// The records this listing names, in the order the store returned them.
+        records: Vec<RecordMetadata>,
+    },
     /// What one token says about itself.
     Token(TokenInspection),
     /// What this host minted, and what it holds against each.
@@ -658,10 +666,16 @@ impl<W: Write> Emitter<W> {
     }
 
     /// Print a report.
+    ///
+    /// A report that will not serialize is a defect in this tool, and this
+    /// returns the error rather than printing a substitute. The previous
+    /// fallback wrote the string `"unserializable"`, which a caller parsed as a
+    /// successful answer with no fields — the most dangerous shape a defect can
+    /// take, because nothing anywhere reported it.
     pub fn report(&mut self, report: &Report) -> std::io::Result<()> {
         if self.json {
             let value = serde_json::to_value(report)
-                .unwrap_or_else(|_| Value::String("unserializable".to_owned()));
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             writeln!(self.sink, "{value}")?;
         } else {
             writeln!(self.sink, "{}", render(report))?;
@@ -673,7 +687,7 @@ impl<W: Write> Emitter<W> {
     pub fn audit(&mut self, event: &AuditEvent) -> std::io::Result<()> {
         if self.json {
             let value = serde_json::to_value(event)
-                .unwrap_or_else(|_| Value::String("unserializable".to_owned()));
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             writeln!(self.sink, "{value}")?;
         } else {
             writeln!(self.sink, "{}", render_audit(event))?;
@@ -691,7 +705,7 @@ impl<W: Write> Emitter<W> {
         for record in records {
             if self.json {
                 let value = serde_json::to_value(record)
-                    .unwrap_or_else(|_| Value::String("unserializable".to_owned()));
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
                 writeln!(self.sink, "{value}")?;
             } else {
                 writeln!(self.sink, "{}", render_log_record(record))?;
@@ -717,7 +731,7 @@ impl<W: Write> Emitter<W> {
     pub fn probe(&mut self, summary: &crate::probe::ProbeSummary) -> std::io::Result<()> {
         if self.json {
             let value = serde_json::to_value(summary)
-                .unwrap_or_else(|_| Value::String("unserializable".to_owned()));
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             writeln!(self.sink, "{value}")
         } else {
             writeln!(self.sink, "{}", crate::probe::render(summary))
@@ -851,7 +865,7 @@ fn render(report: &Report) -> String {
             "{}  level={}  version={}",
             record.record, record.level, record.version
         ),
-        Report::Records(records) => records
+        Report::Records { records } => records
             .iter()
             .map(|record| {
                 format!(
@@ -1651,7 +1665,7 @@ mod tests {
         let event = AuditEvent::new("secret.set", "user:alice", AuditOutcome::Success, 0)
             .about("record-1", 3);
         let json = emitted(&event, true);
-        let value: Value = serde_json::from_str(&json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         let mut keys: Vec<&str> = value
             .as_object()
@@ -1699,7 +1713,9 @@ mod tests {
         };
         let mut buffer = Vec::new();
         Emitter::new(false, &mut buffer)
-            .report(&Report::Records(vec![record]))
+            .report(&Report::Records {
+                records: vec![record],
+            })
             .unwrap();
         let text = String::from_utf8(buffer).unwrap();
         assert!(text.contains("record-1"));

@@ -725,9 +725,12 @@ the previous phrase, and it changes nothing about the password.
 | `10` | The child ran after the record was removed; it is gone, retrying cannot help |
 | `11` | A compliant run was refused because the backend requires consumption |
 | `12` | The audit log did not verify |
+| `13` | The invocation was malformed; the message names the accepted form |
 
 `9` and `10` are separate on purpose: one says *try again*, the other says *ask
-for a new delivery*.
+for a new delivery*. `13` is separate from `1` and `2` for the same reason: a
+typo, a crash and a policy decision need three different responses from a caller,
+and one integer cannot say all three.
 
 ---
 

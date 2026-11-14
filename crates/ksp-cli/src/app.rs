@@ -312,7 +312,12 @@ fn run_admin<W: Write>(
         AdminCommand::Put { id, name } => {
             let value = match crate::secret::read_value(&mut std::io::stdin()) {
                 Ok(value) => value,
-                Err(error) => return Outcome::Failed(error.exit_code()),
+                Err(error) => {
+                    // The typed message names the accepted form; a code alone
+                    // told the caller nothing about its own pipeline.
+                    let _ = emitter.refusal(&error.to_string());
+                    return Outcome::Failed(error.exit_code());
+                }
             };
             let secret = ksp_types::OpaqueSecretId::new(id.clone());
             match crate::admin::put(layout, &secret, name.as_bytes(), &value) {
@@ -368,7 +373,7 @@ fn run_admin<W: Write>(
             }
         }
         AdminCommand::List => match crate::admin::list(layout) {
-            Ok(records) => report_or_internal(emitter, &Report::Records(records)),
+            Ok(records) => report_or_internal(emitter, &Report::Records { records }),
             Err(error) => {
                 let _ = emitter.refusal(&error.to_string());
                 Outcome::Failed(error.exit_code())
@@ -1031,7 +1036,13 @@ fn run_secret<W: Write>(
             };
             let value = match crate::secret::read_value(&mut std::io::stdin()) {
                 Ok(value) => value,
-                Err(error) => return Outcome::Failed(error.exit_code()),
+                Err(error) => {
+                    // The typed message names the accepted form, and an empty
+                    // value came back as "unexpected internal failure" with no
+                    // reason at all.
+                    let _ = emitter.refusal(&error.to_string());
+                    return Outcome::Failed(error.exit_code());
+                }
             };
             let secret = ksp_types::OpaqueSecretId::new(id.clone());
             // One unseal for both the write and its record: the tenant's own key

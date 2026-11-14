@@ -93,7 +93,7 @@ Verified against the merged tree on `main`. Features `001`–`009` are implement
 | `ksp token lease` | **[Partial]** — `crates/ksp-cli/src/token.rs` | The verb exists and refuses with the reason: opening an existing agent-level record needs the content key its envelope sealed to that agent, and unwrapping it there would be the escrow the levels exist to prevent. A lease is produced by `token mint` or `secret share`. |
 | `ksp user enroll` (§3.3's spelling) | **[Not implemented]** — the surface is `crates/ksp-cli/src/commands.rs` | Enrolment is `ksp admin user add`, run by the admin. The spec's `ksp user enroll --user alice --store …` is a proposal, not the command surface. |
 | Shamir shares printed at enrolment | **[Not implemented]** — `crates/ksp-cli/src/vault.rs` | `admin user add` seals the vault and writes the sealed file. It does not cut a share set or print a phrase; the split exists only in `vault rekey`, which takes `--recovery-threshold` and `--recovery-shares`. |
-| Exit codes `3` (token expired), `4` (backend unreachable), `5` (vault sealed) | **[Not implemented]** | `crates/ksp-cli/src/exit.rs` defines `0`, `1`, `2`, `6`, `7`, `8`, `9`, `10`, `11` and `12`. |
+| Exit codes `3` (token expired), `4` (backend unreachable), `5` (vault sealed) | **[Not implemented]** | `crates/ksp-cli/src/exit.rs` defines `0`, `1`, `2`, `6`, `7`, `8`, `9`, `10`, `11`, `12` and `13`. |
 | Log forwarding to `syslog://`, `http(s)://` or file sinks (§7) | **[Not implemented]** — no such sink in `crates/ksp-deletion/src/audit.rs` | The audit chain is local and append-only. No forwarding sink exists. |
 | `--redact-values` flag (§7) | **[Absent by decision]** — the writer is `crates/ksp-deletion/src/audit.rs` | Values and secret names are never logged at all, so there is nothing for a flag to redact. The redaction is the writer's behaviour, not an option. |
 | macOS as a supported platform | **[Implemented]** — `crates/ksp-posture/src/sys.rs`, `crates/ksp-cli/src/storegroup/mod.rs`, `scripts/ksp-gate.sh` | The workspace builds and the suite runs on Darwin, with the Linux-only adapters target-gated. macOS enforces **no path confinement**: the confinement capability is reported unenforced and the child runs unconfined, in its own output as well as in `ksp status`. The barrier falls back to `mlock`, reported as `weakened`, never as `memfd_secret`. See [§2.4](#09-macos-is-supported-with-a-smaller-guarantee). |
@@ -2762,7 +2762,9 @@ proves freshness when all state comes from untrusted storage.
 >
 > Exit codes `3` (token expired), `4` (backend unreachable) and `5` (vault
 > sealed) are **[Not implemented]**; `crates/ksp-cli/src/exit.rs` defines `0`,
-> `1`, `2`, `6`, `7`, `8`, `9`, `10`, `11` and `12`.
+> `1`, `2`, `6`, `7`, `8`, `9`, `10`, `11`, `12` and `13`. Code `13` is a
+> malformed invocation: it is distinct from `1` (an internal failure) and `2` (a
+> policy decision), because a caller responds differently to each.
 
 ```
 ksp admin      init | user add | policy | put | list | revoke | audit

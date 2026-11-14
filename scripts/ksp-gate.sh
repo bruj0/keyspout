@@ -330,9 +330,16 @@ ci_part() {
     # Every integration target, including the ones the host part skips. A target
     # named in VM_TARGETS whose file has vanished fails here rather than being
     # skipped, for the same reason the vm part checks it.
+    #
+    # `ksp-cli:principals` is excluded from this loop on purpose: it asserts
+    # `geteuid() == 0` and refuses to run otherwise, so running it here would
+    # fail every time. It runs once, under sudo, in the step below.
     step "ci: tests: integration targets (--no-fail-fast)"
     while IFS= read -r pair; do
-        if is_vm_target "$pair" && [ "$pair" != "ksp-cli:principals" ]; then
+        if [ "$pair" = "ksp-cli:principals" ]; then
+            continue
+        fi
+        if is_vm_target "$pair"; then
             if [ ! -f "crates/${pair%%:*}/tests/${pair##*:}.rs" ]; then
                 echo "error: ${pair} is listed as a VM target but has no test file." >&2
                 echo "       Move it in scripts/ksp-gate.sh rather than letting it vanish." >&2

@@ -41,7 +41,16 @@ pub enum SecretError {
     #[error("{0}")]
     Vault(crate::vault::VaultError),
     /// The value could not be read from stdin.
-    #[error("the value could not be read from the input")]
+    ///
+    /// The message names the accepted form, because the common cause is a
+    /// pipeline that fed the password and the value to one stream: the password
+    /// reader consumes all of it, so the value arrives empty. `--passphrase-file`
+    /// is the way to supply the password separately, and a refusal that did not
+    /// say so left the caller retrying the same broken pipeline.
+    #[error(
+        "the value could not be read from the input: the value comes from stdin, \
+         and the password comes from --passphrase-file when stdin carries a value"
+    )]
     Value,
     /// The record could not be read back.
     #[error("the stored record is not readable")]
@@ -57,7 +66,11 @@ impl SecretError {
         match self {
             Self::NotInitialised | Self::Record => exit::MISSING_KEY,
             Self::Vault(error) => error.exit_code(),
-            Self::Value | Self::Write => exit::INTERNAL,
+            // An empty value is the caller's pipeline, not a bug in this tool.
+            // A write that failed is not: the caller did nothing wrong and the
+            // record may still be absent, so it keeps `INTERNAL`.
+            Self::Value => exit::USAGE,
+            Self::Write => exit::INTERNAL,
         }
     }
 }
@@ -509,7 +522,7 @@ pub fn run<W: std::io::Write>(
                         version: *version,
                     })
                     .collect();
-                match emitter.report(&Report::Records(records)) {
+                match emitter.report(&Report::Records { records }) {
                     Ok(()) => Outcome::Success,
                     Err(_) => Outcome::Failed(exit::INTERNAL),
                 }

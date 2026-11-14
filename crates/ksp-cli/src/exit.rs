@@ -52,6 +52,20 @@ pub const UNCONSUMED_REFUSED: i32 = 11;
 /// tampered log need different next steps, and one integer cannot say both.
 pub const AUDIT_UNVERIFIED: i32 = 12;
 
+/// The invocation was malformed, and the message names the accepted form.
+///
+/// A code of its own rather than [`INTERNAL`] or [`POLICY_DENIAL`], because an
+/// agent branches on the integer without reading the message and the three mean
+/// different next steps: fix the invocation, report a bug, or accept a decision.
+/// Collapsing a typo into `INTERNAL` told a caller to report a crash; collapsing
+/// it into `POLICY_DENIAL` told it a policy had decided something.
+///
+/// `3`, `4` and `5` are reserved by the design specification for token expiry, an
+/// unreachable backend and a sealed vault. This code deliberately skips them, so
+/// a future implementation of those features does not contradict a shipped
+/// contract.
+pub const USAGE: i32 = 13;
+
 /// The outcome of one invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -117,6 +131,7 @@ pub fn describe(code: i32) -> &'static str {
         LOST_FRESH_FETCH => "the record was removed and the child failed; ask for a new delivery",
         UNCONSUMED_REFUSED => "a scheduled backend requires --consume",
         AUDIT_UNVERIFIED => "the audit log did not verify; the report names the finding",
+        USAGE => "the invocation was malformed; the message names the accepted form",
         _ => "unrecognised outcome",
     }
 }

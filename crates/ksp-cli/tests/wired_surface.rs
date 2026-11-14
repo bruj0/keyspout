@@ -351,6 +351,131 @@ fn a_listing_names_the_versions_that_are_stored_and_a_removal_takes_one() {
     );
 }
 
+/// Parse one JSON object out of a command's output.
+///
+/// The emitter writes one object per invocation, so a parse failure here is the
+/// defect under test rather than a test bug: `"unserializable"` parses as a
+/// string, which is why the assertion below checks the *shape* and not merely
+/// that the bytes are valid JSON.
+fn json_object(output: &str) -> serde_json::Value {
+    serde_json::from_str(output.trim())
+        .unwrap_or_else(|error| panic!("the output is not one JSON document ({error}): {output}"))
+}
+
+/// A listing is one object carrying a `kind` tag and a `records` array.
+///
+/// Before this feature `secret ls --json` printed the string
+/// `"unserializable"`: valid JSON, no fields, and no error anywhere. An agent
+/// that read it reported zero records and nothing said why.
+#[test]
+fn a_listing_is_one_object_with_a_records_array() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+    let passphrase = password_file(home.path());
+
+    // An empty store is the case that distinguishes "nothing stored" from "the
+    // listing could not be produced".
+    let (code, output) = ksp_in(home.path(), &["--json", "secret", "ls"], None);
+    assert_eq!(code, exit::SUCCESS, "secret ls --json failed: {output}");
+    let value = json_object(&output);
+    assert!(
+        value.is_object(),
+        "a listing must be an object, not {value}"
+    );
+    assert_eq!(value["kind"], "records", "{value}");
+    assert_eq!(
+        value["records"].as_array().map(Vec::len),
+        Some(0),
+        "an empty store must emit an empty array: {value}"
+    );
+
+    for value in ["first-value", "second-value"] {
+        let (code, output) = ksp_in(
+            home.path(),
+            &[
+                "secret",
+                "set",
+                "db_password",
+                "--name",
+                "db_password",
+                "--passphrase-file",
+                passphrase.to_str().unwrap(),
+            ],
+            Some(value),
+        );
+        assert_eq!(code, exit::SUCCESS, "secret set failed: {output}");
+    }
+
+    let (code, output) = ksp_in(home.path(), &["--json", "secret", "ls"], None);
+    assert_eq!(code, exit::SUCCESS, "secret ls --json failed: {output}");
+    let value = json_object(&output);
+    assert_eq!(value["kind"], "records", "{value}");
+    let records = value["records"]
+        .as_array()
+        .unwrap_or_else(|| panic!("records is not an array: {value}"));
+    assert_eq!(records.len(), 2, "two versions are stored: {value}");
+    for record in records {
+        assert!(record["record"].is_string(), "{record}");
+        assert_eq!(record["level"], "user", "{record}");
+        assert!(record["version"].is_number(), "{record}");
+    }
+
+    // The text output must not have moved: the same two versions, one per line.
+    let (code, output) = ksp_in(home.path(), &["secret", "ls"], None);
+    assert_eq!(code, exit::SUCCESS, "secret ls failed: {output}");
+    assert!(
+        output.contains("db_password  level=user  version=1"),
+        "{output}"
+    );
+    assert!(
+        output.contains("db_password  level=user  version=2"),
+        "{output}"
+    );
+}
+
+/// `admin list` emits the same shape, and names every level the text output does.
+#[test]
+fn the_admin_listing_is_one_object_naming_every_level() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+    let passphrase = password_file(home.path());
+    let agent = enrol(home.path(), "laptop");
+
+    let (code, output) = ksp_in(
+        home.path(),
+        &[
+            "secret",
+            "set",
+            "s1",
+            "--name",
+            "n",
+            "--passphrase-file",
+            passphrase.to_str().unwrap(),
+        ],
+        Some("a-value"),
+    );
+    assert_eq!(code, exit::SUCCESS, "secret set failed: {output}");
+
+    let (code, output) = ksp_in(home.path(), &["--json", "admin", "list"], None);
+    assert_eq!(code, exit::SUCCESS, "admin list --json failed: {output}");
+    let value = json_object(&output);
+    assert_eq!(value["kind"], "records", "{value}");
+    let records = value["records"]
+        .as_array()
+        .unwrap_or_else(|| panic!("records is not an array: {value}"));
+    assert!(
+        !records.is_empty(),
+        "the user level holds a record: {value}"
+    );
+
+    // The text output names the same levels. A JSON shape that dropped one would
+    // be a narrower answer than the text, which is the defect this guards.
+    let (code, text) = ksp_in(home.path(), &["admin", "list"], None);
+    assert_eq!(code, exit::SUCCESS, "admin list failed: {text}");
+    assert!(text.contains("level=user"), "{text}");
+    let _ = agent;
+}
+
 #[test]
 fn the_backend_description_names_the_capability_and_a_lease_refusal_exits_seven() {
     let home = tempfile::tempdir().unwrap();

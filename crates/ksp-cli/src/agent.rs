@@ -66,7 +66,12 @@ impl AgentError {
             // mismatched is missing *usable* key material, not an internal bug.
             Self::Keys(error) if error.failure().is_missing_key_material() => exit::MISSING_KEY,
             Self::Pin(_) => exit::MISSING_KEY,
-            Self::Identity(_) | Self::AlreadyEnrolled { .. } | Self::Keys(_) => exit::INTERNAL,
+            // A malformed identity and a taken display name are the caller's
+            // mistake, and both messages name the accepted form. `INTERNAL` told
+            // an agent to report a crash where the right response was to fix its
+            // own invocation.
+            Self::Identity(_) | Self::AlreadyEnrolled { .. } => exit::USAGE,
+            Self::Keys(_) => exit::INTERNAL,
         }
     }
 }
