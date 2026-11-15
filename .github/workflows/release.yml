@@ -10,6 +10,7 @@
 #   gate                  the whole test gate, before anything is built
 #   plan                  work out which builds to run for this tag
 #   build-local-artifacts build six binaries and their tarballs
+#   attest                sign build provenance, out of the build job's trust boundary
 #   build-global-artifacts build the shell installer and the Homebrew formula
 #   smoke                 run the built binaries, before anything is published
 #   host                  upload the artifacts and create the release
@@ -458,13 +459,14 @@ jobs:
       #
       # `attestations: write` and `id-token: write` used to sit here, which made
       # the provenance authentic but not unforgeable: any step in this job could
-      # request an OIDC token and sign whatever it liked. They now live in
-      # `.github/workflows/attest.yml`, which this job calls. A compromised build
+      # request an OIDC token and sign whatever it liked. They now live on the
+      # separate `attest` job, which does nothing but sign. A compromised build
       # step can still produce a bad binary; it cannot forge an attestation for
-      # one, because it never holds the token.
+      # one, because this job never holds the token.
       #
-      # That is the SLSA Build L3 property, and it is why the Attest step below
-      # is a `uses:` on a reusable workflow rather than an action call here.
+      # That is the SLSA Build L3 property. The isolation is between the BUILD
+      # job and the ATTEST job, not between the attest job and the reusable
+      # workflow it calls - see the note on the `attest` job below.
       "contents": "read"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -570,18 +572,6 @@ jobs:
           done
           ls -la target/distrib/*.cdx.json
 
-      - name: Attest
-        # A reusable workflow, not an action call, so the signing permission is
-        # outside this job's trust boundary. See `.github/workflows/attest.yml`.
-        #
-        # `secrets: inherit` is not used: the reusable workflow needs no secret.
-        # It gets an OIDC token from GitHub's issuer, which is the point — there
-        # is no long-lived key for this job to reach.
-        uses: ./.github/workflows/attest.yml
-        with:
-          subject-path: "target/distrib/*${{ join(matrix.targets, ', ') }}*"
-          subject-name: "${{ join(matrix.targets, ', ') }}"
-
       - id: cargo-dist
         name: Post-build
         shell: bash
@@ -598,6 +588,55 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+
+  # ---------------------------------------------------------------------------
+  # HAND-ADDED. The attestation signer, called as a reusable workflow.
+  #
+  # Two rules, both measured in `bruj0/keyspout-ci-lab` rather than read off the
+  # docs. See that repository's RESULTS.md.
+  #
+  # 1. A reusable workflow is callable only from a JOB, never from a step. A
+  #    step-level `uses: ./.github/workflows/attest.yml` is resolved as a local
+  #    ACTION, so the runner looks for `action.yml` beside it and every build job
+  #    failed with:
+  #
+  #      Can't find 'action.yml', 'action.yaml' or 'Dockerfile' under
+  #      '.../.github/workflows/attest.yml'
+  #
+  #    `actionlint` does not catch this: it accepts the path as a local action.
+  #    v1.0.0 shipped without ever executing this code, so v1.0.1 was the first
+  #    release to reach it.
+  #
+  # 2. The caller must DECLARE every permission the callee declares. This is
+  #    stricter than "the callee gets at most what the caller has": a callee that
+  #    asks for `id-token: write` under a caller that grants only `contents:
+  #    read` fails at PARSE time, before any job runs, as `startup_failure` with
+  #    no annotation. So the permissions cannot be delegated to the callee - this
+  #    job has to carry them.
+  #
+  # That is still the Build L3 property, because the isolation is between the
+  # BUILD job and this one. The build job keeps `contents: read` and cannot sign;
+  # this job signs and builds nothing.
+  # ---------------------------------------------------------------------------
+  attest:
+    name: attest (${{ join(matrix.targets, ', ') }})
+    needs:
+      - plan
+      - build-local-artifacts
+    if: ${{ needs.plan.result == 'success' && needs.build-local-artifacts.result == 'success' && fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
+    permissions:
+      # Carried here because the callee declares them, and a caller cannot grant
+      # less than the callee asks for. Rule 2 above.
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/attest.yml
+    with:
+      subject-path: "target/distrib/*${{ join(matrix.targets, ', ') }}*"
+      subject-name: "${{ join(matrix.targets, ', ') }}"
 
   build-global-artifacts:
     needs:
@@ -793,7 +832,8 @@ jobs:
       - build-local-artifacts
       - build-global-artifacts
       - smoke
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.smoke.result == 'skipped' || needs.smoke.result == 'success') }}
+      - attest
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.smoke.result == 'skipped' || needs.smoke.result == 'success') && (needs.attest.result == 'skipped' || needs.attest.result == 'success') }}
     # A human approves the publish. A pushed tag builds, gates and smoke-tests,
     # then stops here until someone approves the `release` environment. That
     # closes the quiet-publish path: a leaked token cannot publish a binary
