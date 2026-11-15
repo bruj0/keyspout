@@ -121,10 +121,19 @@ jobs:
         # acceptable.
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: ". -> /tmp/ksp-gate-target"
-          # The gate also builds under sudo into a separate directory for the
-          # two-account tests. That one is root-owned and rebuilt each run; it is
-          # a few crates, not the dependency graph, so it is not worth caching.
+          # No `workspaces` override: the gate is told to build into `./target`
+          # by `CARGO_TARGET_DIR` below, which is `rust-cache`'s default and the
+          # only path it resolves reliably.
+          #
+          # The previous value was `". -> /tmp/ksp-gate-target"`, and the target
+          # half of that is resolved **relative to the workspace**, so it became
+          # `/home/runner/work/keyspout/keyspout/tmp/ksp-gate-target` — a
+          # directory the gate never writes to. The cache restored 62MB of
+          # registry on every run and not one compiled artifact, so every phase
+          # cost a cold build while the log said `Cache restored successfully`.
+          #
+          # Verified by reading the resolved path in the cache step's own log
+          # rather than trusting the syntax.
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -332,6 +341,18 @@ jobs:
           aws --endpoint-url "$ep" s3api get-bucket-versioning --bucket ksp-s3-versioned
 
       - name: Run the gate
+        # Build into `./target` so the cache has a path it actually resolves.
+        #
+        # The gate defaults to `/tmp/ksp-gate-target`, which `rust-cache` cannot
+        # express reliably: the target half of `workspaces` is relative to the
+        # checkout, so an absolute path became `./tmp/ksp-gate-target` and nothing
+        # was ever restored from it.
+        #
+        # `./target` is the default the action expects, and the gate honours
+        # `CARGO_TARGET_DIR`. The runner has the disk for it; the 19 GiB ceiling
+        # that forced `/tmp` is a property of the local VM, not of a GitHub runner.
+        env:
+          CARGO_TARGET_DIR: target
         run: bash scripts/ksp-gate.sh ci < /dev/null
 
   plan:
