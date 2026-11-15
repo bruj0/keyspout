@@ -221,6 +221,24 @@ stops implying the release is immutable. It currently does not claim
 immutability, which is the honest position — but the plan lists it as delivered,
 which is not.
 
+### Do not confuse this with tag immutability, which does work
+
+The `protect-tags` ruleset (id `27287691`) blocks **deletion** and **update** on
+`refs/tags/v*` with `bypass_actors: []`, and it is enforced. A pushed tag cannot
+be moved or removed:
+
+```
+! [remote rejected] v1.0.1 (push declined due to repository rule violations)
+```
+
+So the *name* is immutable. What D4 is about is the *assets*: the release object
+and the files attached to it can still be edited or replaced after publication.
+Two different guarantees, and only the first is delivered.
+
+The practical consequence for a release: a tag pushed before a successful publish
+is spent, and the fix ships as the next patch version. Measured on `v1.0.1`, which
+published nothing. See the `keyspout-release` skill.
+
 ---
 
 ## D5 — A sync gap reached CI, and nothing checks for one
