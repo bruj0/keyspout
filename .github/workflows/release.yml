@@ -380,9 +380,18 @@ jobs:
       # no context at all, so the flags are built in a shell step below, where
       # `$HOME` expands, and exported through $GITHUB_ENV.
     permissions:
-      "attestations": "write"
+      # `contents: read` and nothing else.
+      #
+      # `attestations: write` and `id-token: write` used to sit here, which made
+      # the provenance authentic but not unforgeable: any step in this job could
+      # request an OIDC token and sign whatever it liked. They now live in
+      # `.github/workflows/attest.yml`, which this job calls. A compromised build
+      # step can still produce a bad binary; it cannot forge an attestation for
+      # one, because it never holds the token.
+      #
+      # That is the SLSA Build L3 property, and it is why the Attest step below
+      # is a `uses:` on a reusable workflow rather than an action call here.
       "contents": "read"
-      "id-token": "write"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -488,9 +497,16 @@ jobs:
           ls -la target/distrib/*.cdx.json
 
       - name: Attest
-        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        # A reusable workflow, not an action call, so the signing permission is
+        # outside this job's trust boundary. See `.github/workflows/attest.yml`.
+        #
+        # `secrets: inherit` is not used: the reusable workflow needs no secret.
+        # It gets an OIDC token from GitHub's issuer, which is the point — there
+        # is no long-lived key for this job to reach.
+        uses: ./.github/workflows/attest.yml
         with:
           subject-path: "target/distrib/*${{ join(matrix.targets, ', ') }}*"
+          subject-name: "${{ join(matrix.targets, ', ') }}"
 
       - id: cargo-dist
         name: Post-build
