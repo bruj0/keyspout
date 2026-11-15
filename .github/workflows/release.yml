@@ -51,6 +51,63 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # HAND-ADDED. Classify the diff so the gate can run the right amount of work.
+  #
+  # A documentation-only PR used to pay the same five minutes as a change to the
+  # memory barrier. That is the wrong default: a gate that costs five minutes for
+  # a typo teaches people to batch unrelated changes, and a gate people stop
+  # watching is a gate that stops working.
+  #
+  # The classification is by **what changed**, never by a belief about what
+  # cannot be affected. `scripts/ksp-gate-scope.sh` holds the rules and its own
+  # selftest, and it defaults to `full` for anything it does not recognise — a
+  # scope that silently widened would be worse than no split at all.
+  #
+  # A tag and a push to `main` are always `full`. The scope exists to make a PR
+  # fast, not to make a release less checked.
+  # ---------------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      scope: ${{ steps.classify.outputs.scope }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The classifier diffs against the base, so it needs the history.
+          fetch-depth: 0
+
+      - name: Classify the diff
+        id: classify
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # A tag publishes and `main` seeds the cache every PR reads. Neither is
+          # narrowed: the scope exists to make a PR fast, not to make a release
+          # less checked.
+          if [ "$EVENT" != "pull_request" ] || [ "${REF#refs/tags/}" != "$REF" ]; then
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+            echo "not a pull request, so the scope is full"
+            exit 0
+          fi
+          if [ -z "${BASE_SHA:-}" ]; then
+            # No base means the classification cannot run. A failed
+            # classification must not narrow the gate.
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+            echo "::warning::no base sha; defaulting to the full gate"
+            exit 0
+          fi
+          scope="$(bash scripts/ksp-gate-scope.sh --base "$BASE_SHA")"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          echo "scope: $scope"
+          git diff --name-only "${BASE_SHA}...HEAD" | head -50
+
+  # ---------------------------------------------------------------------------
   # HAND-ADDED. Everything in this job is not `dist` output.
   #
   # A tag must not publish a binary the gate has not seen. This job runs the
@@ -65,17 +122,42 @@ jobs:
     # `/usr/bin/valkey-server` path.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    needs:
+      - changes
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Report the scope
+        shell: bash
+        env:
+          SCOPE: ${{ needs.changes.outputs.scope }}
+        run: |
+          echo "gate scope: $SCOPE"
+          case "$SCOPE" in
+            docs)
+              echo "documentation only: markers, fmt and workflow lint. The"
+              echo "setup steps below are skipped because nothing they install"
+              echo "can affect a prose change."
+              ;;
+            code)
+              echo "product change: the full suite except the targets that need"
+              echo "root or a Linux-only mechanism. Those run on main and tags."
+              ;;
+            *)
+              echo "full: everything this runner can check."
+              ;;
+          esac
+
       - name: Install Rust
+        if: needs.changes.outputs.scope != 'docs'
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
           rustup default 1.99.1
 
       - name: Cache cargo registry and dependency builds
+        if: needs.changes.outputs.scope != 'docs'
         # Measured: the gate's 5m22s is now almost entirely compilation. The tests
         # themselves run in about 90 seconds; the rest is building 322 crates, and
         # `aws-lc-sys` alone compiles a large body of C for the TLS stack.
@@ -138,7 +220,37 @@ jobs:
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Cache the privileged target directory
+        if: needs.changes.outputs.scope != 'docs'
+        # The second target directory, and the second cache.
+        #
+        # `principals` runs under `sudo` with its own `CARGO_TARGET_DIR`, because
+        # a root-owned `target/` breaks every later non-root build. That
+        # separation is correct and stays. What was wrong is that a *separate*
+        # directory was also a *cold* one: measured on run 43709676015,
+        # `principals` spent 73 seconds compiling 322 crates and 2.35 seconds
+        # running its five tests. It was the second-largest cost in the gate and
+        # almost none of it was the test.
+        #
+        # A separate directory does not have to be uncached. The dependency graph
+        # is identical to the one the first cache holds, so a warm restore here
+        # removes the compile; the workspace crates still rebuild, which is
+        # seconds.
+        #
+        # `workspaces` is `". -> target-root"`, relative to the checkout, which
+        # is the form `rust-cache` resolves correctly. The absolute-path form is
+        # what silently restored nothing before — see the note on the first cache
+        # step. `key` must differ from the first cache's, or the two would fight
+        # over one entry and each would invalidate the other.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target-root"
+          key: root-target
+          cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Install build dependencies
+        if: needs.changes.outputs.scope != 'docs'
         # A timeout on this step, not only on the job.
         #
         # `apt-get update` against the Ubuntu archive has hung for 25+ minutes on
@@ -163,6 +275,7 @@ jobs:
             valkey-server unzip curl
 
       - name: Install cargo-audit and cargo-vet
+        if: needs.changes.outputs.scope != 'docs'
         # Prebuilt binaries, not `cargo install`.
         #
         # `cargo install cargo-audit --locked && cargo install cargo-vet
@@ -233,6 +346,7 @@ jobs:
           cargo-vet --version
 
       - name: Install OSV-Scanner
+        if: needs.changes.outputs.scope != 'docs'
         # A download with no timeout is a hang that looks like a slow network.
         timeout-minutes: 5
         # Pinned by version, and the downloaded binary is checked against the
@@ -272,6 +386,7 @@ jobs:
           osv-scanner --version
 
       - name: Start RustFS
+        if: needs.changes.outputs.scope != 'docs'
         # The wait loop below is bounded, but the download above it is not.
         timeout-minutes: 5
         # `ksp-backend:s3_store` needs an S3 server at 127.0.0.1:9000. The VM
@@ -306,6 +421,7 @@ jobs:
           echo "rustfs did not start; log follows"; cat /tmp/rustfs.log; exit 1
 
       - name: Install the AWS CLI
+        if: needs.changes.outputs.scope != 'docs'
         timeout-minutes: 5
         # Ubuntu 24.04 has no `awscli` package (`apt-cache policy awscli` reports
         # no candidate), so the official v2 installer is used. It is a single
@@ -318,6 +434,7 @@ jobs:
           aws --version
 
       - name: Create the S3 test buckets
+        if: needs.changes.outputs.scope != 'docs'
         # `s3_store` needs two buckets that already exist, one with versioning
         # on and one with it off. The server does not create them, and a test
         # that made its own bucket would be proving the wrong thing: the
@@ -352,9 +469,23 @@ jobs:
         # `./target` is the default the action expects, and the gate honours
         # `CARGO_TARGET_DIR`. The runner has the disk for it; the 19 GiB ceiling
         # that forced `/tmp` is a property of the local VM, not of a GitHub runner.
+        #
+        # `KSP_ROOT_TARGET_DIR` is a sibling of `target`, not a child of it, and
+        # that is deliberate. `rust-cache` saves the whole target directory, so a
+        # `target/root` would be stored by the first cache as well as the second,
+        # and the two would then disagree about one directory. A sibling keeps the
+        # two caches disjoint.
+        #
+        # It is the second cache below. Measured on run 43709676015: `principals`
+        # spent 73 of its 75 seconds compiling and 2.35 seconds testing, because
+        # its target directory is separate (a root-owned `target/` breaks every
+        # later non-root build) and was therefore cold on every run. A separate
+        # directory does not have to be an uncached one.
         env:
           CARGO_TARGET_DIR: target
-        run: bash scripts/ksp-gate.sh ci < /dev/null
+          KSP_ROOT_TARGET_DIR: target-root
+          SCOPE: ${{ needs.changes.outputs.scope }}
+        run: bash scripts/ksp-gate.sh ci --scope "$SCOPE" < /dev/null
 
   plan:
     needs: gate
