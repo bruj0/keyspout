@@ -29,6 +29,21 @@ permissions:
 
 on:
   push:
+    # A tag publishes. A push to `main` does not — it exists to seed the build
+    # cache in the default branch's scope, which is the only scope a pull request
+    # can read.
+    #
+    # GitHub's rule, verified against the docs and against two PR runs that both
+    # missed: a cache created by a `pull_request` run is scoped to
+    # `refs/pull/<n>/merge` and "cannot be restored by the base branch or other
+    # pull requests targeting that base branch". So saving on PRs helps only a
+    # re-run of that same PR.
+    #
+    # A run on `main` writes the cache where every PR can read it. The gate still
+    # runs on that push — it is the same check, and skipping it would mean `main`
+    # could be red while PRs were green.
+    branches:
+      - main
     tags:
       - "v[0-9]+.*"
   pull_request:
@@ -83,21 +98,26 @@ jobs:
         # and a cache keyed without it would restore artifacts whose embedded
         # paths differ from what the release is supposed to contain.
         #
-        # `save-if` was `github.ref == 'refs/heads/main'`, which was a bug: no
-        # run has ever been on `main`. Every run is a tag push or a PR branch, so
-        # the cache was never written and every PR paid a full cold compile of
-        # 322 crates. Measured after four release runs:
+        # `save-if` saves on `main` only, and that is the whole point.
         #
-        #   gh api repos/bruj0/keyspout/actions/caches --jq .total_count
-        #   # 0
+        # GitHub scopes a cache to the ref that created it. A `pull_request` run
+        # writes to `refs/pull/<n>/merge`, and the docs are explicit that such a
+        # cache "cannot be restored by the base branch or other pull requests
+        # targeting that base branch" — so a PR save helps only a re-run of that
+        # same PR.
         #
-        # Saving on `main` *and* on pull requests means the first PR seeds the
-        # cache and later ones reuse it. `rust-cache` keys on the job and the
-        # lockfile, so two concurrent PRs with the same dependencies write the
-        # same key and the loser is a no-op rather than a conflict.
+        # Measured, twice:
         #
-        # A tag build still only restores: it must not depend on a cache a PR
-        # could have written, and it is the one run where a cold compile is
+        #   PR #7  cache step 4s, gate 5m43s   (nothing to restore)
+        #   PR #8  cache step 1s, gate 7m29s   (PR #7's cache invisible to it)
+        #
+        # A run on `main` writes to the default branch's scope, and a PR *can*
+        # restore from there. That is why `on.push.branches` now includes `main`:
+        # without a run on that branch there is nothing for a PR to read, which is
+        # why four release runs produced `total_count: 0`.
+        #
+        # A tag build restores but does not save. It must not depend on a cache a
+        # PR could have written, and it is the one run where a cold compile is
         # acceptable.
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -106,7 +126,7 @@ jobs:
           # two-account tests. That one is root-owned and rebuilt each run; it is
           # a few crates, not the dependency graph, so it is not worth caching.
           cache-on-failure: "true"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install build dependencies
         # A timeout on this step, not only on the job.
@@ -319,9 +339,17 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
-      publishing: ${{ !github.event.pull_request }}
+      # These three must require a *tag*, not merely "not a pull request".
+      #
+      # They were `!github.event.pull_request`, which was correct while the only
+      # non-PR trigger was a tag push. Adding `on.push.branches: main` made it
+      # wrong: a push to `main` is not a pull request, so `publishing` would be
+      # true and the workflow would try to publish a release named after the
+      # branch. `startsWith(github.ref, 'refs/tags/')` is the property that
+      # actually matters.
+      tag: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      tag-flag: ${{ startsWith(github.ref, 'refs/tags/') && format('--tag={0}', github.ref_name) || '' }}
+      publishing: ${{ startsWith(github.ref, 'refs/tags/') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
