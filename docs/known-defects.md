@@ -23,8 +23,11 @@ reports success for a record that can never admit a lease.
 ## D1 — `secret share` cannot mint on a deployment with no bound account
 
 **Severity:** functional. The command refuses.
-**Status:** fixed for the bound-account path in `1e13c47`; this entry records the
-remaining case.
+**Status:** fixed in `88adc81`, with the refusal sentence corrected in `cd8f6b9`.
+This is option 1 below: `secret share` checks the caller against the ledger's owner
+before it seals anything, and refuses with a sentence naming the account that owns
+the ledger and `admin user add --unix-user`. The bound-account path was fixed
+earlier in `1e13c47`.
 
 ### What happens
 
@@ -76,9 +79,25 @@ issuance. The honest options are:
 Option 1 is what the design vocabulary supports today. Option 2 is a design
 change and needs agreement in an issue first.
 
+### What the fix changed
+
+`crates/ksp/src/secret.rs` gains `check_ledger_account`, called from the
+`secret share` arm **before** `mint_lease`. It compares three recorded facts: the
+account the deployment is bound to (`deployment.user_account`), the uid that owns
+`issuance.jsonl`, and the effective uid of the process. It refuses only when the
+caller is neither the bound account nor the ledger's owner, so an unbound
+deployment and a single-account host are unaffected. A ledger that does not exist
+yet is not a refusal either: the append this command is about to make is what
+creates it.
+
+The decision is split into `decide_ledger_account(bound, caller_uid, owner_uid)`
+so the rule is testable without root. The integration case — two UNIX accounts and
+a file owned by the other one — needs root and belongs in `principals.rs`, which
+the gate runs in the VM.
+
 ### How it was found
 
-`crates/ksp-cli/tests/principals.rs::two_accounts_complete_the_session_and_the_kernel_keeps_them_apart`
+`crates/ksp/tests/principals.rs::two_accounts_complete_the_session_and_the_kernel_keeps_them_apart`
 failed on the first CI run the gate ever did. It had been failing since
 `cffdd55` (2026-10-25) and nobody saw it, because the gate had never run in CI.
 That specific test now passes. The unbound third-account case is what remains.
@@ -89,7 +108,12 @@ That specific test now passes. The unbound third-account case is what remains.
 
 **Severity:** tooling. The vulnerability gate is stricter than intended, not
 weaker.
-**Status:** open. Documented in `SECURITY.md` §4.3.
+**Status:** open, deferred to the downstream work. Documented in `SECURITY.md`
+§4.3. Feature `012-upstream-defect-fixes` planned this and then removed it as a
+work package: the OSV step runs only in `ci_part()`, which only the downstream
+release workflow invokes, so a fix here could not be verified from this tree
+alone. **The fix must still be committed in this tree** — `scripts/osv-gate.py`
+ships — and the deferral is about where it is proven, not where it is written.
 
 ### What happens
 
@@ -206,7 +230,7 @@ which is not.
 
 ### What happens
 
-`crates/ksp-cli/src/app.rs` in the public tree was missing `d9d53c7`, the commit
+`crates/ksp/src/app.rs` in the public tree was missing `d9d53c7`, the commit
 that made `--json` on `secret get` emit a document. The test
 `wired_surface::json_on_get_emits_a_document_and_still_honours_revoke` failed on
 the runner and passed locally, because the local tree had the fix and the public
@@ -246,8 +270,9 @@ knows what happens when it is skipped.
 
 **Severity:** functional, and the most destructive defect in this file. It revokes
 an authorisation without saying so.
-**Status:** open. The read-back that makes it visible shipped in `526c524`; the
-silent replacement is unchanged.
+**Status:** fixed in `53fa902`, with the ordering rule corrected in `4b3a42c`. A
+write now merges and reports the diff; `--replace` restores the whole-set
+behaviour. The read-back that makes the loss visible shipped earlier in `526c524`.
 
 ### What happens
 
@@ -338,7 +363,12 @@ turned the symptom into a reproduction.
 
 **Severity:** functional. The refusal carries no sentence, so a caller cannot tell
 a missing password from a policy decision.
-**Status:** open.
+**Status:** fixed in `88adc81`. Five arms carried the shape, not the three this
+entry first named: `secret get`, `secret rm`, `secret share`, `token mint` and
+`secret set`. `secret set` already printed its sentence and keeps exit `13`; the
+other four now print the typed sentence and exit `6`. `AdminError::NoPassword` maps
+to `MISSING_KEY`, and both reader branches return the same error, so a closed pipe
+and an open pipe agree on the code and the sentence.
 
 ### What happens
 
@@ -357,7 +387,7 @@ ksp: refused (exit 2: policy denied the operation)
 ```
 
 The cause is `AdminError::NoPassword`, which maps to `POLICY_DENIAL` in
-`crates/ksp-cli/src/admin.rs`. An empty or absent password is not a policy
+`crates/ksp/src/admin.rs`. An empty or absent password is not a policy
 decision, and the sentence the type carries — "the password could not be read" —
 is discarded before it reaches the caller.
 
@@ -419,15 +449,38 @@ supply `--passphrase-file`, and a check of what happens when it does not produce
 the same time and did not have the defect, which is what identified the three
 command arms as the cause rather than the password reader.
 
+### What the fix changed
+
+- `password()` returns `AdminError` rather than an `i32`, so the sentence survives
+  the return. A fourth variant, `PassphraseFile`, names the path when
+  `--passphrase-file` could not be opened: a wrong path and an unreadable stdin are
+  different fixes.
+- `AdminError::NoPassword` renders a sentence naming `--passphrase-file` and maps to
+  `MISSING_KEY`. It mapped to `POLICY_DENIAL`, which contradicted the exit-code
+  table in the design specification: `6` is documented as "credential missing for
+  this surface".
+- The four arms render the sentence before returning the code, following the shape
+  `secret set` already had.
+- Both branches of `read_password_from_stdin` return `AdminError::NoPassword`, so a
+  closed pipe and an open pipe cannot disagree.
+- Tests in `crates/ksp/tests/refusals.rs` assert the code **and** the sentence
+  for every command, that `secret set` keeps `13`, that a correct password still
+  succeeds, that a real policy denial still returns `2`, and that the two reader
+  branches agree.
+
 ---
 
 ## D8 — A sweep scope deeper than the level the sweep owns is accepted and never admits
 
 **Severity:** functional. `arm-sweep` reports success and the capability never
 moves.
-**Status:** open, and it is a design question rather than a coding error. The
-onboarding plan records it as a known behaviour and leaves it unfixed by decision;
-this entry adds the reproduction and the measured output.
+**Status:** fixed in `304de8c`, with the guard ordering corrected in `0f95fef`.
+The entry said this was "a design question rather than a coding error" and left it
+unfixed by decision. That reading was wrong: the parser's own doc comment said
+"optionally deeper" while the code inspected one segment and returned, so the
+accepted shape was never a decision anyone made — it was a missing check. The
+refusal now names the accepted level, and the `--grant` path is checked the same
+way.
 
 ### What happens
 
@@ -517,7 +570,9 @@ misleading outputs.
 ## D9 — Nothing enumerates enrolled agents
 
 **Severity:** functional gap. A report cannot list the agents a host holds.
-**Status:** open.
+**Status:** fixed in `9029b4d`, with the private-half assertion corrected in
+`89eef0e`. `ksp agent list` names every agent's principal UUID, display name when
+recorded, both key IDs and the fingerprint, and never a private half.
 
 ### What happens
 

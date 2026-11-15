@@ -558,12 +558,12 @@ jobs:
           set -euo pipefail
           for target in ${{ join(matrix.targets, ' ') }}; do
             cargo cyclonedx \
-              --manifest-path crates/ksp-cli/Cargo.toml \
+              --manifest-path crates/ksp/Cargo.toml \
               --format json --spec-version 1.5 \
               --describe binaries --target "$target" --target-in-filename
             # `cargo-cyclonedx` writes beside the manifest; move it into the
             # distrib directory so the existing upload step picks it up.
-            for f in crates/ksp-cli/*.cdx.json; do
+            for f in crates/ksp/*.cdx.json; do
               [ -e "$f" ] || continue
               mv "$f" "target/distrib/ksp-${target}-sbom.cdx.json"
             done

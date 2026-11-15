@@ -24,6 +24,16 @@ npx skills add bruj0/keyspout --skill keyspout-quickstart
 `npx skills` needs Node 22.20 or later. It keeps one canonical copy under
 `~/.agents/skills/` and symlinks it into each agent's own directory.
 
+**If `~/.agents/skills` is a symlink, the install writes through it.** A dotfiles
+setup often points that path at a repository, and `npx skills add` follows the
+link, so the seven skill directories appear as untracked files in that
+repository. The install is not wrong — the files are where the agents look — but
+check before you commit anything:
+
+```bash
+readlink ~/.agents/skills     # names the real directory, if it is a link
+```
+
 ### Verify the install
 
 The CLI can report success and still leave an agent unable to see the skill: it
@@ -31,10 +41,13 @@ symlinks into `~/.claude/skills/` for Claude Code, and there are open issues
 where the symlink is never created. Check rather than trust the exit code.
 
 ```bash
-npx skills list -g                          # what the CLI thinks is installed
 ls ~/.agents/skills/keyspout-quickstart/SKILL.md   # the canonical copy exists
 ls -la ~/.claude/skills/keyspout-quickstart        # -> ../../.agents/skills/...
 ```
+
+The filesystem check is the one to trust. `npx skills list -g` reports every
+skill as `Source: untracked`, including one installed from a GitHub repository,
+so it cannot tell you whether an update will reach the copy an agent reads.
 
 If the last command reports no such file and you use Claude Code, install through
 its own plugin system instead:
@@ -63,10 +76,12 @@ Cursor.
 The skills drive a `ksp` binary. Install it first:
 
 ```bash
-brew install bruj0/tap/ksp
+brew trust bruj0/tap && brew install bruj0/tap/ksp
 ```
 
-See the [main README](../README.md) for the other platforms.
+Homebrew 7 refuses a formula from a third-party tap until you trust it, which is
+why the command has two parts. See the [main README](../README.md) for the other
+platforms.
 
 ## What a skill may not contain
 
@@ -76,7 +91,7 @@ Two checks enforce this, and they run at different times on purpose.
 does not have, when its frontmatter `name` disagrees with its folder, or when the
 folder is not kebab-case. It runs in the gate, against the built binary.
 
-`crates/ksp-cli/tests/skills_public.rs` fails when a skill names something the
+`crates/ksp/tests/skills_public.rs` fails when a skill names something the
 public tree does not carry. It reads its marker list from the sync's own
 configuration, so the commit-time check and the publish-time scrub cannot drift
 apart.

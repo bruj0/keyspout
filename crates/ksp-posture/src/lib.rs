@@ -77,7 +77,7 @@ pub fn refuse_dumping() -> UndumpablePosture {
 }
 pub use permissions::{
     ExpectedOwner, ExpectedRoot, PERMISSION_BITS, PermissionFinding, RootKind, Verdict, audit,
-    drifted, effective_uid, first_drift,
+    drifted, effective_gid, effective_uid, first_drift,
 };
 pub use posture::{
     BackendShape, BarrierPosture, CapabilityDisclosure, ConfinementPosture, ConfinementState,

@@ -28,7 +28,7 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 # `toml` is a dev-dependency and only a dev-dependency. The capability
-# configuration is parsed by `ksp-cli`, which owns the file format; this
+# configuration is parsed by `ksp`, which owns the file format; this
 # crate holds the types and must not learn what a file format is. The
 # dev-dependency exists so that a test can prove a real TOML document
 # parses into the configuration type — the published crate gains no

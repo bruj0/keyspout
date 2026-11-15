@@ -8,11 +8,11 @@ members = [
     "crates/ksp-posture",
     "crates/ksp-deletion",
     "crates/ksp-key-lifecycle",
-    "crates/ksp-cli",
+    "crates/ksp",
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.99.1"
 # MIT, matching the `LICENSE` the public tree ships. The field said
@@ -48,7 +48,7 @@ serde_json = "1.0.154"
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "2.0.12"
 # The capability configuration file is TOML. The parser lives in
-# `ksp-cli`; `ksp-types` takes it only as a dev-dependency, so that a test
+# `ksp`; `ksp-types` takes it only as a dev-dependency, so that a test
 # can prove the configuration type parses a real document without the
 # published crate gaining a parser dependency.
 toml = "1.1.8"
@@ -81,7 +81,7 @@ ksp-identity = { path = "crates/ksp-identity" }
 ksp-posture = { path = "crates/ksp-posture" }
 ksp-deletion = { path = "crates/ksp-deletion" }
 ksp-key-lifecycle = { path = "crates/ksp-key-lifecycle" }
-ksp-cli = { path = "crates/ksp-cli" }
+ksp = { path = "crates/ksp" }
 
 [workspace.lints.rust]
 # A cryptographic operation that can fail must be handled, not unwrapped.
@@ -122,7 +122,7 @@ overflow-checks = true
 # Without it the release fails at the build step, not before:
 #
 #   error: profile `dist` is not defined
-#     × failed to find bin ksp for path+file:///…/crates/ksp-cli#1.0.0
+#     × failed to find bin ksp for path+file:///…/crates/ksp#1.0.0
 #
 # `dist` asks cargo for a profile named `dist` and cargo refuses an undefined
 # one. The `help: did the above build fail?` line points at the build rather than

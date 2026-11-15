@@ -20,9 +20,9 @@
 # The section is required even though the real `[workspace]` is in `Cargo.toml`:
 # this file describes the *release*, and `dist` reads the members from there. No
 # member is listed, so `dist` builds the workspace's default members — which is
-# `ksp-cli`, the only crate with a `[[bin]]`.
+# `ksp`, the only crate with a `[[bin]]`.
 [workspace]
-members = ["cargo:crates/ksp-cli"]
+members = ["cargo:crates/ksp"]
 
 [dist]
 # The dist version CI pins. A newer local `dist` warns rather than silently

@@ -81,6 +81,18 @@ pub fn effective_uid() -> u32 {
     crate::sys::geteuid()
 }
 
+/// The effective gid of this process.
+///
+/// A directory this process creates inherits its *parent's* group, which is a
+/// property of where the directory happens to live rather than of who has to
+/// share it. A store created under `/tmp` on macOS therefore inherits `wheel`,
+/// and a store created under `/home` may inherit `users` or `nogroup`. This is
+/// the group the process is certain to belong to, and it is what a shared store
+/// should carry.
+pub fn effective_gid() -> u32 {
+    crate::sys::getegid()
+}
+
 /// One root the layout expects, with the mode and owner it must carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedRoot {

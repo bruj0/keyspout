@@ -166,7 +166,7 @@ case "${1:-}" in
     "")
         if [ ! -x "$KSP_BIN" ]; then
             printf 'ksp-skills: no binary at %s\n' "$KSP_BIN" >&2
-            printf '            build it with `cargo build -p ksp-cli`, or set KSP_BIN\n' >&2
+            printf '            build it with `cargo build -p ksp`, or set KSP_BIN\n' >&2
             exit 2
         fi
         check_dir "$SKILLS"
