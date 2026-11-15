@@ -121,10 +121,19 @@ jobs:
         # acceptable.
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: ". -> /tmp/ksp-gate-target"
-          # The gate also builds under sudo into a separate directory for the
-          # two-account tests. That one is root-owned and rebuilt each run; it is
-          # a few crates, not the dependency graph, so it is not worth caching.
+          # No `workspaces` override: the gate is told to build into `./target`
+          # by `CARGO_TARGET_DIR` below, which is `rust-cache`'s default and the
+          # only path it resolves reliably.
+          #
+          # The previous value was `". -> /tmp/ksp-gate-target"`, and the target
+          # half of that is resolved **relative to the workspace**, so it became
+          # `/home/runner/work/keyspout/keyspout/tmp/ksp-gate-target` — a
+          # directory the gate never writes to. The cache restored 62MB of
+          # registry on every run and not one compiled artifact, so every phase
+          # cost a cold build while the log said `Cache restored successfully`.
+          #
+          # Verified by reading the resolved path in the cache step's own log
+          # rather than trusting the syntax.
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -332,10 +341,33 @@ jobs:
           aws --endpoint-url "$ep" s3api get-bucket-versioning --bucket ksp-s3-versioned
 
       - name: Run the gate
+        # Build into `./target` so the cache has a path it actually resolves.
+        #
+        # The gate defaults to `/tmp/ksp-gate-target`, which `rust-cache` cannot
+        # express reliably: the target half of `workspaces` is relative to the
+        # checkout, so an absolute path became `./tmp/ksp-gate-target` and nothing
+        # was ever restored from it.
+        #
+        # `./target` is the default the action expects, and the gate honours
+        # `CARGO_TARGET_DIR`. The runner has the disk for it; the 19 GiB ceiling
+        # that forced `/tmp` is a property of the local VM, not of a GitHub runner.
+        env:
+          CARGO_TARGET_DIR: target
         run: bash scripts/ksp-gate.sh ci < /dev/null
 
   plan:
     needs: gate
+    # A push to `main` runs the gate to seed the build cache, and nothing else.
+    #
+    # Without this condition `plan` ran on a `main` push and failed:
+    #
+    #   × Couldn't parse the version from the provided announcement tag (main)
+    #   ╰─▶ unexpected character 'm' while parsing major version number
+    #
+    # `dist` reads the tag as a version, and `main` is not one. Planning a release
+    # is meaningful only for a tag or a pull request, so this job says so rather
+    # than relying on the version parser to reject the other case.
+    if: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-22.04
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
@@ -406,7 +438,7 @@ jobs:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
     needs:
       - plan
-    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+    if: ${{ needs.plan.result == 'success' && fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
@@ -571,7 +603,7 @@ jobs:
     needs:
       - plan
       - build-local-artifacts
-    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+    if: ${{ needs.plan.result == 'success' && fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -856,7 +888,7 @@ jobs:
       PLAN: ${{ needs.plan.outputs.val }}
       GITHUB_USER: "bruj0"
       GITHUB_EMAIL: "ramakandra@gmail.com"
-    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    if: ${{ needs.host.result == 'success' && (!fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -897,7 +929,7 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    if: ${{ needs.host.result == 'success' && (!fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases) }}
     steps:
       # `dist` is not on the runner image, and this job had no install step, so it
       # failed with
