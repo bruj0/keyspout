@@ -14,11 +14,11 @@ Keyspout service in the trust path.
 
 | Platform | Command |
 |---|---|
-| macOS (Homebrew) | `brew install bruj0/tap/ksp` |
+| macOS (Homebrew) | `brew trust bruj0/tap && brew install bruj0/tap/ksp` |
 | macOS or Linux, any | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bruj0/keyspout/releases/latest/download/ksp-installer.sh \| sh` |
 | Debian / Ubuntu | [download the `.deb`](https://github.com/bruj0/keyspout/releases/latest), then `sudo apt install ./ksp_*_amd64.deb` |
 | Fedora / RHEL / Rocky / Alma / openSUSE | [download the `.rpm`](https://github.com/bruj0/keyspout/releases/latest), then `sudo dnf install ./ksp-*.rpm` |
-| Any, with Rust | `cargo install --git https://github.com/bruj0/keyspout ksp-cli` |
+| Any, with Rust | `cargo install --git https://github.com/bruj0/keyspout ksp` |
 
 Then set up a deployment:
 
@@ -27,8 +27,16 @@ ksp init
 ```
 
 The tap is `bruj0/tap`, not homebrew-core, which is why the Homebrew command is
-longer than usual. The `.deb` and `.rpm` come from the release page rather than
-a package repository, so they do not update themselves; re-download to upgrade.
+longer than usual. Homebrew 7 refuses a formula from a third-party tap until you
+trust it, so `brew trust bruj0/tap` runs first; without it the install fails with
+`Refusing to load formula ... from untrusted tap`.
+
+The `.deb` and `.rpm` come from the release page rather than a package
+repository, so they do not update themselves; re-download to upgrade.
+
+**Where the store goes.** `ksp init` creates `$HOME/.ksp` unless `KSP_HOME` names
+another absolute path. The store is a directory, not a service: back it up, and
+keep it out of a git checkout.
 
 **macOS, downloaded in a browser:** the binaries are unsigned, so Gatekeeper
 refuses one that Safari quarantined. Homebrew and `curl` installs are unaffected.

@@ -155,7 +155,7 @@ read a fingerprint from. Verification resolves a signer here and never from the
 record's own key id, filename or fingerprint.
 _Avoid_: trusted key, known key, allowlist entry
 _Subsystems_: Deletion Evidence and Consume Outcome
-_Files_: crates/ksp-deletion/src/audit.rs, crates/ksp-cli/src/audit_verify.rs
+_Files_: crates/ksp-deletion/src/audit.rs, crates/ksp/src/audit_verify.rs
 _Relates to_: Audit Record (is verified by), Unpinned Signer (is the absence of), Head Digest (is read beside)
 _History_:
 - 2026-10-24 (002-file-os-split-sweeper): Term introduced. A verifier that reads the
@@ -179,7 +179,7 @@ thing that turns a shortened but internally valid chain into a mismatch; without
 one the honest answer is that completeness is unknown.
 _Avoid_: checksum, hash, log pointer
 _Subsystems_: Deletion Evidence and Consume Outcome
-_Files_: crates/ksp-deletion/src/audit.rs, crates/ksp-cli/src/audit_verify.rs
+_Files_: crates/ksp-deletion/src/audit.rs, crates/ksp/src/audit_verify.rs
 _Relates to_: Audit Record (is the digest of one), Chain Break (is distinguished from)
 _History_:
 - 2026-10-24 (002-file-os-split-sweeper): Term introduced.

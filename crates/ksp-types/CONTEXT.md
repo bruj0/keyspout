@@ -50,7 +50,7 @@ refer to; the display name is mutable metadata and nothing security-relevant key
 on it.
 _Avoid_: user, account, actor, identity, Alice
 _Subsystems_: Shared Contract Types, Host Confinement and Key Material Posture
-_Files_: crates/ksp-types/src/metadata.rs, crates/ksp-cli/src/admin.rs, crates/ksp-cli/src/agent.rs
+_Files_: crates/ksp-types/src/metadata.rs, crates/ksp/src/admin.rs, crates/ksp/src/agent.rs
 _Relates to_: Actor ID (signs as), User ID (is a role-specific view of), Principal Binding (owns), Signature Domain (is scoped by), Principal Registry (is issued by)
 _History_:
 - 2026-10-23 (002-file-os-split-sweeper): Term introduced to replace the "Alice"
@@ -65,7 +65,7 @@ display name is recorded as mutable metadata and is never resolved to an
 identity without an explicit lookup.
 _Avoid_: user database, account list, id allocator
 _Subsystems_: Shared Contract Types, Keyspout Command-Line Interface
-_Files_: crates/ksp-types/src/metadata.rs, crates/ksp-cli/src/admin.rs, crates/ksp-cli/src/agent.rs, crates/ksp-cli/src/deployment.rs
+_Files_: crates/ksp-types/src/metadata.rs, crates/ksp/src/admin.rs, crates/ksp/src/agent.rs, crates/ksp/src/deployment.rs
 _Relates to_: Principal (issues), Actor ID (is carried by), Enrolment Fingerprint (binds the keys)
 _History_:
 - 2026-10-24 (002-file-os-split-sweeper): Term introduced. The rule is what makes

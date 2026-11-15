@@ -117,7 +117,7 @@ jobs:
           # `cargo-deb` reads [package.metadata.deb] and rewrites the asset path
           # to the per-target directory, so the binary it packages is the one
           # just downloaded rather than a fresh build.
-          cargo deb -p ksp-cli --no-build --target "${{ matrix.target }}" \
+          cargo deb -p ksp --no-build --target "${{ matrix.target }}" \
             --output /tmp/pkg/out
           ls -la /tmp/pkg/out
 
@@ -126,7 +126,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo generate-rpm -p crates/ksp-cli --target "${{ matrix.target }}" \
+          cargo generate-rpm -p crates/ksp --target "${{ matrix.target }}" \
             --output /tmp/pkg/out
           ls -la /tmp/pkg/out
 

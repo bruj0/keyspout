@@ -10,7 +10,7 @@
 #   cargo test --workspace
 #   cargo audit
 #
-# and that list can never be green here. `crates/ksp-cli/tests/principals.rs`
+# and that list can never be green here. `crates/ksp/tests/principals.rs`
 # creates two UNIX accounts and refuses to run without privileges, on purpose (a
 # skipped security test reads like a pass). `cargo test` stops at the first
 # failing test binary, so in a non-root run that file failed first and every
@@ -70,16 +70,16 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # that need root. Everything else is a host target.
 #
 #   ksp-backend:valkey_durability   needs a running Valkey service
-#   ksp-cli:confinement             asserts the Landlock ruleset refused a path
-#   ksp-cli:sc008_consume           ditto, through the consume sequence
-#   ksp-cli:sc019_separate_process  ditto, across two processes
-#   ksp-cli:principals              two UNIX accounts, and root to create them
+#   ksp:confinement             asserts the Landlock ruleset refused a path
+#   ksp:sc008_consume           ditto, through the consume sequence
+#   ksp:sc019_separate_process  ditto, across two processes
+#   ksp:principals              two UNIX accounts, and root to create them
 VM_TARGETS=(
     ksp-backend:valkey_durability
-    ksp-cli:confinement
-    ksp-cli:principals
-    ksp-cli:sc008_consume
-    ksp-cli:sc019_separate_process
+    ksp:confinement
+    ksp:principals
+    ksp:sc008_consume
+    ksp:sc019_separate_process
 )
 
 is_vm_target() {
@@ -249,7 +249,7 @@ vm_part() {
     local pair
     local -a failed=()
     for pair in "${VM_TARGETS[@]}"; do
-        if [ "$pair" = "ksp-cli:principals" ]; then
+        if [ "$pair" = "ksp:principals" ]; then
             continue
         fi
         if [ ! -f "crates/${pair%%:*}/tests/${pair##*:}.rs" ]; then
@@ -272,7 +272,7 @@ vm_part() {
     # is a failed gate, not a skipped one.
     step "vm: tests: two-account boundary (root, principals.rs)"
     if [ "$(id -u)" -eq 0 ]; then
-        CARGO_TARGET_DIR="$root_target" cargo test -p ksp-cli --test principals --no-fail-fast
+        CARGO_TARGET_DIR="$root_target" cargo test -p ksp --test principals --no-fail-fast
     else
         if ! sudo -n true 2>/dev/null; then
             echo "error: the two-account tests need root and 'sudo -n' is unavailable." >&2
@@ -285,7 +285,7 @@ vm_part() {
             RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
             CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
             CARGO_TARGET_DIR="$root_target" \
-            cargo test -p ksp-cli --test principals --no-fail-fast
+            cargo test -p ksp --test principals --no-fail-fast
     fi
 }
 
@@ -457,7 +457,7 @@ ci_part() {
     # named in VM_TARGETS whose file has vanished fails here rather than being
     # skipped, for the same reason the vm part checks it.
     #
-    # `ksp-cli:principals` is excluded on purpose: it asserts `geteuid() == 0`
+    # `ksp:principals` is excluded on purpose: it asserts `geteuid() == 0`
     # and refuses to run otherwise, so running it here would fail every time. It
     # runs once, under sudo, in the step below. The other VM targets are excluded
     # because they need a Linux mechanism this host may not have; the `vm` and
@@ -465,7 +465,7 @@ ci_part() {
     step "ci: tests: integration targets (--no-fail-fast)"
     local -a integration_args=()
     while IFS= read -r pair; do
-        if [ "$pair" = "ksp-cli:principals" ]; then
+        if [ "$pair" = "ksp:principals" ]; then
             continue
         fi
         if is_vm_target "$pair"; then
@@ -491,8 +491,8 @@ ci_part() {
     # directory is separate rather than shared.
     step "ci: tests: two-account boundary (root, principals.rs)"
     if [ "$(id -u)" -eq 0 ]; then
-        CARGO_TARGET_DIR="$root_target" cargo test -p ksp-cli --test principals --no-fail-fast \
-            || failed+=("ksp-cli:principals")
+        CARGO_TARGET_DIR="$root_target" cargo test -p ksp --test principals --no-fail-fast \
+            || failed+=("ksp:principals")
     else
         if ! sudo -n true 2>/dev/null; then
             echo "error: the two-account tests need root and 'sudo -n' is unavailable." >&2
@@ -505,8 +505,8 @@ ci_part() {
             RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
             CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
             CARGO_TARGET_DIR="$root_target" \
-            cargo test -p ksp-cli --test principals --no-fail-fast \
-            || failed+=("ksp-cli:principals")
+            cargo test -p ksp --test principals --no-fail-fast \
+            || failed+=("ksp:principals")
     fi
 
     if [ "${#failed[@]}" -gt 0 ]; then

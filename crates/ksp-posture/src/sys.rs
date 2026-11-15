@@ -46,6 +46,18 @@ pub(crate) fn geteuid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// `getegid(2)` — the effective group of this process.
+///
+/// The group half of the same ownership question. A directory created by this
+/// process inherits the *parent's* group, which is a property of where the
+/// directory happens to live; this is the group the process is certain to belong
+/// to. A store that has to be shared between two accounts needs the second, not
+/// the first.
+pub(crate) fn getegid() -> u32 {
+    // SAFETY: `getegid` takes no arguments, touches no memory and cannot fail.
+    unsafe { libc::getegid() }
+}
+
 /// `memfd_secret(2)` — Linux only.
 ///
 /// The syscall number does not exist in Darwin's libc, so the function is

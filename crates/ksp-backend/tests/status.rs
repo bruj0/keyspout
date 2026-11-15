@@ -28,7 +28,7 @@ use ksp_types::LeaseCapability;
 /// The whole document, with an empty layout measurement.
 ///
 /// The permission disclosure is S1's: it has its own tests in `ksp-posture` and
-/// `ksp-cli`. This file is about what the status surface says, so the measurement
+/// `ksp`. This file is about what the status surface says, so the measurement
 /// is empty and the shape of the document is what is asserted.
 fn report_builder(
     classification: &Classification,

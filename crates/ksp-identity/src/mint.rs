@@ -30,7 +30,7 @@ pub const EXIT_INADMISSIBLE: u8 = 7;
 /// admission: the host could not record what it was about to publish.
 ///
 /// The number is `exit::INTERNAL` in the CLI, which this module cannot import.
-/// `crates/ksp-cli/src/exit.rs` asserts the two agree, so a drift is a failing
+/// `crates/ksp/src/exit.rs` asserts the two agree, so a drift is a failing
 /// test rather than a changed contract.
 pub const EXIT_INTERNAL: u8 = 1;
 

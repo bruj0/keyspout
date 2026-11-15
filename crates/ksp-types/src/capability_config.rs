@@ -8,7 +8,7 @@
 //! configuration that says which adapter the operator wants.
 //!
 //! It holds no behaviour, no policy and no I/O. The file format lives in
-//! `ksp-cli`; this crate holds the types both sides agree on.
+//! `ksp`; this crate holds the types both sides agree on.
 //!
 //! **Host capability is not lease capability.** A [`LeaseCapability`] says
 //! what a *storage backend* is configured to guarantee about a lease's
@@ -168,7 +168,7 @@ pub enum AdapterKind {
 ///
 /// The set is the five adapters this feature defines. It lives here rather
 /// than in the registry so that the *configuration* side can refuse a name
-/// it will never be able to resolve: `ksp-cli` parses a file without
+/// it will never be able to resolve: `ksp` parses a file without
 /// reaching into `ksp-posture`, and the refusal it reports is the same one
 /// the posture side would give.
 ///

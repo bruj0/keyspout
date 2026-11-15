@@ -1026,7 +1026,7 @@ Only needed if `ksp version` failed at the top. Pick the row for your platform.
 | macOS or Linux, any | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bruj0/keyspout/releases/latest/download/ksp-installer.sh \| sh` |
 | Debian / Ubuntu | [download the `.deb`](https://github.com/bruj0/keyspout/releases/latest), then `sudo apt install ./ksp_*_amd64.deb` |
 | Fedora / RHEL / Rocky / Alma / openSUSE | [download the `.rpm`](https://github.com/bruj0/keyspout/releases/latest), then `sudo dnf install ./ksp-*.rpm` |
-| Any, with Rust | `cargo install --git https://github.com/bruj0/keyspout ksp-cli` |
+| Any, with Rust | `cargo install --git https://github.com/bruj0/keyspout ksp` |
 
 ```
 ksp 0.1.0
@@ -1083,7 +1083,7 @@ them.
 
 ```bash
 git clone https://github.com/bruj0/keyspout.git && cd keyspout
-cargo build -p ksp-cli
+cargo build -p ksp
 
 mkdir -p ~/.local/bin
 ln -sf "$(pwd)/target/debug/ksp" ~/.local/bin/ksp

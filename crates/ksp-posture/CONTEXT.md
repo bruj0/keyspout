@@ -411,7 +411,7 @@ the status surface and, for a delivery, written to the audit log as a
 **Capability Acceptance**.
 _Avoid_: unconfined feature, missing capability, disabled capability
 _Subsystems_: Host Confinement and Key Material Posture
-_Files_: crates/ksp-posture/src/posture.rs, crates/ksp-cli/src/establish.rs
+_Files_: crates/ksp-posture/src/posture.rs, crates/ksp/src/establish.rs
 _Relates to_: Guarantee Level (is `none` for), Selected Adapter (names), Unavailable Capability (is distinct from), Capability Acceptance (is recorded as)
 _History_:
 - 2026-10-31 (004-os-capability-adapters): Term introduced for misfit N. An

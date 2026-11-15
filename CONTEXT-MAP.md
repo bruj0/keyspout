@@ -22,7 +22,7 @@ byte for byte.
 - [Deletion Evidence and Consume Outcome](crates/ksp-deletion/CONTEXT.md) — what is actually known about a version, and who is responsible for it.
 - [Host Confinement and Key Material Posture](crates/ksp-posture/CONTEXT.md) — what the host can actually enforce, stated honestly before a run.
 - [Durable Key Lifecycle](crates/ksp-key-lifecycle/CONTEXT.md) — owner-only key files, crash-safe replacement and verified identity reload across invocations.
-- [Keyspout Command-Line Interface](crates/ksp-cli/CONTEXT.md) — the foreground entry point, its exit codes, and the rules about what may be printed.
+- [Keyspout Command-Line Interface](crates/ksp/CONTEXT.md) — the foreground entry point, its exit codes, and the rules about what may be printed.
 
 ## Inter-Context Relationships
 

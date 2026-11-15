@@ -60,6 +60,16 @@ one they want.
 ksp init --json
 ```
 
+**The store is created at `$HOME/.ksp`** unless `KSP_HOME` names another
+absolute path. Say which one before you run it, because the operator needs to
+know where their secrets live. A store created under the working directory would
+land inside whatever directory the command happened to run in — a git checkout,
+a build tree, a mounted volume — and `ksp status` does not print the location, so
+the operator could not tell.
+
+If `KSP_HOME` is unset and `HOME` is unset too, the command refuses: there is no
+honest default in that state, and it names `KSP_HOME` as the fix.
+
 Writes `config.toml` naming, for each capability, an ordered adapter preference
 and whether it is required. Read `capabilities[]` from the output: each entry has
 `capability`, `selected`, `guarantee` and `unavailable[]`.
@@ -89,14 +99,19 @@ identity is the UUID.
 
 ## Step 3 — enrol the user
 
-The password arrives on stdin. This step needs root on a two-account host.
+The password comes from a file. This step needs root on a two-account host.
 
 ```bash
 ksp admin user add --unix-user <account> \
   --signing-key-id <name>-ed25519-1 \
   --recipient-key-id <name>-x25519-1 \
-  < <password-file>
+  --passphrase-file <password-file>
 ```
+
+`--passphrase-file` is the same flag every later command takes, so a scripted
+setup reads the password from a file at every step. Without it the command reads
+the password from stdin, which works from a terminal and from a closed pipe, and
+is refused for an open one.
 
 The two key-id flags are labels that appear in the policy, in `token inspect` and
 in the audit chain head. They are **not** derived from `--user`; the defaults are
@@ -129,14 +144,21 @@ ksp backend arm-sweep --interval 1h \
   --scope "p/<vault>/$USER_ID/agent-*" \
   --credential ksp-sweep \
   --grant "delete:p/<vault>/$USER_ID/agent-*" \
-  --identifier ksp-sweep.service \
-  --kind systemd
+  --identifier ksp-sweep \
+  --kind launchd
 ```
 
-`--kind systemd` is correct on both platforms: the `file` backend's form of a
-periodic job is a systemd unit, so the record looks the same everywhere. Nothing
-is installed unless you pass `--install`, and on macOS `--install` writes a
-`launchd` property list under the operator's own home and loads it.
+**Omit `--kind` and the host's own default applies**: a `systemd` unit on Linux
+and a `launchd` property list on macOS. That is the safer form, and it is what
+this skill uses on a Mac. If you name the kind, name the one this host installs:
+`--kind launchd` on macOS, `--kind systemd` on Linux. `--install` refuses a kind
+this host cannot install, so a `systemd` record on a Mac is accepted and then
+cannot be installed.
+
+Nothing is installed unless you pass `--install`. On macOS, `--install` writes a
+`launchd` property list under the operator's own home, loads it, and names the
+binary that is running and an absolute `KSP_HOME`. A relative `KSP_HOME` is
+refused, because `launchd` runs the job with `/` as its working directory.
 
 Then run the sweep once. **This is what writes the proof:**
 
@@ -246,12 +268,23 @@ recalls a copy already saved.
 ksp audit verify --json
 ```
 
-No password needed. Read `valid`, `invalid`, `mismatch` and `broken`. `broken`
-is `null` when the chain is unbroken.
+**`audit verify` needs no password.** It works from the log and the pinned public
+keys alone. Read `valid`, `invalid`, `mismatch` and `broken`. `broken` is `null`
+when the chain is unbroken.
 
 `completeness` is a sentence and it says the same thing every time: no head
 digest arrived from outside the log, so a deleted tail verifies like a whole one.
 Quote it; do not turn it into "the log is complete".
+
+**Reading the log is a different command and it does need the password:**
+
+```bash
+ksp audit --limit 20 --passphrase-file <file>
+```
+
+The scoped view opens the vault, because that is how it decides which records you
+may see. Without the flag it reads the password from a terminal, and refuses when
+there is none. Do not tell the operator "no password is needed" for this one.
 
 ## Report
 

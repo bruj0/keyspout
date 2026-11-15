@@ -35,11 +35,23 @@ use sha2::{Digest, Sha256};
 /// and the job runs as this unprivileged account.
 pub const SWEEPER_UNIT_USER: &str = "ksp-admin";
 
-/// Where the installed binary is expected to live, in the template only.
+/// The binary path a *printed* template carries.
 ///
-/// A template is a proposal: the operator may move the binary, and `ksp` must not
-/// discover or guess the path of a file it is not running from.
-pub const SWEEPER_BINARY: &str = "/usr/local/bin/ksp";
+/// A template is a proposal the operator may edit: `ksp` must not guess the path
+/// of a file it is not running from, so the printed artifact names a conventional
+/// location and says it is a placeholder.
+///
+/// It is **not** what an installed job carries. `--install` writes a job and
+/// loads it, which is a claim that the job will run, so the path must be the
+/// binary that is actually executing. Naming this constant in an installed
+/// artifact produced a plist pointing at `/usr/local/bin/ksp` on a host where
+/// Homebrew had installed to `/opt/homebrew/bin/ksp`; the job failed with
+/// `ENOENT` on its first firing, and `installed:` had already read as success.
+pub const SWEEPER_BINARY_PLACEHOLDER: &str = "/usr/local/bin/ksp";
+
+/// What a printed template says about its binary path.
+pub const SWEEPER_BINARY_PLACEHOLDER_NOTE: &str =
+    "the binary path above is a placeholder: replace it with the absolute path of your ksp";
 
 /// The operating system whose scheduler the arming names.
 ///
@@ -283,6 +295,27 @@ pub enum ArmingError {
     /// The record is missing a field it needs to mean anything.
     #[error("the arming record is incomplete: {0}")]
     Incomplete(&'static str),
+    /// A path an installed job would carry is not absolute.
+    ///
+    /// A scheduled job runs with a working directory this build does not choose:
+    /// `launchd` uses `/`. A relative path in the artifact therefore names a
+    /// different file than it names here, and the job fails on its first firing
+    /// with nothing on screen to say why. Refusing is the only honest answer,
+    /// because the alternative is an artifact that reads as installed and runs
+    /// nothing.
+    #[error(
+        "an installed job cannot carry the relative path '{value}' as its {field}: a scheduled \
+         job runs with a working directory ksp does not choose, so a relative path names a \
+         different file than it does here. Pass an absolute path, or set {variable}"
+    )]
+    RelativePath {
+        /// Which field the path came from.
+        field: &'static str,
+        /// The environment variable that would make it absolute.
+        variable: &'static str,
+        /// The value that was refused.
+        value: String,
+    },
     /// Encoding or decoding failed.
     #[error("the arming record could not be encoded")]
     Encoding,
@@ -354,12 +387,27 @@ pub fn admits_file_admission(
 }
 
 impl SweepScope {
-    /// Parse `<p>/<vault>/<principal-uuid>/<agent-*>`, optionally deeper.
+    /// Parse `<p>/<vault>/<principal-uuid>/<agent-*>`, and nothing deeper.
     ///
-    /// The rules are the misfit O guards: the scope must be inside this deployment's
-    /// store, must name this deployment's principal, and must name an agent level —
-    /// broadescope deletes another principal's leases, and anything above the agent
-    /// levels deletes the levels a sweep does not own.
+    /// The rules are the misfit O guards: the scope must be inside this
+    /// deployment's store, must name this deployment's principal, and must name an
+    /// agent level — a broader scope deletes another principal's leases, and
+    /// anything above the agent levels deletes the levels a sweep does not own.
+    ///
+    /// # The scope is a level, never a particular secret
+    ///
+    /// A sweep deletes versions inside a level; it is not told which record to
+    /// delete. A scope with a segment after the level therefore names something the
+    /// sweep cannot act on, and an earlier version of this function accepted it: it
+    /// inspected the level segment and never checked the arity, so
+    /// `agent-*/db-password` parsed to [`ScopeLevel::EveryAgent`] and the trailing
+    /// segment was silently dropped. The command armed, exited `0`, and the
+    /// capability never moved — `gc` then reported that no armed record was read
+    /// while one existed.
+    ///
+    /// The guard sits here rather than inside the level match because the rule is
+    /// about the arity, not about which level was named: any suffix is refused, and
+    /// it is refused before the level is interpreted.
     pub fn parse(text: &str, vault: &VaultId, owner: PrincipalId) -> Result<Self, ArmingError> {
         let trimmed = text.trim_end_matches('/');
         let segments: Vec<&str> = trimmed.split('/').collect();
@@ -426,6 +474,25 @@ impl SweepScope {
                 }
             },
         };
+        // The arity guard, after the level is interpreted rather than before it.
+        //
+        // Order matters: a specific agent level returns above with its own
+        // refusal (`ScopeAdmissionUnreadable`, naming `agent-*`), and that reason
+        // is the more useful one — it tells the operator the shape admission
+        // reads. Checking the arity first would have replaced it with a refusal
+        // about the suffix, which is true and less actionable. Only a scope that
+        // *is* an accepted level and still carries a suffix reaches here.
+        if segments.len() > 4 {
+            return Err(ArmingError::ScopeTooBroad {
+                scope: text.to_string(),
+                reason: format!(
+                    "a sweep scope is a level, not a record: the accepted scope is '{}', and \
+                     '{}' names something inside the level",
+                    canonical_admission_scope(vault.as_str(), &owner),
+                    segments[4..].join("/")
+                ),
+            });
+        }
         Ok(Self {
             vault: vault.as_str().to_string(),
             principal: owner,
@@ -528,8 +595,13 @@ fn within(reach: &str, armed: &str) -> bool {
             return false;
         }
     }
-    // Every armed segment consumed; the reach is the scope itself or deeper.
-    true
+    // Every armed segment consumed. The grant must stop here: a grant with
+    // segments left over names something *inside* the armed level, and the sweep
+    // deletes versions inside a level rather than a record the grant points at.
+    // Accepting the leftover made a grant of `agent-*/db-password` "within"
+    // `agent-*`, which taught the operator that a narrower binding was honoured
+    // when it was not.
+    reach.next().is_none()
 }
 
 /// The deterministic identity of one backend-plus-scope arming.
@@ -673,17 +745,65 @@ impl SweeperArming {
         self.kind.is_measurable()
     }
 
+    /// The artifact an install writes, with both paths checked.
+    ///
+    /// This is the only constructor an install may use. [`launchd_plist`] and
+    /// [`systemd_unit`] render whatever they are given, because a *printed*
+    /// template is a proposal the operator edits. An install is a claim that the
+    /// job will run, so a relative path is refused here rather than written into
+    /// a file that `launchd` or `systemd` will fail to execute with no message.
+    ///
+    /// # Errors
+    ///
+    /// [`ArmingError::RelativePath`] when `binary` or `home` is not absolute. The
+    /// error names the field and the variable that would make it absolute, so the
+    /// caller is told what to change rather than that something was wrong.
+    ///
+    /// [`ArmingError::KindMismatch`] is not returned here: a kind this host does
+    /// not install yields `None`, and the caller refuses with its own message
+    /// because only the caller knows which platform it is on.
+    ///
+    /// [`launchd_plist`]: Self::launchd_plist
+    /// [`systemd_unit`]: Self::systemd_unit
+    pub fn installed_artifact(
+        &self,
+        binary: &str,
+        home: &str,
+    ) -> Result<Option<String>, ArmingError> {
+        // Absolute, not merely non-empty: an empty path is also refused, and the
+        // message is the same one, because both name a file the job cannot find.
+        if !std::path::Path::new(binary).is_absolute() {
+            return Err(ArmingError::RelativePath {
+                field: "binary",
+                variable: "PATH",
+                value: binary.to_string(),
+            });
+        }
+        if !std::path::Path::new(home).is_absolute() {
+            return Err(ArmingError::RelativePath {
+                field: "KSP_HOME",
+                variable: "KSP_HOME",
+                value: home.to_string(),
+            });
+        }
+        Ok(self
+            .launchd_plist(binary, home)
+            .or_else(|| self.systemd_unit(binary, home)))
+    }
+
     /// The `launchd` property list this arming installs.
     ///
     /// `ksp backend arm-sweep --install` writes it under the operator's own home
     /// and loads it. The content is the same whether ksp writes it or an operator
     /// copies it by hand.
     ///
-    /// A template is a proposal, exactly as the unit is: the binary path is
-    /// [`SWEEPER_BINARY`] rather than a discovered path, and `home` is the
-    /// `KSP_HOME` the job must carry, because `ksp` does not guess a path it was
-    /// not given.
-    pub fn launchd_plist(&self, home: &str) -> Option<String> {
+    /// `binary` and `home` are both supplied by the caller, and both must be
+    /// absolute. A template is a proposal, so a printed artifact may carry
+    /// [`SWEEPER_BINARY_PLACEHOLDER`]; an installed artifact may not, because
+    /// `--install` claims the job will run. `home` is the `KSP_HOME` the job must
+    /// carry: a relative `KSP_HOME` resolves against launchd's working directory,
+    /// which is `/`, so `.ksp` would name `/.ksp` and the job would sweep nothing.
+    pub fn launchd_plist(&self, binary: &str, home: &str) -> Option<String> {
         if self.kind != ArmingKind::Launchd {
             return None;
         }
@@ -693,7 +813,9 @@ impl SweeperArming {
   Keyspout sweep — configuration, not evidence.
   The signed sweep proof a run writes is what admits a lease; this job only says
   the admin recorded a schedule ({backend}, {kind}).
-  KSP_HOME must name this host's home: ksp does not guess a path it was not given.
+  KSP_HOME must name this host's home as an absolute path: ksp does not guess a
+  path it was not given, and launchd runs this job with `/` as its working
+  directory, so a relative value would name a directory that does not exist.
   launchd skips a firing while the machine is asleep or while the previous run is
   still going, so one missing run is not evidence that the schedule is broken.
   There is no user key here: a LaunchAgent runs as the account that loads it and a
@@ -725,7 +847,7 @@ impl SweeperArming {
             backend = xml_escape(&self.backend),
             kind = self.kind.label(),
             identifier = xml_escape(&self.identifier),
-            binary = SWEEPER_BINARY,
+            binary = xml_escape(binary),
             home = xml_escape(home),
             interval = self.interval_secs,
             user_args = self.user_program_arguments_xml(home),
@@ -776,7 +898,12 @@ impl SweeperArming {
     }
 
     /// The unit template this arming installs.
-    pub fn systemd_unit(&self, home: &str) -> Option<String> {
+    ///
+    /// `binary` and `home` are supplied by the caller, for the same reason the
+    /// plist takes them: a printed template may name a placeholder, and an
+    /// installed artifact must name the binary that is actually running and an
+    /// absolute `KSP_HOME`.
+    pub fn systemd_unit(&self, binary: &str, home: &str) -> Option<String> {
         if self.kind != ArmingKind::Systemd {
             return None;
         }
@@ -784,7 +911,8 @@ impl SweeperArming {
             "# Keyspout sweep — configuration, not evidence.\n\
              # The signed sweep proof a run writes is what admits a lease; this unit only\n\
              # says the admin recorded a schedule.\n\
-             # KSP_HOME must name this host's home: ksp does not guess a path it was not given.\n\
+             # KSP_HOME must name this host's home as an absolute path: ksp does not guess\n\
+             # a path it was not given.\n\
              # Install as root, once:  systemctl link {unit}  &&  systemctl enable --now {unit}\n\
              [Unit]\n\
              Description=Keyspout lease sweep ({backend}, {identifier})\n\
@@ -810,7 +938,7 @@ impl SweeperArming {
             identifier = self.identifier,
             user_line = self.unit_user_line(),
             credential = self.credential.identity,
-            binary = SWEEPER_BINARY,
+            binary = binary,
             interval = self.interval_secs,
             user_args = self.user_exec_arguments(home),
         ))
@@ -1031,6 +1159,176 @@ mod tests {
         SweepScope::parse(SCOPE, &VaultId::new(VAULT), owner()).unwrap()
     }
 
+    /// The scope is a level, never a particular secret.
+    ///
+    /// `SweepScope::parse` inspected `segments[3]` and never checked the arity,
+    /// so `agent-*/db-password` resolved to `EveryAgent` and `db-password` was
+    /// silently dropped. The command armed, exited `0`, and the capability never
+    /// moved: `gc` then reported that no armed record was read while one existed.
+    ///
+    /// Every suffix is refused, not just the one in the report, because the rule
+    /// is about the arity rather than about that particular word.
+    #[test]
+    fn a_scope_deeper_than_the_agent_level_is_refused() {
+        for suffix in ["db-password", "agent-*/db-password", "anything"] {
+            let text = format!("{SCOPE}/{suffix}");
+            let error = SweepScope::parse(&text, &VaultId::new(VAULT), owner())
+                .expect_err("a scope deeper than the level must be refused");
+            assert!(
+                matches!(error, ArmingError::ScopeTooBroad { .. }),
+                "{text} must be refused as too broad, got {error:?}"
+            );
+        }
+    }
+
+    /// The refusal names the level the sweep owns, so a reader can derive the
+    /// accepted shape from it.
+    #[test]
+    fn the_arity_refusal_names_the_accepted_level() {
+        let text = format!("{SCOPE}/db-password");
+        let error = SweepScope::parse(&text, &VaultId::new(VAULT), owner()).unwrap_err();
+        let sentence = error.to_string();
+        assert!(
+            sentence.contains(SCOPE),
+            "the refusal must name the accepted level ({SCOPE}): {sentence}"
+        );
+        assert!(
+            sentence.contains("level"),
+            "the refusal must say a scope is a level: {sentence}"
+        );
+    }
+
+    /// The accepted shape still parses, and it parses to the agent level.
+    ///
+    /// This is the shape every other test in this module builds on, asserted
+    /// directly so a guard that refused everything would fail here rather than
+    /// somewhere downstream.
+    #[test]
+    fn the_canonical_scope_still_parses() {
+        let parsed = SweepScope::parse(SCOPE, &VaultId::new(VAULT), owner()).unwrap();
+        assert_eq!(parsed.level, ScopeLevel::EveryAgent);
+        assert_eq!(parsed.text, SCOPE);
+    }
+
+    /// A trailing slash is the same scope, and is still accepted.
+    ///
+    /// The parser trims trailing slashes before splitting, so a scope copied from
+    /// a directory listing must not be refused for the slash the copy carried.
+    #[test]
+    fn a_trailing_slash_is_still_the_canonical_scope() {
+        let text = format!("{SCOPE}/");
+        let parsed = SweepScope::parse(&text, &VaultId::new(VAULT), owner())
+            .expect("a trailing slash is not a deeper scope");
+        assert_eq!(parsed.level, ScopeLevel::EveryAgent);
+    }
+
+    /// Every shape refused today is still refused, with its own reason.
+    ///
+    /// Enumerated rather than inferred: the arity guard must not swallow a
+    /// refusal that already existed, and each of these names a different fix.
+    #[test]
+    fn every_shape_refused_today_keeps_its_own_reason() {
+        // Above the agent level: too broad, and the reason says where it stopped.
+        // `p` on its own is refused as outside the deployment rather than too
+        // broad, because it does not name the vault at all — both are refusals,
+        // and the existing test in this module accepts either.
+        for text in [
+            "p",
+            "p/vault-1",
+            "p/vault-1/6f5a1c8e-3b2d-4f7a-9c1e-0a2b3c4d5e6f",
+        ] {
+            let error = SweepScope::parse(text, &VaultId::new(VAULT), owner()).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    ArmingError::ScopeTooBroad { .. } | ArmingError::ScopeOutsideDeployment { .. }
+                ),
+                "{text} must be refused, got {error:?}"
+            );
+        }
+
+        // A level that is not an agent level.
+        let text = "p/vault-1/6f5a1c8e-3b2d-4f7a-9c1e-0a2b3c4d5e6f/user";
+        let error = SweepScope::parse(text, &VaultId::new(VAULT), owner()).unwrap_err();
+        assert!(
+            matches!(error, ArmingError::ScopeTooBroad { .. }),
+            "the user level must be refused as not an agent level, got {error:?}"
+        );
+
+        // A specific agent level: admission reads `agent-*` only.
+        let text = "p/vault-1/6f5a1c8e-3b2d-4f7a-9c1e-0a2b3c4d5e6f/agent-11111111-2222-4333-8444-555555555555";
+        let error = SweepScope::parse(text, &VaultId::new(VAULT), owner()).unwrap_err();
+        assert!(
+            matches!(error, ArmingError::ScopeAdmissionUnreadable { .. }),
+            "a specific agent level must name the accepted shape, got {error:?}"
+        );
+
+        // Another deployment's vault.
+        let error = SweepScope::parse(SCOPE, &VaultId::new("other-vault"), owner()).unwrap_err();
+        assert!(
+            matches!(error, ArmingError::ScopeOutsideDeployment { .. }),
+            "another vault must be refused as outside the deployment, got {error:?}"
+        );
+    }
+
+    /// A grant naming a record is refused, the same way the armed scope is.
+    ///
+    /// `within` consumes every armed segment and returns `true` whatever the
+    /// grant has left over, so a grant of `agent-*/db-password` was "within"
+    /// `agent-*` and passed. The sweep acts on a level, so a grant that names a
+    /// record grants nothing the sweep can use, and accepting it taught the
+    /// operator that a narrower binding was honoured when it was not.
+    #[test]
+    fn a_grant_naming_a_record_is_refused() {
+        let deeper = format!("{SCOPE}/db-password");
+        let binding = CredentialBinding {
+            identity: "unix:ksp-sweeper".to_string(),
+            grants: vec![
+                Grant {
+                    right: Right::Delete,
+                    scope: deeper.clone(),
+                },
+                Grant {
+                    right: Right::List,
+                    scope: deeper,
+                },
+                Grant {
+                    right: Right::Write,
+                    scope: "journal".to_string(),
+                },
+            ],
+        };
+        let error = binding
+            .check(&scope())
+            .expect_err("a grant that names a record must be refused");
+        assert!(
+            matches!(error, ArmingError::CredentialTooWide { .. }),
+            "the refusal must say the grant is wider than the sweep, got {error:?}"
+        );
+    }
+
+    /// A deeper scope on a specific agent level keeps that level's own refusal.
+    ///
+    /// The arity guard runs after the level is interpreted, not before it. A
+    /// specific agent level is refused as `ScopeAdmissionUnreadable` — which names
+    /// `agent-*`, the shape admission reads — and that reason is more useful than
+    /// a refusal about the suffix. Checking the arity first replaced it with
+    /// `ScopeTooBroad`, which is true and less actionable, and would have broken
+    /// the guarantee that every shape refused today keeps its own reason.
+    #[test]
+    fn a_deeper_specific_agent_scope_keeps_its_admission_refusal() {
+        let text = "p/vault-1/6f5a1c8e-3b2d-4f7a-9c1e-0a2b3c4d5e6f/agent-11111111-2222-4333-8444-555555555555/db-password";
+        let error = SweepScope::parse(text, &VaultId::new(VAULT), owner()).unwrap_err();
+        assert!(
+            matches!(error, ArmingError::ScopeAdmissionUnreadable { .. }),
+            "a specific agent level keeps its own reason even with a suffix, got {error:?}"
+        );
+        assert!(
+            error.to_string().contains("agent-*"),
+            "the refusal must name the accepted shape: {error}"
+        );
+    }
+
     /// Misfit O: a scope above the deployment root deletes someone else's leases.
     #[test]
     fn a_scope_at_or_above_the_vault_is_refused() {
@@ -1062,12 +1360,23 @@ mod tests {
         ));
     }
 
-    /// A scope below an agent level is narrower, which is allowed.
+    /// A scope with a record name after the level is refused, not narrowed.
+    ///
+    /// This test replaces one called `a_narrower_scope_is_accepted`, which built
+    /// `{SCOPE}/db-password` and asserted it parsed to `EveryAgent`. That was the
+    /// defect written down as a requirement: the trailing segment was dropped, the
+    /// command armed and exited `0`, and the capability never moved. A sweep acts
+    /// on a level; it is never told which record to delete, so a scope naming one
+    /// is refused rather than quietly widened back to the level.
     #[test]
-    fn a_narrower_scope_is_accepted() {
+    fn a_scope_naming_a_record_is_refused_rather_than_narrowed() {
         let narrow = format!("{SCOPE}/db-password");
-        let parsed = SweepScope::parse(&narrow, &VaultId::new(VAULT), owner()).unwrap();
-        assert_eq!(parsed.level, ScopeLevel::EveryAgent);
+        let error = SweepScope::parse(&narrow, &VaultId::new(VAULT), owner())
+            .expect_err("a scope that names a record must be refused");
+        assert!(
+            matches!(error, ArmingError::ScopeTooBroad { .. }),
+            "the refusal must say the scope is too broad, got {error:?}"
+        );
     }
 
     /// Misfit A: an operator who arms `agent-<uuid>` is told the accepted shape.
@@ -1221,7 +1530,11 @@ mod tests {
             SCOPE
         ));
         assert!(within(SCOPE, SCOPE));
-        assert!(within(&format!("{SCOPE}/db-password"), SCOPE));
+        // A grant that names a record inside the level is *not* within it. This
+        // line asserted `true` before the arity guard existed, which is the same
+        // defect as the parser accepting `agent-*/db-password`: the sweep acts on
+        // a level, and a grant pointing at one record grants nothing it can use.
+        assert!(!within(&format!("{SCOPE}/db-password"), SCOPE));
         // Above the scope, a sibling, and a different prefix are all outside.
         assert!(!within("p/vault-1", SCOPE));
         assert!(!within(
@@ -1341,7 +1654,7 @@ mod tests {
     /// nothing.
     #[test]
     fn the_unit_template_pins_accuracy_and_names_the_user() {
-        let unit = arming().systemd_unit("/tmp").unwrap();
+        let unit = arming().systemd_unit("/usr/local/bin/ksp", "/tmp").unwrap();
         assert!(unit.contains("AccuracySec=1s"), "{unit}");
         assert!(unit.contains("User=ksp-admin"), "{unit}");
         assert!(unit.contains("Type=oneshot"), "{unit}");
@@ -1356,7 +1669,7 @@ mod tests {
     /// Misfit C: a declaration cannot be read as an installation.
     #[test]
     fn the_template_says_it_is_configuration_and_not_evidence() {
-        let unit = arming().systemd_unit("/tmp").unwrap();
+        let unit = arming().systemd_unit("/usr/local/bin/ksp", "/tmp").unwrap();
         assert!(unit.contains("configuration, not evidence"), "{unit}");
         // A non-systemd kind has no template at all rather than an empty one.
         let external = SweeperArming::new(ArmingSpec {
@@ -1373,7 +1686,11 @@ mod tests {
             user_signed: false,
         })
         .unwrap();
-        assert!(external.systemd_unit("/tmp").is_none());
+        assert!(
+            external
+                .systemd_unit("/usr/local/bin/ksp", "/tmp")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1534,7 +1851,7 @@ mod tests {
     #[test]
     fn a_user_armings_artifact_runs_the_user_sweep() {
         let plist = user_launchd_arming()
-            .launchd_plist("/Users/alice/.ksp")
+            .launchd_plist("/usr/local/bin/ksp", "/Users/alice/.ksp")
             .expect("a launchd arming has a plist");
         assert!(
             plist.contains("<string>--user-arming</string>"),
@@ -1547,7 +1864,7 @@ mod tests {
 
         // And the admin's artifact must not gain the flag.
         let admin = launchd_arming()
-            .launchd_plist("/tmp")
+            .launchd_plist("/usr/local/bin/ksp", "/tmp")
             .expect("a launchd arming has a plist");
         assert!(
             !admin.contains("--user-arming"),
@@ -1559,7 +1876,7 @@ mod tests {
     #[test]
     fn a_user_armings_unit_runs_the_user_sweep() {
         let unit = user_systemd_arming()
-            .systemd_unit("/Users/alice/.ksp")
+            .systemd_unit("/usr/local/bin/ksp", "/Users/alice/.ksp")
             .expect("a systemd arming has a unit");
         assert!(
             unit.contains("--user-arming") && unit.contains("--passphrase-file"),
@@ -1576,7 +1893,7 @@ mod tests {
     #[test]
     fn the_plist_carries_the_interval_the_home_and_the_label() {
         let plist = launchd_arming()
-            .launchd_plist("/Users/alice/.config/ksp")
+            .launchd_plist("/usr/local/bin/ksp", "/Users/alice/.config/ksp")
             .expect("a launchd arming has a plist");
         assert!(plist.contains("<key>StartInterval</key>"), "{plist}");
         assert!(plist.contains("<integer>3600</integer>"), "{plist}");
@@ -1589,7 +1906,7 @@ mod tests {
             plist.contains("<string>com.keyspout.sweep</string>"),
             "the Label is what launchctl unload names: {plist}"
         );
-        assert!(plist.contains(SWEEPER_BINARY), "{plist}");
+        assert!(plist.contains(SWEEPER_BINARY_PLACEHOLDER), "{plist}");
         assert!(
             plist.contains("<string>secret</string>") && plist.contains("<string>gc</string>"),
             "the job runs `secret gc`: {plist}"
@@ -1607,7 +1924,7 @@ mod tests {
     #[test]
     fn a_home_with_xml_metacharacters_is_escaped() {
         let plist = launchd_arming()
-            .launchd_plist("/Users/a&b/<ksp>")
+            .launchd_plist("/usr/local/bin/ksp", "/Users/a&b/<ksp>")
             .expect("a launchd arming has a plist");
         assert!(
             plist.contains("<string>/Users/a&amp;b/&lt;ksp&gt;</string>"),
@@ -1623,13 +1940,95 @@ mod tests {
     #[test]
     fn a_plist_says_it_is_configuration_and_a_systemd_arming_has_none() {
         assert!(
-            arming().launchd_plist("/tmp").is_none(),
+            arming()
+                .launchd_plist("/usr/local/bin/ksp", "/tmp")
+                .is_none(),
             "only a launchd arming renders a plist"
         );
-        let plist = launchd_arming().launchd_plist("/tmp").unwrap();
+        let plist = launchd_arming()
+            .launchd_plist("/usr/local/bin/ksp", "/tmp")
+            .unwrap();
         assert!(
             plist.contains("configuration, not evidence"),
             "the artifact must say the proof is the evidence: {plist}"
+        );
+    }
+
+    /// An installed job must name the binary that is running, not a constant.
+    ///
+    /// The defect this covers: `--install` wrote `/usr/local/bin/ksp` on a host
+    /// whose Homebrew prefix is `/opt/homebrew`, and the job failed with `ENOENT`
+    /// on its first firing after `installed:` had already read as success. The
+    /// test supplies a path that is not the placeholder, so a builder that still
+    /// read the constant would render the constant and fail here.
+    #[test]
+    fn an_installed_job_names_the_binary_it_is_given() {
+        let running = "/opt/homebrew/Cellar/ksp-cli/1.0.0/bin/ksp";
+        let plist = launchd_arming()
+            .installed_artifact(running, "/Users/alice/.ksp")
+            .expect("an absolute binary and home are admitted")
+            .expect("a launchd arming has a plist");
+        assert!(
+            plist.contains(&format!("<string>{running}</string>")),
+            "the job must run the binary that is running: {plist}"
+        );
+        assert!(
+            !plist.contains(SWEEPER_BINARY_PLACEHOLDER),
+            "an install must not carry the printed template's placeholder: {plist}"
+        );
+    }
+
+    /// An installed job must carry an absolute `KSP_HOME`.
+    ///
+    /// `launchd` runs a job with `/` as its working directory, so the default
+    /// `.ksp` would name `/.ksp`. The refusal names the field and the variable,
+    /// because a reader who is told only "a path was wrong" has to guess which.
+    #[test]
+    fn an_installed_job_refuses_a_relative_home() {
+        let error = launchd_arming()
+            .installed_artifact("/usr/local/bin/ksp", ".ksp")
+            .expect_err("a relative KSP_HOME cannot be installed");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("KSP_HOME"),
+            "the refusal must name the variable that fixes it: {rendered}"
+        );
+        assert!(
+            rendered.contains(".ksp"),
+            "the refusal must name the value it refused: {rendered}"
+        );
+    }
+
+    /// The same refusal covers a relative binary path.
+    ///
+    /// A relative binary is the other half of the same defect: a job that names
+    /// `./ksp` resolves it against `/` and finds nothing.
+    #[test]
+    fn an_installed_job_refuses_a_relative_binary() {
+        let error = launchd_arming()
+            .installed_artifact("ksp", "/Users/alice/.ksp")
+            .expect_err("a relative binary cannot be installed");
+        assert!(
+            error.to_string().contains("binary"),
+            "the refusal must name the field: {error}"
+        );
+    }
+
+    /// The systemd unit follows the same rule as the plist.
+    #[test]
+    fn an_installed_unit_names_the_binary_it_is_given() {
+        let running = "/home/alice/.local/bin/ksp";
+        let unit = arming()
+            .installed_artifact(running, "/home/alice/.ksp")
+            .expect("an absolute binary and home are admitted")
+            .expect("a systemd arming has a unit");
+        assert!(
+            unit.contains(&format!("ExecStart={running} secret gc")),
+            "the unit must run the binary that is running: {unit}"
+        );
+        assert!(
+            !unit.contains(SWEEPER_BINARY_PLACEHOLDER),
+            "an install must not carry the printed template's placeholder: {unit}"
         );
     }
 

@@ -66,40 +66,44 @@ Verified against the merged tree on `main`. Features `001`–`011` are implement
 | Area | Marker | Evidence |
 |---|---|---|
 | Record cryptography: HPKE envelope, bound context, version integrity, KEM validation gate | **[Implemented]** | `crates/ksp-record/src/`, `crates/ksp-record/src/kem.rs` |
-| User-owned cleanup: a use bound in the arm record, a user-signed arming, and a user sweep that signs as the user and needs no admin key | **[Implemented]** | `crates/ksp-backend/src/usebound.rs`, `crates/ksp-cli/src/arm.rs`, `sweep.rs`, `run.rs`, `consume.rs`; test `crates/ksp-cli/tests/use_bound.rs`. Feature `009-user-owned-cleanup-with-use-count`. |
-| Record provenance and run-time policy authority: `admin put` writes at the `admin` level, the delivery header carries the source level (version 2), and an `admin`-sourced run re-checks the policy before decryption while a `user`-sourced run reads none | **[Implemented]** | `crates/ksp-cli/src/admin.rs`, `run.rs`, `secret.rs`, `token.rs`; `crates/ksp-identity/src/header.rs`, `policy.rs`; test `crates/ksp-cli/tests/policy_provenance.rs`. Feature `008-policy-provenance-and-run-time-verification`. |
+| User-owned cleanup: a use bound in the arm record, a user-signed arming, and a user sweep that signs as the user and needs no admin key | **[Implemented]** | `crates/ksp-backend/src/usebound.rs`, `crates/ksp/src/arm.rs`, `sweep.rs`, `run.rs`, `consume.rs`; test `crates/ksp/tests/use_bound.rs`. Feature `009-user-owned-cleanup-with-use-count`. |
+| Record provenance and run-time policy authority: `admin put` writes at the `admin` level, the delivery header carries the source level (version 2), and an `admin`-sourced run re-checks the policy before decryption while a `user`-sourced run reads none | **[Implemented]** | `crates/ksp/src/admin.rs`, `run.rs`, `secret.rs`, `token.rs`; `crates/ksp-identity/src/header.rs`, `policy.rs`; test `crates/ksp/tests/policy_provenance.rs`. Feature `008-policy-provenance-and-run-time-verification`. |
 | `file` and `valkey` backends; admission classification; durable arming | **[Implemented]** | `crates/ksp-backend/src/file.rs`, `valkey.rs`, `admission.rs`, `arming.rs` |
-| Scheduled cleanup arming: the arming kind per platform, the `launchd` property list as an installable artifact, and `--install` writing it under the operator's own home and loading it — configuration, never proof that a sweep ran, and an install is a declaration, not evidence | **[Implemented]** | `crates/ksp-backend/src/sweeper.rs`; `crates/ksp-cli/src/arm.rs`; `crates/ksp-cli/src/install.rs` |
-| `s3` backend | **[Partial]** | `crates/ksp-backend/src/s3.rs` implements the store and its classification, but the CLI cannot select it: `SELECTABLE` in `crates/ksp-cli/src/backend.rs` names `file` and `valkey` only. Not reachable from the command surface. |
+| Scheduled cleanup arming: the arming kind per platform, the `launchd` property list as an installable artifact, and `--install` writing it under the operator's own home and loading it — configuration, never proof that a sweep ran, and an install is a declaration, not evidence | **[Implemented]** | `crates/ksp-backend/src/sweeper.rs`; `crates/ksp/src/arm.rs`; `crates/ksp/src/install.rs` |
+| `s3` backend | **[Partial]** | `crates/ksp-backend/src/s3.rs` implements the store and its classification, but the CLI cannot select it: `SELECTABLE` in `crates/ksp/src/backend.rs` names `file` and `valkey` only. Not reachable from the command surface. |
 | `sftp` backend | **[Not implemented]** | No store type exists. It appears only as a crontab hint in `crates/ksp-backend/src/sweeper.rs`. |
-| Landlock confinement, descriptor sanitation, `memfd_secret` barrier, posture reporting | **[Implemented]** | `crates/ksp-posture/src/`, reached through a configured adapter: `crates/ksp-cli/src/establish.rs` selects it and `crates/ksp-posture/src/adapters/` holds the five. Every record names the adapter that ran and the guarantee level it established, so a host that enforces nothing says `none` rather than going quiet. The crate builds on Linux and macOS; only Linux can provide `landlock`, `memfd_secret` and `sealed_memfd`. |
-| Enrolment, fingerprint binding, admin/user key separation, Shamir recovery primitives, `rekey` | **[Implemented]** | `crates/ksp-identity/src/enrolment.rs`, `fingerprint.rs`, `recovery.rs`; `crates/ksp-cli/src/vault.rs` |
-| Per-account store group on macOS: the group resolved with `dscacheutil` and joined with `dseditgroup`, mode set by `fchmod` because `open(2)`'s mode is masked by the caller's `umask` | **[Implemented]** | `crates/ksp-cli/src/storegroup/darwin.rs`, `mod.rs`; `join_store_group` in `crates/ksp-cli/src/admin.rs` |
+| Landlock confinement, descriptor sanitation, `memfd_secret` barrier, posture reporting | **[Implemented]** | `crates/ksp-posture/src/`, reached through a configured adapter: `crates/ksp/src/establish.rs` selects it and `crates/ksp-posture/src/adapters/` holds the five. Every record names the adapter that ran and the guarantee level it established, so a host that enforces nothing says `none` rather than going quiet. The crate builds on Linux and macOS; only Linux can provide `landlock`, `memfd_secret` and `sealed_memfd`. |
+| Enrolment, fingerprint binding, admin/user key separation, Shamir recovery primitives, `rekey` | **[Implemented]** | `crates/ksp-identity/src/enrolment.rs`, `fingerprint.rs`, `recovery.rs`; `crates/ksp/src/vault.rs` |
+| Per-account store group on macOS: the group resolved with `dscacheutil` and joined with `dseditgroup`, mode set by `fchmod` because `open(2)`'s mode is masked by the caller's `umask` | **[Implemented]** | `crates/ksp/src/storegroup/darwin.rs`, `mod.rs`; `join_store_group` in `crates/ksp/src/admin.rs` |
 | Policy verification, trusted checkpoint, rollback detection, rotation | **[Implemented]** | `crates/ksp-identity/src/policy.rs`, `checkpoint.rs` |
 | Sealed delivery artifact, recipient sealing, issuer signature | **[Implemented]** | `crates/ksp-identity/src/delivery.rs`, `header.rs`, `signature.rs` |
-| Proof of possession, deterministic preimage, time buckets, compliant run path | **[Implemented]** | `crates/ksp-identity/src/pop.rs`, `run.rs`; `crates/ksp-cli/src/run_gate.rs` |
-| Mint sequence: admission, arm-before-publication, fingerprint refusal | **[Implemented]** | `crates/ksp-identity/src/mint.rs`; `crates/ksp-cli/src/token.rs` |
-| Issuance ledger: one row per minted lease, appended by `publish_recorded` so `token list` and `token revoke` have a subject. Two files, one writer each — the principal's `issuance.jsonl` and the admin's `withdrawals.jsonl`, both `0640` in the store's group so each account reads what the other wrote and writes only its own. On `file`, a lease is admitted only once a sweep proof exists, so `token mint` and `secret share` refuse until the schedule has run | **[Implemented]** | `crates/ksp-identity/src/issuance.rs`, `mint.rs`; `crates/ksp-cli/src/token.rs`; the handover is `crates/ksp-cli/src/admin.rs`; the refusal is `crates/ksp-backend/src/admission.rs` |
+| Proof of possession, deterministic preimage, time buckets, compliant run path | **[Implemented]** | `crates/ksp-identity/src/pop.rs`, `run.rs`; `crates/ksp/src/run_gate.rs` |
+| Mint sequence: admission, arm-before-publication, fingerprint refusal | **[Implemented]** | `crates/ksp-identity/src/mint.rs`; `crates/ksp/src/token.rs` |
+| Issuance ledger: one row per minted lease, appended by `publish_recorded` so `token list` and `token revoke` have a subject. Two files, one writer each — the principal's `issuance.jsonl` and the admin's `withdrawals.jsonl`, both `0640` in the store's group so each account reads what the other wrote and writes only its own. On `file`, a lease is admitted only once a sweep proof exists, so `token mint` and `secret share` refuse until the schedule has run | **[Implemented]** | `crates/ksp-identity/src/issuance.rs`, `mint.rs`; `crates/ksp/src/token.rs`; the handover is `crates/ksp/src/admin.rs`; the refusal is `crates/ksp-backend/src/admission.rs` |
 | Deletion intent, actor report, absence observation, acknowledgement journal | **[Implemented]** | `crates/ksp-deletion/src/` |
-| Consume ordering, delete-after-read, honest outcome | **[Implemented]** | `crates/ksp-deletion/src/consume.rs`; `crates/ksp-cli/src/consume.rs` |
-| Per-writer audit chain, append-before-effect, chain verification | **[Implemented]** | `crates/ksp-deletion/src/audit.rs`; `crates/ksp-cli/src/audit_verify.rs` |
-| Scoped audit view: the caller's own records, another principal refused | **[Implemented]** | `crates/ksp-cli/src/audit_view.rs`; test `crates/ksp-cli/tests/audit_scope.rs` |
-| Machine-readable output: one JSON object per invocation, a documented exit code per refusal, and a usage code that names the accepted form | **[Implemented]** | `crates/ksp-cli/src/output.rs`, `exit.rs`; tests `crates/ksp-cli/tests/agent_contract.rs`, `wired_surface.rs`. Feature `010-agent-parseable-output-and-exit-codes`. |
-| Bounded audit retrieval: `--limit` bounds the record lines and `--since` filters by each record's own `observed_at`, with the header reporting the total after the window and before the bound | **[Implemented]** | `crates/ksp-cli/src/audit_view.rs`, `app.rs`; test `crates/ksp-cli/tests/audit_scope.rs`. Feature `011-audit-retrieval-for-agents`. |
-| Policy read-back: `ksp admin policy --show` prints the revision, issuer key id, validity window, anchor verification and one line per grant, without the policy-signing key | **[Implemented]** | `crates/ksp-cli/src/admin.rs` (`show_policy`), `output.rs` (`PolicyView`); test `crates/ksp-cli/tests/policy_read_back.rs`. |
-| Sweep arming record, `backend arm-sweep`, signed sweep proof, proof gate, freshness and grace | **[Implemented]** | `crates/ksp-backend/src/proof.rs`, `sweeper.rs`; `crates/ksp-cli/src/sweep.rs`, `arm.rs` |
-| Principal UUIDs, per-principal roots, cross-UID vault binding | **[Implemented]** | `crates/ksp-cli/src/layout.rs`, `admin.rs`; test `crates/ksp-cli/tests/principals.rs` |
+| Consume ordering, delete-after-read, honest outcome | **[Implemented]** | `crates/ksp-deletion/src/consume.rs`; `crates/ksp/src/consume.rs` |
+| Per-writer audit chain, append-before-effect, chain verification | **[Implemented]** | `crates/ksp-deletion/src/audit.rs`; `crates/ksp/src/audit_verify.rs` |
+| Scoped audit view: the caller's own records, another principal refused | **[Implemented]** | `crates/ksp/src/audit_view.rs`; test `crates/ksp/tests/audit_scope.rs` |
+| Machine-readable output: one JSON object per invocation, a documented exit code per refusal, and a usage code that names the accepted form | **[Implemented]** | `crates/ksp/src/output.rs`, `exit.rs`; tests `crates/ksp/tests/agent_contract.rs`, `wired_surface.rs`. Feature `010-agent-parseable-output-and-exit-codes`. |
+| Bounded audit retrieval: `--limit` bounds the record lines and `--since` filters by each record's own `observed_at`, with the header reporting the total after the window and before the bound | **[Implemented]** | `crates/ksp/src/audit_view.rs`, `app.rs`; test `crates/ksp/tests/audit_scope.rs`. Feature `011-audit-retrieval-for-agents`. |
+| Policy read-back: `ksp admin policy --show` prints the revision, issuer key id, validity window, anchor verification and one line per grant, without the policy-signing key | **[Implemented]** | `crates/ksp/src/admin.rs` (`show_policy`), `output.rs` (`PolicyView`); test `crates/ksp/tests/policy_read_back.rs`. |
+| Policy write merges by default and reports the diff; `--replace` withdraws un-named grants, and an existing policy that does not verify is refused rather than re-signed | **[Implemented]** | `crates/ksp/src/admin.rs` (`policy`, `union`, `difference`), `commands.rs` (`--replace`), `output.rs` (`PolicyGrantedView`); test `crates/ksp/tests/policy_merge.rs`. Feature `012-upstream-defect-fixes`. |
+| Agent enumeration: `ksp agent list` names every agent this host holds — principal UUID, display name when recorded, both key IDs and the fingerprint — and never a private half | **[Implemented]** | `crates/ksp/src/agent.rs` (`list`), `commands.rs` (`AgentCommand::List`), `output.rs` (`AgentListing`); test `crates/ksp/tests/agent_list.rs`. Feature `012-upstream-defect-fixes`. |
+| Refusal surface: every password-reading command prints the sentence the error carries and exits `6`; `secret set` keeps `13`; `secret share` refuses before sealing when the caller cannot append to the ledger | **[Implemented]** | `crates/ksp/src/app.rs` (`password`, the five arms), `admin.rs` (`NoPassword`, `PassphraseFile`), `secret.rs` (`check_ledger_account`); test `crates/ksp/tests/refusals.rs`. Feature `012-upstream-defect-fixes`. |
+| Sweep arming record, `backend arm-sweep`, signed sweep proof, proof gate, freshness and grace | **[Implemented]** | `crates/ksp-backend/src/proof.rs`, `sweeper.rs`; `crates/ksp/src/sweep.rs`, `arm.rs` |
+| Sweep scope is a level, never a record: a deeper `--scope` or `--grant` is refused and the refusal names the accepted shape | **[Implemented]** | `crates/ksp-backend/src/sweeper.rs` (`SweepScope::parse`, `within`); tests `crates/ksp-backend/src/sweeper.rs`, `crates/ksp/tests/arming.rs`. Feature `012-upstream-defect-fixes`. |
+| Principal UUIDs, per-principal roots, cross-UID vault binding | **[Implemented]** | `crates/ksp/src/layout.rs`, `admin.rs`; test `crates/ksp/tests/principals.rs` |
 | Durable owner-only key lifecycle for agent and admin identities | **[Implemented]** | `crates/ksp-key-lifecycle/src/` |
-| Local session agent (§3.6) | **[Not implemented]** | The subcommands are **absent, not hidden**: `agent start`, `agent stop`, `agent status`, `agent lock-timeout`. A test in `crates/ksp-cli/src/commands.rs` asserts their absence. |
-| `ksp vault unseal` and `ksp vault seal` | **[Absent by decision]** | Every operation unseals inside its own process and exits. The command list has no such verbs: `crates/ksp-cli/src/commands.rs`. |
-| `ksp vault init` | **[Absent by decision]** | The command exists but refuses with exit `7`: a vault is created by `admin user add`, which records the binding that opens it. Refusal: `crates/ksp-cli/src/vault.rs`. |
-| `ksp token lease` | **[Partial]** — `crates/ksp-cli/src/token.rs` | The verb exists and refuses with the reason: opening an existing agent-level record needs the content key its envelope sealed to that agent, and unwrapping it there would be the escrow the levels exist to prevent. A lease is produced by `token mint` or `secret share`. |
-| `ksp user enroll` (§3.3's spelling) | **[Not implemented]** — the surface is `crates/ksp-cli/src/commands.rs` | Enrolment is `ksp admin user add`, run by the admin. The spec's `ksp user enroll --user alice --store …` is a proposal, not the command surface. |
-| Shamir shares printed at enrolment | **[Not implemented]** — `crates/ksp-cli/src/vault.rs` | `admin user add` seals the vault and writes the sealed file. It does not cut a share set or print a phrase; the split exists only in `vault rekey`, which takes `--recovery-threshold` and `--recovery-shares`. |
-| Exit codes `3` (token expired), `4` (backend unreachable), `5` (vault sealed) | **[Not implemented]** | `crates/ksp-cli/src/exit.rs` defines `0`, `1`, `2`, `6`, `7`, `8`, `9`, `10`, `11`, `12` and `13`. |
+| Local session agent (§3.6) | **[Not implemented]** | The subcommands are **absent, not hidden**: `agent start`, `agent stop`, `agent status`, `agent lock-timeout`. A test in `crates/ksp/src/commands.rs` asserts their absence. |
+| `ksp vault unseal` and `ksp vault seal` | **[Absent by decision]** | Every operation unseals inside its own process and exits. The command list has no such verbs: `crates/ksp/src/commands.rs`. |
+| `ksp vault init` | **[Absent by decision]** | The command exists but refuses with exit `7`: a vault is created by `admin user add`, which records the binding that opens it. Refusal: `crates/ksp/src/vault.rs`. |
+| `ksp token lease` | **[Partial]** — `crates/ksp/src/token.rs` | The verb exists and refuses with the reason: opening an existing agent-level record needs the content key its envelope sealed to that agent, and unwrapping it there would be the escrow the levels exist to prevent. A lease is produced by `token mint` or `secret share`. |
+| `ksp user enroll` (§3.3's spelling) | **[Not implemented]** — the surface is `crates/ksp/src/commands.rs` | Enrolment is `ksp admin user add`, run by the admin. The spec's `ksp user enroll --user alice --store …` is a proposal, not the command surface. |
+| Shamir shares printed at enrolment | **[Not implemented]** — `crates/ksp/src/vault.rs` | `admin user add` seals the vault and writes the sealed file. It does not cut a share set or print a phrase; the split exists only in `vault rekey`, which takes `--recovery-threshold` and `--recovery-shares`. |
+| Exit codes `3` (token expired), `4` (backend unreachable), `5` (vault sealed) | **[Not implemented]** | `crates/ksp/src/exit.rs` defines `0`, `1`, `2`, `6`, `7`, `8`, `9`, `10`, `11`, `12` and `13`. |
 | Log forwarding to `syslog://`, `http(s)://` or file sinks (§7) | **[Not implemented]** — no such sink in `crates/ksp-deletion/src/audit.rs` | The audit chain is local and append-only. No forwarding sink exists. |
 | `--redact-values` flag (§7) | **[Absent by decision]** — the writer is `crates/ksp-deletion/src/audit.rs` | Values and secret names are never logged at all, so there is nothing for a flag to redact. The redaction is the writer's behaviour, not an option. |
-| macOS as a supported platform | **[Implemented]** — `crates/ksp-posture/src/sys.rs`, `crates/ksp-cli/src/storegroup/mod.rs`, `scripts/ksp-gate.sh` | The workspace builds and the suite runs on Darwin, with the Linux-only adapters target-gated. macOS enforces **no path confinement**: the confinement capability is reported unenforced and the child runs unconfined, in its own output as well as in `ksp status`. The barrier falls back to `mlock`, reported as `weakened`, never as `memfd_secret`. See [§2.4](#09-macos-is-supported-with-a-smaller-guarantee). |
+| macOS as a supported platform | **[Implemented]** — `crates/ksp-posture/src/sys.rs`, `crates/ksp/src/storegroup/mod.rs`, `scripts/ksp-gate.sh` | The workspace builds and the suite runs on Darwin, with the Linux-only adapters target-gated. macOS enforces **no path confinement**: the confinement capability is reported unenforced and the child runs unconfined, in its own output as well as in `ksp status`. The barrier falls back to `mlock`, reported as `weakened`, never as `memfd_secret`. See [§2.4](#09-macos-is-supported-with-a-smaller-guarantee). |
 | Secure Enclave or Keychain as a local key protector | **[Not implemented]** — no file: the mechanism was researched and measured, and no code adopts it. See [§2.4](#09-macos-is-supported-with-a-smaller-guarantee) |
 | HSM or TPM key custody (§4A.5) | **[Not implemented]** — no file: the design excludes it by argument, not by omission | Out of scope by the design's own admission. |
 | Seatbelt SBPL confinement on macOS | **[Absent by decision]** — no file: the research measured it working and the build does not adopt it; out of scope by operator decision 2026-11-06, and the risk it leaves is recorded in §5.2 |
@@ -296,8 +300,8 @@ available. Fresh clients without a trusted checkpoint cannot detect replay.
 > "no listener, foreground invocation that exits" property holds in the merged
 > tree: the CLI opens no socket and starts no daemon. The **optional session
 > agent** described in §3.6 is **[Not implemented]** — its subcommands are
-> absent from the surface defined in `crates/ksp-cli/src/commands.rs`, and
-> `crates/ksp-cli/tests/wired_surface.rs` asserts their absence. The
+> absent from the surface defined in `crates/ksp/src/commands.rs`, and
+> `crates/ksp/tests/wired_surface.rs` asserts their absence. The
 > exception below is therefore described, not built.
 
 **Keyspout itself runs no service.** No Keyspout component listens on TCP, on the
@@ -357,7 +361,7 @@ Consequences, stated plainly:
 > **Status: [Implemented].** This section records the boundary between the two
 > supported platforms, so a reader knows which mechanisms exist on each rather
 > than inferring support from the fact that the code is Rust. The gates are
-> `crates/ksp-posture/src/sys.rs` and `crates/ksp-cli/src/storegroup/mod.rs`.
+> `crates/ksp-posture/src/sys.rs` and `crates/ksp/src/storegroup/mod.rs`.
 >
 > The dump controls are the exception the table below used to deny. Darwin has
 > no `prctl` and no `MADV_DONTDUMP`, and it refuses both attachments anyway:
@@ -424,11 +428,11 @@ that `ksp run` spawns inherits the caller's whole file access.
   child is not restricted to its level subtree: it can read and write anything
   the calling account can, including records sealed to other levels under the
   same principal and the sealed vault file. The exposure is the account's, not
-  the level's. `crates/ksp-cli/src/establish.rs` selects the adapter, and on
+  the level's. `crates/ksp/src/establish.rs` selects the adapter, and on
   macOS the configured `portable_confinement` adapter establishes nothing.
 - **What bounds it, which is not the same as confining it.** The process runs as
   one principal's account, and the store's kernel permissions still separate
-  accounts from each other: `crates/ksp-cli/src/layout.rs` sets `0711` on a
+  accounts from each other: `crates/ksp/src/layout.rs` sets `0711` on a
   principal's home and on each level parent, and `0700` on a level, so another
   account can traverse to what it is named on but cannot list the store. The
   memory barrier limits what another process can read out of a live one: `mlock`
@@ -461,7 +465,7 @@ were run.
 > `crates/ksp-backend/src/store.rs` and `admission.rs`. `file` and `valkey` are
 > **[Implemented]** and selectable from the CLI. `s3` is **[Partial]**: the
 > store and its classification exist, but `SELECTABLE` in
-> `crates/ksp-cli/src/backend.rs` names only the first two, so the backend
+> `crates/ksp/src/backend.rs` names only the first two, so the backend
 > cannot be chosen. `sftp` is **[Not implemented]**.
 
 **Current capability rules: §4.6 and the capability table below.** The historical
@@ -662,7 +666,7 @@ Four rules, each testable:
 
 > **Status: [Implemented], with one spelling change.** Enrolment, the admin
 > signing key, the policy, `admin put`, `admin list`, `admin audit` and
-> `admin revoke` are implemented in `crates/ksp-cli/src/admin.rs` and
+> `admin revoke` are implemented in `crates/ksp/src/admin.rs` and
 > `crates/ksp-identity/src/enrolment.rs`. The command is `ksp admin user add`,
 > not `ksp user enroll`, and the enrolled principal's identifier is a UUID
 > (feature 002).
@@ -768,7 +772,7 @@ only Alice can open *before receiving her authentic public enrollment key*.
 ### 3.2.1 User writes and reads back an admin-wrapped secret
 > **Status: [Implemented].** `ksp admin put` seals a value to the user's
 > recorded recipient public key and `ksp secret get --reveal` opens it in the
-> user's process. Both handlers are in `crates/ksp-cli/src/app.rs`. The admin can neither read what the user wrote nor learn
+> user's process. Both handlers are in `crates/ksp/src/app.rs`. The admin can neither read what the user wrote nor learn
 > that a value exists at the user's level from the value itself.
 
 
@@ -806,9 +810,9 @@ the private key afterward. This is the precise zero-knowledge property.
 
 ### 3.2.2 Policy, recovery and limits of a file backend
 > **Status: [Implemented].** The policy is written and re-signed by
-> `crates/ksp-cli/src/admin.rs`; the backend limits it names — the declared
+> `crates/ksp/src/admin.rs`; the backend limits it names — the declared
 > `LeaseCapability`, the minimum TTL and the cadence — are reported by
-> `ksp status` from `crates/ksp-cli/src/admission.rs`.
+> `ksp status` from `crates/ksp/src/admission.rs`.
 
 
 Policy is **signed by the admin**, not encrypted under an admin-held symmetric key.
@@ -819,6 +823,29 @@ not prevent an admin from changing policy, or a storage operator from replaying 
 older signed policy. Bind each policy to the vault, user, revision and secret IDs;
 compare the revision against a trusted local checkpoint. A new device with no
 checkpoint **cannot detect rollback using an untrusted file backend alone**.
+
+**The revision must advance on every write, because the checkpoint comparison
+above depends on it.** A revision names the whole grant set it carries, so a
+write that adds one grant re-signs all of them at revision `n + 1`. Two
+consequences follow, and both were defects before they were rules:
+
+- **A write merges by default.** Building the body from the flags on one
+  invocation withdrew every grant that invocation did not name, and reported
+  success. `admin policy` now reads the policy this host holds, verifies it
+  against the pinned anchor, and unions the named grants into it. `--replace`
+  writes the named grants as the whole set and is the only way to withdraw
+  several in one step; `admin revoke` remains the way to withdraw one and record
+  the decision in the withdrawal ledger (§4.10). See §6 for the report.
+- **A revision that does not advance is a rollback the checkpoint cannot see.**
+  `write_policy` hardcoded revision `1`, so the enrolment policy and the first
+  grant both carried revision 1 and a client comparing revisions saw no change.
+  Every write now signs `existing.revision() + 1`, and the first write on a host
+  with no policy is revision 1.
+
+An existing policy that does not verify against the pinned anchor is **refused**
+rather than re-signed. Re-signing it would make the admin key vouch for whatever
+the file says; overwriting it would silently discard the grants the operator
+meant to keep.
 
 There is no `ksp admin recover` that emits a decryption key. Admin policy-signing
 key backup is separate from Alice's recovery. Alice must securely back up her
@@ -850,7 +877,7 @@ cannot reset the phrase or recover user plaintext without Alice's participation.
 > is recomputed from the enrolled key and compared against the confirmed value
 > inside the mint. The parts that are implemented — the vault, the enrolment
 > binding, the sealing, the share, the mint — live in
-> `crates/ksp-cli/src/admin.rs`, `vault.rs`, `secret.rs` and `token.rs`.
+> `crates/ksp/src/admin.rs`, `vault.rs`, `secret.rs` and `token.rs`.
 
 Alice enrolls **before** the admin encrypts any data to her. At enrollment, she
 creates an X25519 encryption key pair, an Ed25519 token-signing key pair, and a
@@ -890,7 +917,7 @@ separate trust boundary from other processes running as Alice.
 ### 3.4 Agent operations
 > **Status: [Implemented].** The agent's half of the workflow — receive a
 > signed token, prove possession, confine, deliver — is
-> `crates/ksp-cli/src/run.rs`, `run_gate.rs` and `process.rs`. The gate
+> `crates/ksp/src/run.rs`, `run_gate.rs` and `process.rs`. The gate
 > verifies the proof of possession **before** anything is confined or
 > launched, and confinement is applied before the child exists.
 
@@ -1190,7 +1217,7 @@ and none of that reduces a key it already holds.
 > `agent start`, `agent stop`, `agent status`, `agent lock-timeout` — are
 > **absent, not hidden**: a hidden command still exists, and these are out of
 > MVP scope rather than discouraged. A test in
-> `crates/ksp-cli/src/commands.rs`
+> `crates/ksp/src/commands.rs`
 > (`the_phase_four_session_agent_subcommands_are_absent`) asserts that absence.
 > Everything below describes what the component would have to do if it were
 > built; nothing in the tree provides it.
@@ -1516,7 +1543,7 @@ made of. Unknown bound means `None`.
 
 > **Status: [Implemented], with two authorized changes.** The three levels, the
 > sibling structure, the path grammar and the confinement that makes them real
-> are implemented in `crates/ksp-cli/src/layout.rs`,
+> are implemented in `crates/ksp/src/layout.rs`,
 > `crates/ksp-posture/src/confinement.rs` and `crates/ksp-backend/src/file.rs`.
 > Under feature `002-file-os-split-sweeper` (operator-authorized 2026-10-23)
 > two things changed: the `<user-id>` segment is now a **principal UUID**, and
@@ -1603,8 +1630,8 @@ level. Two mechanisms make it enforced, and they are independent of the backend:
    and the user principal run as different UNIX accounts, and filesystem
    permissions enforce the separation between them. It does **not** extend to the
    agent, which still runs as the user and is bounded by mechanism #1 plus the
-   lease. **[Implemented]** — `crates/ksp-cli/src/layout.rs`,
-   `crates/ksp-cli/src/admin.rs`; test `crates/ksp-cli/tests/principals.rs`.
+   lease. **[Implemented]** — `crates/ksp/src/layout.rs`,
+   `crates/ksp/src/admin.rs`; test `crates/ksp/tests/principals.rs`.
 
 Confinement and signature-based identity are separate. Landlock applies only to
 the confined local process tree, not every same-UID process or remote keys.
@@ -1615,13 +1642,13 @@ confinement if rights are missing. Do not gate remote native expiry on Landlock.
 #### Level 1 — `admin`: the admin shares a secret with the user
 
 > **Status: [Implemented].** `ksp admin put` writes at the `admin` level
-> (`crates/ksp-cli/src/admin.rs`), and the level is the record's **provenance**:
+> (`crates/ksp/src/admin.rs`), and the level is the record's **provenance**:
 > it is what tells a delivery whether a policy is required. A run of an
 > `admin`-sourced delivery re-checks the policy — present, issuer-verified,
 > currently valid, and granting the exact secret and agent — before the record is
-> opened (`crates/ksp-cli/src/run.rs`); a `user`-sourced delivery reads no policy,
+> opened (`crates/ksp/src/run.rs`); a `user`-sourced delivery reads no policy,
 > because the user's own signature is its authority. Tests:
-> `crates/ksp-cli/tests/policy_provenance.rs`. Feature
+> `crates/ksp/tests/policy_provenance.rs`. Feature
 > `008-policy-provenance-and-run-time-verification`.
 
 The admin encrypts to the user's verified public key (HPKE, §3.2) and names the
@@ -1827,13 +1854,13 @@ make the following true by construction rather than by careful coding:
 #### 3.8.1 Who can read what: the actors, and the boundary that separates them
 
 > **Status: [Implemented].** The modes below are the constants in
-> `crates/ksp-cli/src/layout.rs` — `HOME_MODE`, `LEVEL_PARENT_MODE`,
+> `crates/ksp/src/layout.rs` — `HOME_MODE`, `LEVEL_PARENT_MODE`,
 > `LEVEL_MODE`, `AGENT_LEVEL_MODE`, `ADMIN_KEY_MODE`, `AGENT_KEY_MODE`,
 > `POLICY_MODE`, `ISSUANCE_LEDGER_MODE` and `ARM_JOURNAL_MODE` — and they are
 > measured against the disk by `audit` in the same file. The one-user-per-
-> deployment rule is enforced by `admin user add` in `crates/ksp-cli/src/admin.rs`
+> deployment rule is enforced by `admin user add` in `crates/ksp/src/admin.rs`
 > (`AlreadyEnrolled`, exit `2`), and by `Deployment` naming exactly one `user` and
-> one `admin` in `crates/ksp-cli/src/deployment.rs`.
+> one `admin` in `crates/ksp/src/deployment.rs`.
 
 The levels table above says what a level *means*. This one says who actually
 holds which key, which account, and therefore what they can reach. Read it before
@@ -2007,7 +2034,7 @@ then becomes the whole decryption credential and must be protected accordingly.
 
 > **Status: [Partial].** The Shamir construction itself is **[Implemented]** —
 > `crates/ksp-identity/src/recovery.rs` splits and combines over GF(256), and
-> `crates/ksp-cli/src/vault.rs` wires `ksp vault rekey --recovery-threshold K
+> `crates/ksp/src/vault.rs` wires `ksp vault rekey --recovery-threshold K
 > --recovery-shares N` to it, retiring the old share set.
 >
 > What is **[Not implemented]** is the enrolment-time half: `admin user add`
@@ -2076,7 +2103,7 @@ monotonically increasing revision and a validity period. Because the levels
 |---|---|---|
 | `max_user_ttl` | `admin` level records | Withdrawal from the user's store. **Not** secrecy from the admin, which already knows those values |
 | `max_agent_ttl` | `agent-<id>` level records | Ceiling on compliant delivery and cleanup target; no timing guarantee. Admin TTL can also request cleanup |
-| a **use bound** | `agent-<id>` level records | `ksp secret share --uses N` bounds a copy by deliveries rather than time. The counter is armed in the arm record and spent on each delivery; a plain run spends one and leaves the version, `--consume` spends one and deletes. The user may record her own arming and run her own `ksp secret gc`, which signs as her and needs no admin key. **[Implemented]** — `crates/ksp-backend/src/usebound.rs`, `crates/ksp-cli/src/arm.rs`, `crates/ksp-cli/src/sweep.rs`, `crates/ksp-cli/src/run.rs`, `crates/ksp-cli/src/consume.rs`; test `crates/ksp-cli/tests/use_bound.rs`. Feature `009-user-owned-cleanup-with-use-count`. |
+| a **use bound** | `agent-<id>` level records | `ksp secret share --uses N` bounds a copy by deliveries rather than time. The counter is armed in the arm record and spent on each delivery; a plain run spends one and leaves the version, `--consume` spends one and deletes. The user may record her own arming and run her own `ksp secret gc`, which signs as her and needs no admin key. **[Implemented]** — `crates/ksp-backend/src/usebound.rs`, `crates/ksp/src/arm.rs`, `crates/ksp/src/sweep.rs`, `crates/ksp/src/run.rs`, `crates/ksp/src/consume.rs`; test `crates/ksp/tests/use_bound.rs`. Feature `009-user-owned-cleanup-with-use-count`. |
 
 Policy also says which `user` level secrets may be shared at all, and with which
 agents. It cannot see a `user` record's contents, so it constrains **permission**,
@@ -2248,8 +2275,9 @@ file is still one `cp` away from an attacker.
 
 > **Status: [Implemented].** `ksp agent enroll` generates both keypairs and
 > writes the protected key file; `ksp agent pubkey` prints them; `ksp agent
-> rotate` writes a new identity and keeps the previous bundle beside it. The
-> code is in `crates/ksp-cli/src/agent.rs`, `crates/ksp-identity/src/mint.rs`
+> list` names every agent this host holds; `ksp agent rotate` writes a new
+> identity and keeps the previous bundle beside it. The code is in
+> `crates/ksp/src/agent.rs`, `crates/ksp-identity/src/mint.rs`
 > and `crates/ksp-key-lifecycle/src/`. Rotation changes what is **minted**; an
 > artifact sealed to the old key still opens wherever the old private half is
 > retained.
@@ -2279,7 +2307,20 @@ keys. Memory hardening does not revoke a key already copied.
 |---|---|
 | `ksp agent enroll --agent <id>` | Generate or explicitly reuse both compatible pairs; export public enrollment and its binding fingerprint |
 | `ksp agent pubkey --agent <id>` | Export both public keys and key IDs, never private halves |
+| `ksp agent list` | Name every agent this host holds: principal UUID, display name when one was recorded, both key IDs and the fingerprint. Never a private half |
 | `ksp agent rotate --agent <id>` | Replace keys and reverify enrollment for future minting and new trust state |
+
+`ksp agent list` reads `enrolments/<uuid>.cbor` and nothing else. The private
+halves live under `agent/`, a directory the command never opens, and the row it
+prints has no field that could carry one. Two states are deliberately not
+errors: a host with no `enrolments/` directory lists nothing and exits `0`,
+because a host with no agents is ordinary; and a display name that was never
+recorded prints as `-` rather than a synthesised string, because a name the
+operator did not choose is a name a report would print as fact. A file that
+cannot be decoded is different: it is named, the rows that did decode are
+printed, and the command exits `6`, because an omitted row reads as an agent
+that does not exist and a caller cannot tell a complete answer from a partial
+one without being told.
 
 An old private key still signs for its old public key and opens its old sealed
 artifacts. Rotation cannot revoke those offline. Stop new issuance, update trust
@@ -2320,7 +2361,7 @@ record sharing an ID. Native absence alone is not a tombstone.
 > **Status: [Implemented], with one authorized change.** The capability enum, the
 > `2 ×` admission rule, the evidence-based classification and the disclosure
 > requirements are all implemented in `crates/ksp-backend/src/admission.rs` and
-> `crates/ksp-cli/src/admission.rs`. The `file` row below has **changed** under
+> `crates/ksp/src/admission.rs`. The `file` row below has **changed** under
 > feature `002-file-os-split-sweeper` (operator-authorized on 2026-10-23), and
 > the `s3` row is **[Partial]** because the CLI cannot select that backend yet.
 
@@ -2587,7 +2628,7 @@ one.
 > issuer signature. The agent's Ed25519 signing key and X25519 recipient key
 > are separate keys, both named in the header, and `crates/ksp-identity/src/pop.rs`
 > implements the PoP over the canonicalized argv and the exact record version.
-> Tests: `crates/ksp-cli/tests/sc008_consume.rs`,
+> Tests: `crates/ksp/tests/sc008_consume.rs`,
 > `crates/ksp-identity/tests/issuance.rs`.
 
 
@@ -2690,10 +2731,10 @@ erase plaintext already learned.
 
 ### 4.10 The issuance ledger: what this host minted, and what it no longer honours
 > **Status: [Implemented].** `crates/ksp-identity/src/issuance.rs` holds the
-> whole mechanism; the CLI reaches it from `crates/ksp-cli/src/token.rs`
+> whole mechanism; the CLI reaches it from `crates/ksp/src/token.rs`
 > (mint, list, revoke), `run.rs` (the standing check), `admin.rs` (`admin
 > revoke`) and `audit_verify.rs` (withdrawals). Tests:
-> `crates/ksp-identity/tests/issuance.rs`, `crates/ksp-cli/tests/issuance.rs`.
+> `crates/ksp-identity/tests/issuance.rs`, `crates/ksp/tests/issuance.rs`.
 
 This section is written for a developer who has to change the ledger. It states
 what the two files are, who may write each, what a reader may conclude from
@@ -3049,7 +3090,7 @@ proves freshness when all state comes from untrusted storage.
 ### 5.2 Confinement, recovery, input and audit
 > **Status: [Implemented].** Confinement is
 > `crates/ksp-posture/src/confinement.rs` and `descriptors.rs`, reached through
-> the adapter `crates/ksp-cli/src/establish.rs` selects; the requirement level is
+> the adapter `crates/ksp/src/establish.rs` selects; the requirement level is
 > the operator's, in `config.toml`. Recovery is
 > `crates/ksp-identity/src/recovery.rs`; input validation is Zod-equivalent
 > schema validation in each crate's public types; and audit is the per-writer
@@ -3107,7 +3148,7 @@ proves freshness when all state comes from untrusted storage.
 > precedes delete/report; a later nonzero exit cannot undo the child's actions.
 
 > **Status: [Implemented], with a narrower surface than the list below.** The
-> command tree in `crates/ksp-cli/src/commands.rs` is the authority on what
+> command tree in `crates/ksp/src/commands.rs` is the authority on what
 > exists; the list in this section is the design. The differences that matter:
 >
 > | Spec spelling | What the code does | Marker |
@@ -3118,20 +3159,20 @@ proves freshness when all state comes from untrusted storage.
 > | `ksp token lease` | The verb exists and refuses with the reason: unwrapping an existing agent-level record's content key would be the escrow the levels exist to prevent. A lease comes from `token mint` or `secret share` | **[Partial]** |
 > | `ksp user enroll` (§3.3) | Enrolment is `ksp admin user add` | **[Not implemented]** |
 > | `ksp get` (agent surface, in the table below) | There is no top-level `get`. The value reaches a process through `ksp run`; `ksp secret get --reveal` is the user surface | **[Not implemented]** |
-> | `ksp audit verify` | **Implemented** — `crates/ksp-cli/src/audit_verify.rs`. Not listed in the tree above | **[Implemented]** |
+> | `ksp audit verify` | **Implemented** — `crates/ksp/src/audit_verify.rs`. Not listed in the tree above | **[Implemented]** |
 > | `ksp __deliver` | Implemented and **hidden**: the delivery half of `run --consume`, which must live in a process that does not go on to delete, because confinement is irreversible | **[Implemented]** |
 > | `--stdin` on `secret set`, `admin put` | The value is read from stdin without a flag | **[Implemented]** — different spelling |
 > | `--agent-key-fingerprint` on `token mint` | The pin is recomputed from the enrolled key and compared against the confirmed value inside the mint | **[Implemented]** — different spelling |
 > | `keyspout` as an alias for `ksp` | Not installed. The binary is `ksp` | **[Not implemented]** |
 >
 > Exit codes `3` (token expired), `4` (backend unreachable) and `5` (vault
-> sealed) are **[Not implemented]**; `crates/ksp-cli/src/exit.rs` defines `0`,
+> sealed) are **[Not implemented]**; `crates/ksp/src/exit.rs` defines `0`,
 > `1`, `2`, `6`, `7`, `8`, `9`, `10`, `11`, `12` and `13`. Code `13` is a
 > malformed invocation: it is distinct from `1` (an internal failure) and `2` (a
 > policy decision), because a caller responds differently to each.
 
 ```
-ksp admin      init | user add | policy [--show] | put | list | revoke | audit
+ksp admin      init | user add | policy [--show] [--replace] | put | list | revoke | audit
                                         # admin audit = the deletion acknowledgement journal
                                         # policy --show = read the revision this host holds
 ksp audit      [--admin] [--principal UUID] [--limit N] [--since D] [--json]
@@ -3141,7 +3182,7 @@ ksp audit      [--admin] [--principal UUID] [--limit N] [--since D] [--json]
 ksp vault      init | unseal | seal | status | rekey    # rekey = rotate Shamir shares (§4.1.1)
                init --recovery-threshold K --recovery-shares N
 ksp agent      start | stop | status | lock-timeout     # optional session agent (§3.6)
-               enroll | pubkey | rotate                # agent keypair for PoP (§4.3.2)
+               enroll | pubkey | list | rotate           # agent keypair for PoP (§4.3.2)
 ksp token      mint | lease | list | inspect | revoke    # lease = arm a deletion deadline (§4.5)
 ksp secret     ls | get | set | rm | share | purge-expired | gc
                                         # share = copy user to agent level (§3.8)
@@ -3170,6 +3211,20 @@ Every command takes `--json` where machine consumption is plausible.
 > scope broader than the levels the sweep owns is refused, and so is a credential
 > wider than delete and list on that scope plus write on the journal.
 
+> **A sweep scope is a level, never a particular secret.** `p/<vault>/<uuid>/agent-*`
+> is the accepted shape, and it is the whole of it. A sweep deletes versions inside
+> a level; it is never told which record to delete, so a scope with a segment after
+> the level names something it cannot act on. `SweepScope::parse` inspected the
+> level segment and did not check the arity, so `agent-*/db-password` parsed to
+> `EveryAgent` with the trailing segment silently dropped: `arm-sweep` exited `0`,
+> the capability never moved, and `gc` then reported that no armed record was read
+> while one existed. Three outputs misled at once, and the operator had no reason
+> to doubt any of them.
+>
+> The same rule governs `--grant`: a grant naming a record is refused, not accepted
+> as "within" the level. Both refusals name the accepted scope, so a reader can
+> derive the shape from the message rather than from the documentation.
+
 > **`ksp audit` and `ksp admin audit` are two reads, not two spellings.** `ksp
 > admin audit` reports the deletion acknowledgement journal — intents, reports and
 > observations — for the admin. `ksp audit` reads the signed, chained log every
@@ -3180,23 +3235,51 @@ Every command takes `--json` where machine consumption is plausible.
 > deployment acknowledge" and "what did it do" with one view and one set of
 > qualifications.
 
-> **`ksp admin policy --show` is a read-back, and it needs no admin key.** A write
-> replaces every grant at once, so before it there was no way to learn what the
-> host currently holds except to read the store by hand. `--show` prints the
-> revision, the issuing admin's key id, the validity window, the verification
-> result against the loaded anchor, and one line per grant. It writes nothing and
-> signs nothing, so it runs without the policy-signing private key; the anchor is
-> still required, because a grant list is only meaningful when the signature over
-> it verifies. `--show` and a write are mutually exclusive: an invocation that
-> carries both is refused as a usage error rather than guessed at.
+> **`ksp admin policy --show` is a read-back, and it needs no admin key.** It
+> prints the revision, the issuing admin's key id, the validity window, the
+> verification result against the loaded anchor, and one line per grant. It
+> writes nothing and signs nothing, so it runs without the policy-signing private
+> key; the anchor is still required, because a grant list is only meaningful when
+> the signature over it verifies. `--show` and a write are mutually exclusive: an
+> invocation that carries both is refused as a usage error rather than guessed
+> at.
+
+> **A write merges; `--replace` is what withdraws.** A revision names every grant
+> it carries, so a write built only from the flags on one invocation withdrew
+> every grant that invocation did not name. Two sequential
+> `admin policy --agent X` calls left only the second agent granted, and both
+> exited `0` — the loss was invisible until the first agent's next share was
+> refused by a policy that named neither the grant nor the command that
+> overwrote it. A write now reads the policy this host holds, verifies it against
+> the pinned anchor, and unions the named grants into it. Four consequences:
+>
+> - **The report is the diff.** A write prints `added:` and `removed:` for agents
+>   and secrets, and says whether it merged or replaced. A merge that removed
+>   nothing says `removed: none` rather than staying silent, because silence
+>   reads as "the question was not asked".
+> - **A merge only adds.** Removing a grant is `admin revoke`, which records the
+>   decision in the withdrawal ledger (§4.10). A merge that also removed would
+>   put two operations behind one flag and leave the ledger without a record.
+> - **`--replace` writes the named grants as the whole set**, and the report
+>   lists what it dropped. It is the only way to drop several grants in one step.
+> - **An existing policy that does not verify is refused, not overwritten.**
+>   Re-signing it would make the admin key vouch for whatever the file says;
+>   starting over would silently discard the grants the operator meant to keep.
+>
+> The revision advances on every write, including the first: `admin user add`
+> writes revision 1, and the next `admin policy` writes revision 2. Before this
+> change `write_policy` hardcoded `1`, so a grant overwrote the enrolment policy
+> at the same revision and the revision never advanced — a client comparing
+> revisions saw no change at all.
 
 > **`ksp agent` carries two unrelated meanings.** `start | stop | status |
 > lock-timeout` operate the *user's* session agent (§3.6); `enroll | pubkey |
-> rotate` operate an *agent host's* PoP keypair (§4.3.2). They are on the same
-> subcommand because an agent host is where you run the client — but they need
-> different keys, so the error on a missing credential names which one. If this
-> proves confusing in practice, `ksp agent enroll` should become `ksp identity
-> enroll`; that is a naming decision to settle before Phase 3, not after.
+> list | rotate` operate an *agent host's* PoP keypair (§4.3.2). They are on the
+> same subcommand because an agent host is where you run the client — but they
+> need different keys, so the error on a missing credential names which one. If
+> this proves confusing in practice, `ksp agent enroll` should become `ksp
+> identity enroll`; that is a naming decision to settle before Phase 3, not
+> after.
 
 **Three disjoint surfaces**, by the key they need:
 
@@ -3238,6 +3321,18 @@ Conventions:
 `8` means "the key is present but could not prove it for this request". An
 operator debugging a broken agent needs to tell those apart.
 
+> **A password that could not be read is `6`, not `2`.** The vault password is a
+> credential, and its absence is the same class as a missing key file: the caller
+> can supply it, and the fix is an instruction rather than a policy change. Four
+> command arms returned `2` for it — `secret get`, `secret rm`, `secret share` and
+> `token mint` — which the table above defines as "denied by policy", so a caller
+> could not tell a missing credential from a decision it must not retry. Each now
+> prints the sentence the error carries, which names `--passphrase-file`, and exits
+> `6`. `secret set` keeps `13` and its own message: there the value and the password
+> would both come from stdin, so the invocation is malformed rather than missing a
+> credential. Both branches of the stdin reader return the same error, so a closed
+> pipe and an open one cannot disagree about the code.
+
 - `ksp run` on the agent host needs **no session agent** — the delivery token
   includes selected record keys, and the proof of possession verifies entirely
   offline against the agent's own key (§4.3, §4.3.1). `ksp agent start` exists
@@ -3264,9 +3359,9 @@ operator debugging a broken agent needs to tell those apart.
 > **Status: [Partial].** The signed, chained, per-writer audit log is
 > **[Implemented]** — `crates/ksp-deletion/src/audit.rs` provides the record
 > type, the chain, the append-before-effect discipline and the verification;
-> `crates/ksp-cli/src/audit_verify.rs` implements `ksp audit verify`; and
-> `crates/ksp-cli/src/audit_view.rs` implements the scoped read, where another
-> principal's scope is refused. Tests: `crates/ksp-cli/tests/audit_chain.rs`,
+> `crates/ksp/src/audit_verify.rs` implements `ksp audit verify`; and
+> `crates/ksp/src/audit_view.rs` implements the scoped read, where another
+> principal's scope is refused. Tests: `crates/ksp/tests/audit_chain.rs`,
 > `audit_scope.rs`, `audit_verify.rs`, `audit_projection.rs`.
 >
 > Two parts of this section are **[Not implemented]**:
@@ -3328,13 +3423,13 @@ secret names to a log sink.
 ## 8. Configuration
 
 > **Status: [Implemented] for the MVP settings.** The config file, the backend
-> selection and the layout are implemented in `crates/ksp-cli/src/config.rs` and
-> `crates/ksp-cli/src/layout.rs`. Two settings in the example below are
+> selection and the layout are implemented in `crates/ksp/src/config.rs` and
+> `crates/ksp/src/layout.rs`. Two settings in the example below are
 > **[Not implemented]**: `lock_timeout` (the session agent does not exist, so
 > there is no cache window to bound) and the `sftp` backend block (the backend
 > does not exist). The `file` and `valkey` blocks are **[Implemented]**; the
 > `s3` block is **[Partial]**, because `SELECTABLE` in
-> `crates/ksp-cli/src/backend.rs` does not name it.
+> `crates/ksp/src/backend.rs` does not name it.
 
 > **Historical configuration example — not a current schema.** Do not copy this
 > as an MVP security configuration. `Exact`, `Batched`, `max_gc_interval` and
@@ -3676,12 +3771,12 @@ attacker-controlled storage.
 ### 10.1 Acceptance inventory overrides historical §10 outcomes
 > **Status: [Implemented] as a test suite, with gaps the snapshot names.** The
 > inventory below is what the merged tree tests, in the files named in the
-> snapshot: `crates/ksp-cli/tests/` holds 20 integration files and the crates
+> snapshot: `crates/ksp/tests/` holds 20 integration files and the crates
 > hold 56 test files in total. Items 3, 8 and 10 depend on the file backend's
 > `Scheduled` capability and on Landlock, so they are **Linux-only**. §2.4
 > records the platform boundary. Items 10's required/optional half is now
 > covered on both platforms: the level comes from `config.toml`, and
-> `crates/ksp-cli/tests/capability_wiring.rs` asserts the refusal a required
+> `crates/ksp/tests/capability_wiring.rs` asserts the refusal a required
 > capability produces.
 
 
@@ -3740,7 +3835,7 @@ from a lost phrase. The current limits are explicit in §§4.6, 0.5–0.7.
 
 ## 13. Naming
 > **Status: [Design only].** A naming decision, not a control. The binary is
-> `ksp`, as declared in `crates/ksp-cli/Cargo.toml`; the `keyspout` long-form
+> `ksp`, as declared in `crates/ksp/Cargo.toml`; the `keyspout` long-form
 > alias in §6 is **[Not implemented]**.
 
 
@@ -3784,7 +3879,7 @@ crates.io, PyPI and npm.
 | 12 | **`keyrack`** | Keyrack | — | **Taken** (`KeyRack-io/keyrack`); also implies storage, which is the opposite of the design | taken |
 
 ### 13.3 Recommendation
-> **Status: [Implemented]** — `crates/ksp-cli/Cargo.toml`. The name in use is
+> **Status: [Implemented]** — `crates/ksp/Cargo.toml`. The name in use is
 > `ksp`.
 
 

@@ -46,7 +46,7 @@ schedule, not a measured delay and not a bound, and admission never uses it
 while a **Sweep Proof** can be read instead.
 _Avoid_: sweep interval, TTL, retention period, max lag
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/admission.rs, crates/ksp-cli/src/admission.rs
+_Files_: crates/ksp-backend/src/admission.rs, crates/ksp/src/admission.rs
 _Relates to_: Lease Capability (is disclosed beside it), Proven Cadence (is distinct from), Admission Floor (does not set it), Cleanup Lag (is not)
 _History_:
 - 2026-10-21 (001-keyspout-mvp): Term introduced.
@@ -60,7 +60,7 @@ uses and `status` prints beside the declaration. A shorter observed gap than the
 declaration is a retry, not a faster schedule, so the larger of the two is used.
 _Avoid_: actual interval, real cadence, measured lag, effective schedule
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/proof.rs, crates/ksp-backend/src/admission.rs, crates/ksp-cli/src/admission.rs
+_Files_: crates/ksp-backend/src/proof.rs, crates/ksp-backend/src/admission.rs, crates/ksp/src/admission.rs
 _Relates to_: Declared Cadence (corrects), Sweep Proof (is measured by), Admission Floor (doubles), Lease Capability (supplies the interval of a `Scheduled` one)
 _History_:
 - 2026-10-24 (002-file-os-split-sweeper): Term introduced when admission moved from
@@ -115,7 +115,7 @@ an operation identity so a lost acknowledgement can be reconciled. No token
 bytes exist before it is acknowledged.
 _Avoid_: arm, lease, schedule, register
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp-cli/src/arm.rs
+_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp/src/arm.rs
 _Relates to_: Deletion Intent (is a write of), Operation Identity (is keyed by), Arming Acknowledgement (proves)
 _History_:
 - 2026-10-21 (001-keyspout-mvp): Term introduced.
@@ -125,7 +125,7 @@ The stable key that makes a durable arming write idempotent, so a retry after
 a lost acknowledgement reconciles rather than duplicates.
 _Avoid_: idempotency key, request ID, dedup key, nonce
 _Subsystems_: Backend Admission and Durable Arming, Deletion Evidence and Consume Outcome
-_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp-cli/src/arm.rs, crates/ksp-deletion/src/journal.rs
+_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp/src/arm.rs, crates/ksp-deletion/src/journal.rs
 _Relates to_: Durable Arming (is keyed by), Deletion Report (is retried by)
 _History_:
 - 2026-10-21 (001-keyspout-mvp): Term introduced.
@@ -136,7 +136,7 @@ precondition for publishing a token; losing it blocks publication and forces
 reconciliation.
 _Avoid_: ack, confirmation, commit
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp-cli/src/arm.rs
+_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp/src/arm.rs
 _Relates to_: Durable Arming (proves), Deletion Intent (is about)
 _History_:
 - 2026-10-21 (001-keyspout-mvp): Term introduced.
@@ -150,7 +150,7 @@ observe is printed as `unknown` with its own reason rather than left blank or fi
 with a default. It never asserts erasure or a timing guarantee.
 _Avoid_: status, report, health check, capability report
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/status.rs, crates/ksp-cli/src/app.rs, crates/ksp-cli/src/output.rs
+_Files_: crates/ksp-backend/src/status.rs, crates/ksp/src/app.rs, crates/ksp/src/output.rs
 _Relates to_: Lease Capability (discloses), Cleanup Lag (is disclosed as unknown), Proven Cadence (names beside the declared one), Run Window (prints), Audit Head (prints)
 _History_:
 - 2026-10-21 (001-keyspout-mvp): Term introduced.
@@ -164,7 +164,7 @@ so a reader can tell when the evidence was produced. A window describes one run;
 not a lag, a bound or an interval, and does not say when any copy stops existing.
 _Avoid_: duration, elapsed, lag, timing
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/proof.rs, crates/ksp-backend/src/status.rs, crates/ksp-cli/src/output.rs
+_Files_: crates/ksp-backend/src/proof.rs, crates/ksp-backend/src/status.rs, crates/ksp/src/output.rs
 _Relates to_: Sweep Proof (is recorded by), Proven Cadence (is measured from), Cleanup Lag (is not)
 _History_:
 - 2026-10-24 (002-file-os-split-sweeper): Term introduced when status had to print the
@@ -226,7 +226,7 @@ zero for an unbounded run, and it is what makes "swept some" distinguishable fro
 cleared.
 _Avoid_: remaining work, queue depth, debt
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/sweep.rs, crates/ksp-cli/src/output.rs
+_Files_: crates/ksp-backend/src/sweep.rs, crates/ksp/src/output.rs
 _Relates to_: Lease Sweep (is left by), Sweep Bound (is caused by), Sweep Report (is counted in), Sweep Proof (is not carried by)
 _History_:
 - 2026-10-24 (002-file-os-split-sweeper): Term introduced for Misfit H; the proof
@@ -337,7 +337,7 @@ reaches no lease, so the arming constructor refuses it rather than recording a
 schedule nothing reads.
 _Avoid_: arming scope, sweep prefix, target scope
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp-cli/src/admission.rs
+_Files_: crates/ksp-backend/src/sweeper.rs, crates/ksp/src/admission.rs
 _Relates to_: Sweeper Arming (is the scope of), Declared Cadence (is the schedule of), Capability State (explains the absence of a proven one)
 _History_:
 - 2026-11-07 (007-file-cleanup-capability): Term introduced. `agent-*` was
@@ -351,7 +351,7 @@ action derived from that cause. Distinct from the capability itself: several
 causes produce `None` and each needs a different next step.
 _Avoid_: status, diagnosis, next step, hint
 _Subsystems_: Backend Admission and Durable Arming
-_Files_: crates/ksp-backend/src/admission.rs, crates/ksp-cli/src/output.rs
+_Files_: crates/ksp-backend/src/admission.rs, crates/ksp/src/output.rs
 _Relates to_: Lease Capability (explains), Declared Cadence (may be the missing cause), Proven Cadence (may be the stale cause), Proof Gate (supplies the evidence causes)
 _History_:
 - 2026-11-07 (007-file-cleanup-capability): Term introduced. A next action
