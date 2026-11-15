@@ -50,6 +50,7 @@
 #   scripts/ksp-gate.sh host     # the host part alone
 #   scripts/ksp-gate.sh vm       # the VM part alone (also what the re-exec runs)
 #   scripts/ksp-gate.sh ci       # the gate as a GitHub Linux runner runs it
+#   scripts/ksp-gate.sh ci --scope docs   # prose only; see the scope block below
 #   CARGO_TARGET_DIR=/tmp/mine scripts/ksp-gate.sh
 #
 # The `ci` part exists because the release workflow must not reimplement the
@@ -94,6 +95,34 @@ repo_root="$(cd -- "${script_dir}/.." && pwd)"
 cd "$repo_root"
 
 part="${1:-}"
+
+# The scope narrows what the `ci` part runs. It is an argument to this script
+# rather than a second script, so there stays exactly one definition of what the
+# gate is. `--scope full` is the behaviour every part had before the flag
+# existed, and it is the default whenever the scope is not stated.
+#
+#   docs   prose only: markers, fmt, actionlint. A docs change can still make the
+#          documentation claim a control that does not exist, which is why
+#          ksp-markers.sh stays in this scope.
+#   code   the product: everything except the VM-only targets and principals.
+#   full   everything this part can run.
+#
+# The scope is never widened by this script. A caller that passes `docs` for a
+# code change gets a gate that did not check the code, and that is the caller's
+# error to make visible — see scripts/ksp-gate-scope.sh, which is the thing that
+# classifies and which refuses to narrow on an empty diff.
+scope="full"
+if [ "${2:-}" = "--scope" ]; then
+    scope="${3:?--scope needs a value: docs, code, or full}"
+fi
+case "$scope" in
+    docs|code|full) ;;
+    *)
+        echo "error: unknown scope '$scope'; use docs, code, or full." >&2
+        exit 64
+        ;;
+esac
+
 if [ -z "$part" ]; then
     if [ "$(uname -s)" = "Linux" ]; then
         # Inside the VM, or on a Linux host: the VM part is what this machine can
@@ -114,7 +143,43 @@ root_target="${KSP_ROOT_TARGET_DIR:-/tmp/ksp-gate-root-target}"
 export CARGO_INCREMENTAL=0
 
 step() {
+    phase_close
+    phase_name="$*"
+    phase_start=$SECONDS
     printf '\n== %s\n' "$*"
+}
+
+# Phase timings, printed in the summary.
+#
+# Without these the next person optimising this gate starts by guessing, which is
+# what happened: the first optimisation pass parsed workflow logs to find that
+# `principals` spent 73 of its 75 seconds compiling. The gate could have said so.
+#
+# `$SECONDS` rather than `date`: it is a shell builtin, so it costs nothing and
+# cannot fail. It measures whole seconds since shell start, which is the
+# resolution this needs.
+phase_name=""
+phase_start=0
+phase_names=()
+phase_secs=()
+
+phase_close() {
+    [ -n "$phase_name" ] || return 0
+    phase_names+=("$phase_name")
+    phase_secs+=($((SECONDS - phase_start)))
+    phase_name=""
+}
+
+phase_summary() {
+    phase_close
+    [ "${#phase_names[@]}" -gt 0 ] || return 0
+    local i total=0
+    printf '\n== %s: phase timings\n' "$1"
+    for i in "${!phase_names[@]}"; do
+        printf '   %-44s %5ss\n' "${phase_names[$i]}" "${phase_secs[$i]}"
+        total=$((total + phase_secs[i]))
+    done
+    printf '   %-44s %5ss\n' "total" "$total"
 }
 
 # The VM disk is small enough that a full debug build can nearly fill it, and the
@@ -341,6 +406,19 @@ ci_part() {
         echo "no .github/workflows/ here; skipping workflow lint"
     fi
 
+    # The `docs` scope stops here. Prose cannot change what the binary does, but
+    # it can change what the documentation claims, and `ksp-markers.sh` above is
+    # the check that reads the document. Everything below this point compiles or
+    # scans code, and a documentation-only diff cannot affect any of it.
+    #
+    # The scope is chosen by scripts/ksp-gate-scope.sh from the diff, never by a
+    # judgement about what "cannot be affected". A path rule is checkable.
+    if [ "$scope" = "docs" ]; then
+        printf '\n== ci: scope docs — markers, fmt and workflow lint only\n'
+        phase_summary "ci"
+        return 0
+    fi
+
     # This is the copy of clippy that matters: only on Linux are the
     # `cfg(target_os = "linux")` branches compiled and linted at all.
     step "ci: cargo clippy --all-targets -- -D warnings"
@@ -462,8 +540,30 @@ ci_part() {
     # runs once, under sudo, in the step below. The other VM targets are excluded
     # because they need a Linux mechanism this host may not have; the `vm` and
     # `ci` parts run them where the mechanism exists.
+    #
+    # ONE `cargo test` PER PACKAGE, not one for the whole workspace.
+    #
+    # `-p` and `--test` are **independent global filters**, not pairs. The
+    # previous form built one argument list like
+    #
+    #   -p ksp-posture --test confinement -p ksp --test adapters_five ...
+    #
+    # which cargo reads as "packages ksp-posture and ksp, targets named
+    # confinement or adapters_five" — the cross product, not the pairs. So naming
+    # `-p ksp` for one of its targets made EVERY `--test` name match inside `ksp`,
+    # including `confinement`, which is a VM target that had been filtered out of
+    # the list. On a Linux runner `ksp:confinement` passes and the defect was
+    # invisible; on macOS it fails, which is how it was found.
+    #
+    # Grouping by package keeps the batching (one cargo startup per package
+    # rather than per target) and makes the exclusion mean what it says.
+    #
+    # No associative arrays: macOS ships bash 3.2, where `local -A` is an invalid
+    # option and the gate dies with `local: -A: invalid option`. The grouping is
+    # done by asking `all_targets` for each package's targets in turn, which is
+    # also easier to read than a map.
     step "ci: tests: integration targets (--no-fail-fast)"
-    local -a integration_args=()
+    local -a packages=()
     while IFS= read -r pair; do
         if [ "$pair" = "ksp:principals" ]; then
             continue
@@ -477,37 +577,88 @@ ci_part() {
             # No `part` check here: this function *is* the `ci` part, which runs
             # on a Linux runner where every VM mechanism exists. The `host` part
             # is the one that skips them, and it has its own loop.
+            #
+            # The `code` scope is the exception, and it is a deliberate one: it
+            # is the PR scope, and these targets need a Linux mechanism or root
+            # that a PR runner may not have. `full` runs on `main` and on every
+            # tag, so a defect they would catch is caught before a release.
+            if [ "$scope" = "code" ]; then
+                continue
+            fi
         fi
-        integration_args+=(-p "${pair%%:*}" --test "${pair##*:}")
+        packages+=("${pair%%:*}")
     done < <(all_targets)
-    if [ "${#integration_args[@]}" -gt 0 ]; then
-        if ! cargo test "${integration_args[@]}" --no-fail-fast; then
-            failed+=("workspace:integration")
+
+    # Deduplicate while keeping order, so the log reads in a stable sequence.
+    #
+    # `${ordered[@]}` on an empty array is an *unbound variable* under `set -u`
+    # in bash 3.2, which macOS ships. `${ordered[@]+"${ordered[@]}"}` is the
+    # portable spelling: it expands to nothing when the array is unset or empty.
+    local -a ordered=()
+    local p q seen
+    for p in ${packages[@]+"${packages[@]}"}; do
+        seen=0
+        for q in ${ordered[@]+"${ordered[@]}"}; do
+            if [ "$p" = "$q" ]; then seen=1; break; fi
+        done
+        [ "$seen" -eq 0 ] && ordered+=("$p")
+    done
+
+    local crate name
+    local -a crate_tests
+    for crate in "${ordered[@]}"; do
+        crate_tests=()
+        while IFS= read -r pair; do
+            [ "${pair%%:*}" = "$crate" ] || continue
+            if [ "$pair" = "ksp:principals" ]; then
+                continue
+            fi
+            if is_vm_target "$pair" && [ "$scope" = "code" ]; then
+                continue
+            fi
+            crate_tests+=("--test" "${pair##*:}")
+        done < <(all_targets)
+        if [ "${#crate_tests[@]}" -eq 0 ]; then
+            continue
         fi
-    fi
+        printf '\n-- %s: %s\n' "$crate" "${#crate_tests[@]} arg(s)"
+        if ! cargo test -p "$crate" "${crate_tests[@]}" --no-fail-fast; then
+            failed+=("$crate:integration")
+        fi
+    done
 
     # The two-account boundary, under sudo with its own target directory. A
     # root-owned `target/` breaks every later non-root build, which is why the
     # directory is separate rather than shared.
-    step "ci: tests: two-account boundary (root, principals.rs)"
-    if [ "$(id -u)" -eq 0 ]; then
-        CARGO_TARGET_DIR="$root_target" cargo test -p ksp --test principals --no-fail-fast \
-            || failed+=("ksp:principals")
+    #
+    # Skipped in the `code` scope for the same reason the VM targets are: it
+    # needs root, and it is the slowest thing in the gate because the separate
+    # target directory is a second full compile. `main` and every tag run it.
+    if [ "$scope" = "code" ]; then
+        printf '\n== ci: scope code — skipping the two-account boundary (needs root; runs on main and tags)\n'
     else
-        if ! sudo -n true 2>/dev/null; then
-            echo "error: the two-account tests need root and 'sudo -n' is unavailable." >&2
-            echo "       A GitHub runner has passwordless sudo; a local run needs it granted." >&2
-            exit 69
+        step "ci: tests: two-account boundary (root, principals.rs)"
+        if [ "$(id -u)" -eq 0 ]; then
+            CARGO_TARGET_DIR="$root_target" cargo test -p ksp --test principals --no-fail-fast \
+                || failed+=("ksp:principals")
+        else
+            if ! sudo -n true 2>/dev/null; then
+                echo "error: the two-account tests need root and 'sudo -n' is unavailable." >&2
+                echo "       A GitHub runner has passwordless sudo; a local run needs it granted." >&2
+                exit 69
+            fi
+            sudo -n env \
+                HOME="$HOME" \
+                PATH="$HOME/.cargo/bin:$PATH" \
+                RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+                CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+                CARGO_TARGET_DIR="$root_target" \
+                cargo test -p ksp --test principals --no-fail-fast \
+                || failed+=("ksp:principals")
         fi
-        sudo -n env \
-            HOME="$HOME" \
-            PATH="$HOME/.cargo/bin:$PATH" \
-            RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
-            CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
-            CARGO_TARGET_DIR="$root_target" \
-            cargo test -p ksp --test principals --no-fail-fast \
-            || failed+=("ksp:principals")
     fi
+
+    phase_summary "ci"
 
     if [ "${#failed[@]}" -gt 0 ]; then
         printf '\n== ci: %d target(s) failed\n' "${#failed[@]}" >&2
@@ -519,11 +670,13 @@ ci_part() {
 case "$part" in
 host)
     host_part
+    phase_summary "host"
     printf '\n== host part passed\n'
     printf 'the VM part has not run: run scripts/ksp-gate.sh for the whole gate.\n'
     ;;
 vm)
     vm_part
+    phase_summary "vm"
     printf '\n== vm part passed\n'
     ;;
 ci)
@@ -532,11 +685,12 @@ ci)
     ;;
 all)
     host_part
+    phase_summary "host"
     printf '\n== host part passed; running the VM part\n'
     exec "${script_dir}/ksp-vm.sh" "${script_dir}/ksp-gate.sh" vm
     ;;
 *)
-    echo "usage: $(basename "$0") [host|vm|ci]" >&2
+    echo "usage: $(basename "$0") [host|vm|ci] [--scope docs|code|full]" >&2
     exit 64
     ;;
 esac

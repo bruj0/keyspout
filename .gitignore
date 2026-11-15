@@ -28,3 +28,4 @@ tmp/
 # Python bytecode from scripts/public/sync.py
 __pycache__/
 *.pyc
+target-root/

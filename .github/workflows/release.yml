@@ -15,7 +15,17 @@
 #   smoke                 run the built binaries, before anything is published
 #   host                  upload the artifacts and create the release
 #   publish-homebrew-formula  push the formula to bruj0/homebrew-tap
-#   announce              finalise the release body
+#
+# The generated `announce` job is deliberately absent. `dist-workspace.toml`
+# leaves `github-release` at its default, so `host` already creates the release
+# with its final title and body; `dist host --steps=announce` had nothing left
+# to do. It also had no checkout step, so it ran in an empty runner directory
+# and failed every release with
+#
+#   × Failed to find Cargo.toml in an ancestor of /home/runner/work/...
+#
+# A job that can only fail is worse than no job: it marks a good release red.
+# `dist init` will regenerate it, so delete it again if that happens.
 #
 # The `.deb` and `.rpm` packages are a separate workflow (`packages.yml`),
 # because `cargo-dist` does not build them.
@@ -51,6 +61,63 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # HAND-ADDED. Classify the diff so the gate can run the right amount of work.
+  #
+  # A documentation-only PR used to pay the same five minutes as a change to the
+  # memory barrier. That is the wrong default: a gate that costs five minutes for
+  # a typo teaches people to batch unrelated changes, and a gate people stop
+  # watching is a gate that stops working.
+  #
+  # The classification is by **what changed**, never by a belief about what
+  # cannot be affected. `scripts/ksp-gate-scope.sh` holds the rules and its own
+  # selftest, and it defaults to `full` for anything it does not recognise — a
+  # scope that silently widened would be worse than no split at all.
+  #
+  # A tag and a push to `main` are always `full`. The scope exists to make a PR
+  # fast, not to make a release less checked.
+  # ---------------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      scope: ${{ steps.classify.outputs.scope }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The classifier diffs against the base, so it needs the history.
+          fetch-depth: 0
+
+      - name: Classify the diff
+        id: classify
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # A tag publishes and `main` seeds the cache every PR reads. Neither is
+          # narrowed: the scope exists to make a PR fast, not to make a release
+          # less checked.
+          if [ "$EVENT" != "pull_request" ] || [ "${REF#refs/tags/}" != "$REF" ]; then
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+            echo "not a pull request, so the scope is full"
+            exit 0
+          fi
+          if [ -z "${BASE_SHA:-}" ]; then
+            # No base means the classification cannot run. A failed
+            # classification must not narrow the gate.
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+            echo "::warning::no base sha; defaulting to the full gate"
+            exit 0
+          fi
+          scope="$(bash scripts/ksp-gate-scope.sh --base "$BASE_SHA")"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          echo "scope: $scope"
+          git diff --name-only "${BASE_SHA}...HEAD" | head -50
+
+  # ---------------------------------------------------------------------------
   # HAND-ADDED. Everything in this job is not `dist` output.
   #
   # A tag must not publish a binary the gate has not seen. This job runs the
@@ -65,17 +132,42 @@ jobs:
     # `/usr/bin/valkey-server` path.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    needs:
+      - changes
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Report the scope
+        shell: bash
+        env:
+          SCOPE: ${{ needs.changes.outputs.scope }}
+        run: |
+          echo "gate scope: $SCOPE"
+          case "$SCOPE" in
+            docs)
+              echo "documentation only: markers, fmt and workflow lint. The"
+              echo "setup steps below are skipped because nothing they install"
+              echo "can affect a prose change."
+              ;;
+            code)
+              echo "product change: the full suite except the targets that need"
+              echo "root or a Linux-only mechanism. Those run on main and tags."
+              ;;
+            *)
+              echo "full: everything this runner can check."
+              ;;
+          esac
+
       - name: Install Rust
+        if: needs.changes.outputs.scope != 'docs'
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
           rustup default 1.99.1
 
       - name: Cache cargo registry and dependency builds
+        if: needs.changes.outputs.scope != 'docs'
         # Measured: the gate's 5m22s is now almost entirely compilation. The tests
         # themselves run in about 90 seconds; the rest is building 322 crates, and
         # `aws-lc-sys` alone compiles a large body of C for the TLS stack.
@@ -138,7 +230,31 @@ jobs:
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # NO CACHE FOR THE PRIVILEGED TARGET DIRECTORY, and the reason is measured.
+      #
+      # WP1 of `docs/plans/gate-performance.md` proposed caching it: `principals`
+      # spent 73 of its 75 seconds compiling because its target directory is
+      # separate and therefore cold. The plan suggested `target-root` inside the
+      # checkout with a second `rust-cache` entry.
+      #
+      # That was tried and it fails, on run 43761322911:
+      #
+      #   thread 'two_accounts_complete_the_session_and_the_kernel_keeps_them_apart'
+      #   panicked at crates/ksp/tests/principals.rs:524:22:
+      #   the binary runs: Os { code: 13, kind: PermissionDenied }
+      #
+      # The privileged run writes `target-root/` as **root**. The next non-root
+      # invocation then cannot execute the binary it needs, because the directory
+      # and its contents belong to root. That is the same failure the separate
+      # target directory exists to prevent — moving it inside the checkout
+      # reintroduces it, just one level down.
+      #
+      # So the directory stays outside the workspace and stays uncached. The 73
+      # seconds are the price of the permission isolation, and the isolation is
+      # the thing the test is about.
+
       - name: Install build dependencies
+        if: needs.changes.outputs.scope != 'docs'
         # A timeout on this step, not only on the job.
         #
         # `apt-get update` against the Ubuntu archive has hung for 25+ minutes on
@@ -163,6 +279,7 @@ jobs:
             valkey-server unzip curl
 
       - name: Install cargo-audit and cargo-vet
+        if: needs.changes.outputs.scope != 'docs'
         # Prebuilt binaries, not `cargo install`.
         #
         # `cargo install cargo-audit --locked && cargo install cargo-vet
@@ -233,6 +350,7 @@ jobs:
           cargo-vet --version
 
       - name: Install OSV-Scanner
+        if: needs.changes.outputs.scope != 'docs'
         # A download with no timeout is a hang that looks like a slow network.
         timeout-minutes: 5
         # Pinned by version, and the downloaded binary is checked against the
@@ -272,6 +390,7 @@ jobs:
           osv-scanner --version
 
       - name: Start RustFS
+        if: needs.changes.outputs.scope != 'docs'
         # The wait loop below is bounded, but the download above it is not.
         timeout-minutes: 5
         # `ksp-backend:s3_store` needs an S3 server at 127.0.0.1:9000. The VM
@@ -306,6 +425,7 @@ jobs:
           echo "rustfs did not start; log follows"; cat /tmp/rustfs.log; exit 1
 
       - name: Install the AWS CLI
+        if: needs.changes.outputs.scope != 'docs'
         timeout-minutes: 5
         # Ubuntu 24.04 has no `awscli` package (`apt-cache policy awscli` reports
         # no candidate), so the official v2 installer is used. It is a single
@@ -318,6 +438,7 @@ jobs:
           aws --version
 
       - name: Create the S3 test buckets
+        if: needs.changes.outputs.scope != 'docs'
         # `s3_store` needs two buckets that already exist, one with versioning
         # on and one with it off. The server does not create them, and a test
         # that made its own bucket would be proving the wrong thing: the
@@ -352,9 +473,15 @@ jobs:
         # `./target` is the default the action expects, and the gate honours
         # `CARGO_TARGET_DIR`. The runner has the disk for it; the 19 GiB ceiling
         # that forced `/tmp` is a property of the local VM, not of a GitHub runner.
+        #
+        # `KSP_ROOT_TARGET_DIR` is NOT set here, so the gate uses its default of
+        # `/tmp/ksp-gate-root-target` — outside the checkout, and uncached. See
+        # the note above the gate's cache steps for why caching it inside the
+        # workspace was tried and reverted.
         env:
           CARGO_TARGET_DIR: target
-        run: bash scripts/ksp-gate.sh ci < /dev/null
+          SCOPE: ${{ needs.changes.outputs.scope }}
+        run: bash scripts/ksp-gate.sh ci --scope "$SCOPE" < /dev/null
 
   plan:
     needs: gate
@@ -961,30 +1088,3 @@ jobs:
             git commit -m "${name} ${version}"
           done
           git push
-
-  announce:
-    needs:
-      - plan
-      - host
-    runs-on: ubuntu-22.04
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    if: ${{ needs.host.result == 'success' && (!fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases) }}
-    steps:
-      # `dist` is not on the runner image, and this job had no install step, so it
-      # failed with
-      #
-      #   line 1: dist: command not found
-      #   Process completed with exit code 127
-      #
-      # It was the last job to run and the only one that never installed the tool
-      # it calls. The version matches the `cargo-dist-version` pinned in
-      # `dist-workspace.toml`, so the announce step cannot disagree with the plan
-      # that produced the release.
-      - name: Install dist
-        shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/cargo-dist-installer.sh | sh"
-
-      - name: Announce
-        run: |
-          dist host ${{ needs.plan.outputs.tag-flag }} --allow-dirty --steps=announce
