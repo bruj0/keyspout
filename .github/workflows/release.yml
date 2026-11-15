@@ -83,8 +83,22 @@ jobs:
         # and a cache keyed without it would restore artifacts whose embedded
         # paths differ from what the release is supposed to contain.
         #
-        # `save-if` is limited to `main` so a tag build does not race a branch
-        # build to write the same key.
+        # `save-if` was `github.ref == 'refs/heads/main'`, which was a bug: no
+        # run has ever been on `main`. Every run is a tag push or a PR branch, so
+        # the cache was never written and every PR paid a full cold compile of
+        # 322 crates. Measured after four release runs:
+        #
+        #   gh api repos/bruj0/keyspout/actions/caches --jq .total_count
+        #   # 0
+        #
+        # Saving on `main` *and* on pull requests means the first PR seeds the
+        # cache and later ones reuse it. `rust-cache` keys on the job and the
+        # lockfile, so two concurrent PRs with the same dependencies write the
+        # same key and the loser is a no-op rather than a conflict.
+        #
+        # A tag build still only restores: it must not depend on a cache a PR
+        # could have written, and it is the one run where a cold compile is
+        # acceptable.
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> /tmp/ksp-gate-target"
@@ -92,7 +106,7 @@ jobs:
           # two-account tests. That one is root-owned and rebuilt each run; it is
           # a few crates, not the dependency graph, so it is not worth caching.
           cache-on-failure: "true"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
 
       - name: Install build dependencies
         # A timeout on this step, not only on the job.
