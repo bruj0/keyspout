@@ -1232,6 +1232,19 @@ mod tests {
     /// caller's, and a store created inside it. The assertion is on the store
     /// root only — re-grouping every root would be a second, unexplained change
     /// to a boundary whose subject is mode and owner bits.
+    ///
+    /// # Why the fixture can be unavailable
+    ///
+    /// The defect this covers is macOS group inheritance: a directory created
+    /// under `/tmp` inherits `wheel` because BSD takes the group from the
+    /// parent. Linux does not do that — a new directory inherits the *process's*
+    /// effective group — so `/tmp` cannot produce a foreign-group parent there
+    /// without `chgrp`, which needs privilege the suite does not have.
+    ///
+    /// The test therefore skips when the fixture cannot be built, rather than
+    /// asserting a precondition the platform cannot meet. `the_store_root_
+    /// carries_the_callers_own_group` covers the same property on both
+    /// platforms, because it only needs a store, not a foreign parent.
     #[test]
     fn a_store_under_a_foreign_group_is_regrouped() {
         let tmp = Path::new("/tmp");
@@ -1254,12 +1267,14 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir(&parent).unwrap();
-        // The parent inherits `/tmp`'s group, which is the defect's precondition.
-        assert_eq!(
-            std::fs::metadata(&parent).unwrap().gid(),
-            tmp_gid,
-            "the fixture needs a parent whose group differs from the caller's"
-        );
+        // The defect's precondition is a parent whose group is not the
+        // caller's. macOS gives that for free under `/tmp`; Linux does not, and
+        // a suite that cannot create the fixture must not assert it exists.
+        let parent_gid = std::fs::metadata(&parent).unwrap().gid();
+        if parent_gid == mine {
+            let _ = std::fs::remove_dir_all(&parent);
+            return;
+        }
 
         let home = parent.join("ksp");
         let outcome = ensure(&home);

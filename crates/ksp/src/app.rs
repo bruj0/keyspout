@@ -1385,6 +1385,29 @@ fn run_secret<W: Write>(
                     return Outcome::Failed(error.exit_code());
                 }
             };
+            // The binding comes before the ledger, and the order is the point.
+            //
+            // A binding whose account no longer resolves is the *root cause* of
+            // every later refusal: the ledger is owned by a uid that names
+            // nobody, so `check_ledger_account` would refuse with "run this
+            // command as 1003, or bind this deployment to <name>", which sends
+            // the operator to `admin user add` for an account that has been
+            // deleted. The binding sentence names what actually happened.
+            //
+            // `mint_lease` checks the same condition, and that check stays: it
+            // is the gate for every caller, not only this one. This is the
+            // earlier copy that makes the message the operator sees the right
+            // one.
+            if let Ok((deployment, _anchor)) = crate::deployment::require(layout)
+                && let Some(account) = deployment.user_account.as_deref()
+                && !crate::deployment::account_resolves(account)
+            {
+                let _ = emitter.refusal(&format!(
+                    "the principal binding is unverified: {account} no longer resolves to an \
+                     account on this host"
+                ));
+                return Outcome::Failed(exit::CAPABILITY_REFUSAL);
+            }
             // Before the seal, not after: an account that cannot append to the
             // ledger would otherwise do the crypto work and drop the artifact
             // with a raw `Permission denied`.
