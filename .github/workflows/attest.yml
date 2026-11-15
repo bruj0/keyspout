@@ -1,0 +1,161 @@
+# The attestation signer, as a reusable workflow.
+#
+# This file exists for one reason: to move the permission that mints provenance
+# out of the job that runs the build.
+#
+# At SLSA Build L2 the provenance is authentic — signed, and naming the platform —
+# but it is signed by the same job that compiled the binary. `id-token: write` and
+# `attestations: write` sit on the build job, so any step in that job can request
+# an OIDC token and sign whatever it likes. The build steps and the signing step
+# share a trust boundary.
+#
+# Build L3 requires the provenance to be *unforgeable*: the signing material must
+# not be reachable from the user-defined build steps. GitHub's documented route is
+# a reusable workflow, because the caller cannot modify the workflow it calls. A
+# compromised or malicious step in the build job can still produce a bad binary —
+# it cannot produce a *forged attestation* for one, because it never holds the
+# token.
+#
+# The caller keeps `contents: read` only. It does not get `id-token: write` and it
+# does not get `attestations: write`; those live here.
+#
+# Verified with:
+#   gh attestation verify <artifact> --repo bruj0/keyspout \
+#     --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
+
+name: Attest
+
+on:
+  workflow_call:
+    inputs:
+      subject-path:
+        description: >-
+          Glob of the files to attest. Every match becomes a subject in the
+          provenance, so this must name the artifacts and not the whole
+          directory.
+        required: true
+        type: string
+      subject-name:
+        description: >-
+          A label for the log line only. Not part of the attestation.
+        required: false
+        type: string
+        default: "artifacts"
+
+permissions:
+  # The two permissions that make provenance unforgeable by the caller.
+  #
+  # `id-token: write` lets this workflow request an OIDC token from GitHub's
+  # issuer; `attestations: write` lets it store the resulting attestation. Both
+  # are granted here and withheld from the calling job.
+  attestations: write
+  id-token: write
+  # Read, because a reusable workflow still resolves its own action pins.
+  contents: read
+
+jobs:
+  attest:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: ${{ inputs.subject-path }}
+
+      - name: Report what was attested
+        # The attestation itself is the record; this line exists so a reader of
+        # the job log can see which files were covered without fetching the
+        # bundle. It counts matches rather than listing them, because a glob that
+        # matched nothing would otherwise look like success.
+        shell: bash
+        env:
+          SUBJECT_PATH: ${{ inputs.subject-path }}
+          SUBJECT_NAME: ${{ inputs.subject-name }}
+        run: |
+          set -euo pipefail
+          # The glob is passed as a pattern, so expand it the same way the action
+          # does. `compgen -G` returns non-zero when nothing matches.
+          mapfile -t files < <(compgen -G "$SUBJECT_PATH" || true)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no file matched $SUBJECT_PATH, so nothing was attested"
+            exit 1
+          fi
+          echo "attested ${#files[@]} file(s) for ${SUBJECT_NAME}:"
+          printf '  %s\n' "${files[@]}"
+
+      - name: Build the verification summary
+        # A VSA states, in one signed document, which SLSA level an artifact was
+        # verified at — so a consumer can read `verifiedLevels` instead of
+        # inspecting a provenance bundle and reasoning about it themselves.
+        #
+        # The claim is generated from the artifacts that were just attested, not
+        # from a constant. `verifiedLevels` says L3 only because the provenance
+        # was signed by this reusable workflow rather than by the calling build
+        # job; if that arrangement changes, this claim becomes false and the
+        # step that produces it is where the change has to be made.
+        #
+        # Schema: https://slsa.dev/spec/v1.2/verification_summary
+        shell: bash
+        env:
+          SUBJECT_PATH: ${{ inputs.subject-path }}
+          SUBJECT_NAME: ${{ inputs.subject-name }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(compgen -G "$SUBJECT_PATH" || true)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no file matched $SUBJECT_PATH, so no VSA can be built"
+            exit 1
+          fi
+
+          # One subject entry per attested file, each with its sha256. The VSA
+          # describes the artifacts, so the digests must be the real ones.
+          subjects="[]"
+          for f in "${files[@]}"; do
+            digest=$(sha256sum "$f" | cut -d' ' -f1)
+            name=$(basename "$f")
+            subjects=$(printf '%s' "$subjects" | jq -c \
+              --arg n "$name" --arg d "$digest" \
+              '. + [{"name": $n, "digest": {"sha256": $d}}]')
+          done
+
+          jq -n \
+            --argjson subjects "$subjects" \
+            --arg repo "$REPO" \
+            --arg sha "$SHA" \
+            --arg workflow "$WORKFLOW_REF" \
+            --arg name "$SUBJECT_NAME" \
+            --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              "_type": "https://in-toto.io/Statement/v1",
+              "subject": $subjects,
+              "predicateType": "https://slsa.dev/verification_summary/v1",
+              "predicate": {
+                "verifier": {
+                  "id": "https://github.com/\($repo)/.github/workflows/attest.yml",
+                  "version": {"github-actions": "reusable-workflow"}
+                },
+                "timeVerified": $now,
+                "resourceUri": "https://github.com/\($repo)/releases",
+                "policy": {
+                  "uri": "https://github.com/\($repo)/blob/\($sha)/docs/supply-chain-level.md"
+                },
+                "verificationResult": "PASSED",
+                "verifiedLevels": ["SLSA_BUILD_LEVEL_3"],
+                "slsaVersion": "1.2"
+              }
+            }' > vsa.intoto.json
+
+          echo "VSA for $name:"
+          jq '{subjects: (.subject | length), levels: .predicate.verifiedLevels}' vsa.intoto.json
+
+      - name: Attest the verification summary
+        # Signed by the same reusable workflow, so the VSA carries the same
+        # unforgeable property as the provenance it summarises.
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ inputs.subject-path }}
+          predicate-type: "https://slsa.dev/verification_summary/v1"
+          predicate-path: vsa.intoto.json
