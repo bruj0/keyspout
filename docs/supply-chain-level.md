@@ -3,19 +3,21 @@
 An assessment of Keyspout `v1.0.0` against the SLSA v1.2 specification, with the
 evidence for each claim and a plan for the next level.
 
-**Summary: Build L2, Source L1.** The build track is at the level GitHub
-Artifact Attestations provide by default. The source track is below what the
-build track implies, and that gap is the interesting finding: the artifacts are
-better attested than the commits that produced them.
+**Summary: Build L3, Source L3** as of 2026-11-15. `v1.0.0` shipped at Build L2 /
+Source L1; the plan in [§5](#5-plan) was then implemented, and [§7](#7-recorded-state)
+records what changed and what is still not covered.
 
 | Track | Level | What it means |
 |---|---|---|
-| Build | **L2** | Signed provenance from a hosted build platform |
-| Source | **L1** | Version controlled, and nothing enforced on top |
+| Build | **L3** | Signed provenance from a reusable workflow the build job cannot sign with |
+| Source | **L3** | Branch and tag controls enforced by the platform |
 
-The recommendation is in [§5](#5-plan). The short version: Source L3 is one
-repository setting away and is worth more than Build L3, which needs a
-restructuring that buys less.
+Source L4 is deliberately not claimed: it requires two trusted persons to review
+every change, and a solo maintainer cannot meet that honestly.
+
+The recommendation is in [§5](#5-plan). The short version: Source L3 was one
+repository setting away and was worth more than Build L3, which needed a
+restructuring.
 
 ---
 
@@ -305,10 +307,10 @@ expensive one, and it should be a deliberate decision rather than a default.
 
 ### Step 3 — Move signing into a reusable workflow (Build L2 → L3)
 
-The mechanism GitHub documents. Sketch:
+The mechanism GitHub documents. Implemented as `.github/workflows/attest.yml`:
 
 ```yaml
-# .github/workflows/attest.yml  — the reusable workflow
+# .github/workflows/attest.yml — the reusable workflow
 on:
   workflow_call:
     inputs:
@@ -326,10 +328,10 @@ jobs:
           subject-path: ${{ inputs.subject-path }}
 ```
 
-The build job then calls it with `uses: ./.github/workflows/attest.yml` and
-**drops `id-token: write` and `attestations: write` from its own permissions**.
-The point is not the indirection — it is that the build steps no longer hold the
-permission that mints the provenance.
+The build job calls it with `uses: ./.github/workflows/attest.yml` and **drops
+`id-token: write` and `attestations: write` from its own permissions**. The point
+is not the indirection — it is that the build steps no longer hold the permission
+that mints the provenance.
 
 **Buys:** Build L3's unforgeability property, insofar as GitHub-hosted runners
 provide it.
@@ -411,10 +413,74 @@ The last one is destructive. Run it against a scratch tag, not a published one.
 | Date | Build | Source | Evidence |
 |---|---|---|---|
 | 2026-11-14 | L2 | L1 | `v1.0.0`: Sigstore-signed SLSA Provenance v1; `main` unprotected, no rulesets, no tag protection |
+| 2026-11-15 | **L3** | **L3** | Signing moved to `.github/workflows/attest.yml`; `protect-main` and `protect-tags` rulesets active |
 
 Update this table when a level changes, and say which step moved it. A level
 recorded without evidence is a claim, and the point of this document is that the
 claims are checkable.
+
+### What was implemented on 2026-11-15
+
+**Step 1 — done, and enforcement proven.** Two rulesets, both `active` with
+`current_user_can_bypass: "never"`:
+
+| Ruleset | Target | Rules |
+|---|---|---|
+| `protect-main` | branch `main` | `deletion`, `non_fast_forward`, `required_status_checks` (`gate`, strict) |
+| `protect-tags` | tags `v*` | `deletion`, `update` |
+
+Not assumed to work — tested. Both a tag deletion and a tag move were rejected:
+
+```
+! [remote rejected] v0.0.0-probe (push declined due to repository rule violations)
+! [remote rejected] v1.0.0 -> v1.0.0 (push declined due to repository rule violations)
+```
+
+That is the Source L3 property: the controls are **enforced by the platform**, not
+merely intended.
+
+**Step 2 — deliberately not done.** Source stays at L3, not L4. L4 requires two
+trusted persons to review every change to a protected branch, and a solo
+maintainer cannot meet that honestly. Claiming L4 while one person approves their
+own work would be the exact failure this document exists to avoid.
+
+**Step 3 — done.** `.github/workflows/attest.yml` is a reusable workflow holding
+`attestations: write` and `id-token: write`. The build job keeps `contents: read`
+and nothing else, and calls the reusable workflow with `uses:`. The signing
+permission is now outside the build steps' trust boundary, which is what makes the
+provenance unforgeable rather than merely authentic.
+
+**Step 4 — already satisfied, no change needed.** The release build has no cache.
+`Swatinem/rust-cache` is used by the `gate` job only; `build-local-artifacts`,
+`build-global-artifacts` and the rest have no cache step at all. The L3 cache
+requirement is about a build reading a cache another build could have poisoned, and
+the release build reads none.
+
+**Step 5 — done.** The reusable workflow builds a VSA
+(`https://slsa.dev/verification_summary/v1`) from the artifacts it just attested,
+with real `sha256` digests, and signs it with the same workflow. A consumer can
+read `verifiedLevels` instead of reasoning about a provenance bundle.
+
+The VSA's `verifiedLevels` claims `SLSA_BUILD_LEVEL_3` because the provenance is
+signed by the reusable workflow rather than the calling job. If that arrangement
+changes, the claim becomes false, and the step that produces it is where the change
+has to be made.
+
+### What is still not L3-complete
+
+Stated so a later reader does not over-read the level:
+
+- **The runner image is trusted.** L3 assumes the platform is hardened. GitHub
+  documents its isolation properties; a consumer is trusting that documentation.
+- **The reusable workflow's own contents are trusted.** It is in the same
+  repository and editable by the same people. Moving it to a separate repository
+  the maintainer does not control would be stronger, and is more than L3 asks.
+- **`--allow-dirty` remains.** The workflow is hand-edited on purpose. That is a
+  maintenance risk, not an L3 gap, but it is the reason the workflow cannot simply
+  be regenerated.
+- **The macOS binaries are unsigned.** Apple code signing is out of scope. SLSA
+  says nothing about platform code signing; this is a separate, real gap for a
+  user who downloads through a browser.
 
 ---
 
