@@ -1,0 +1,25 @@
+# THROWAWAY PROBE. Delete with the branch that carries it.
+#
+# Answers one question: can a called reusable workflow keep the permissions it
+# declares when the calling job declares a narrower set?
+name: perm-probe-callee
+
+on:
+  workflow_call:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report whether an OIDC token can be requested
+        shell: bash
+        run: |
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "OIDC_AVAILABLE=yes"
+          else
+            echo "OIDC_AVAILABLE=no"
+          fi

@@ -57,6 +57,17 @@ jobs:
   attest:
     runs-on: ubuntu-24.04
     steps:
+      # A called workflow gets a fresh runner, so the artifacts the caller built
+      # are not here. Without this step the glob below matches nothing and the
+      # attestation covers no subject — the failure the count check in the next
+      # step exists to catch.
+      - name: Fetch the artifacts to attest
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: artifacts-build-local-*
+          path: target/distrib/
+          merge-multiple: true
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

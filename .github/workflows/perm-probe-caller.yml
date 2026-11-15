@@ -1,0 +1,18 @@
+# THROWAWAY PROBE. Delete with the branch that carries it.
+#
+# The caller declares `contents: read` only — the shape I want for the attest
+# job. If the called workflow still gets `id-token: write`, the narrow caller
+# does not cap it and the real job is safe.
+name: perm-probe-caller
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  call:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/perm-probe-callee.yml
