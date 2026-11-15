@@ -38,37 +38,6 @@ Clear the attribute once:
 xattr -d com.apple.quarantine ./ksp
 ```
 
-## Verify a download
-
-Every release asset carries a build-provenance attestation: it records which
-repository, which workflow and which commit produced the bytes.
-
-```bash
-gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
-  --repo bruj0/keyspout \
-  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
-```
-
-That proves the binary came from this repository's release workflow at a specific
-commit. It does **not** prove the commit is safe — a backdoor merged to `main`
-would produce a valid attestation. [`SECURITY.md`](SECURITY.md) states the full
-claim, what it does not cover, and the attack surface with each control.
-
-## Agent skills
-
-Seven skills teach an agent to drive `ksp` — set it up, report status, store and
-share secrets, enrol agents, switch backends, recover, and read the audit log.
-
-```bash
-npx skills add bruj0/keyspout
-```
-
-They are plain `SKILL.md` folders in the open
-[agentskills.io](https://agentskills.io) format, read by Claude Code, GitHub
-Copilot, Cursor, OpenAI Codex and Gemini CLI. See
-[`skills/README.md`](skills/README.md) for per-agent install and how to verify it
-worked.
-
 ---
 
 ## How the parts fit together
@@ -99,6 +68,37 @@ ships in this repository at [`assets/keyspout-architecture.html`](assets/keyspou
 which works offline.
 
 ---
+
+## Verify a download
+
+Every release asset carries a build-provenance attestation: it records which
+repository, which workflow and which commit produced the bytes.
+
+```bash
+gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
+  --repo bruj0/keyspout \
+  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+```
+
+That proves the binary came from this repository's release workflow at a specific
+commit. It does **not** prove the commit is safe — a backdoor merged to `main`
+would produce a valid attestation. [`SECURITY.md`](SECURITY.md) states the full
+claim, what it does not cover, and the attack surface with each control.
+
+## Agent skills
+
+Seven skills teach an agent to drive `ksp` — set it up, report status, store and
+share secrets, enrol agents, switch backends, recover, and read the audit log.
+
+```bash
+npx skills add bruj0/keyspout
+```
+
+They are plain `SKILL.md` folders in the open
+[agentskills.io](https://agentskills.io) format, read by Claude Code, GitHub
+Copilot, Cursor, OpenAI Codex and Gemini CLI. See
+[`skills/README.md`](skills/README.md) for per-agent install and how to verify it
+worked.
 
 ## Why not just a `.env` file?
 
