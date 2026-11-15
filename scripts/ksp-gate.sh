@@ -120,11 +120,23 @@ step() {
 # The VM disk is small enough that a full debug build can nearly fill it, and the
 # failure then appears as a linker error naming neither the disk nor the target.
 check_disk() {
-    local free_kib
-    free_kib="$(df -Pk "${target%/*}" 2>/dev/null | awk 'NR==2 {print $4}')"
+    local free_kib probe
+    # `df` needs a directory that exists, and `${target%/*}` is the *parent* of
+    # the target — which is the wrong thing to probe when `target` is a bare
+    # relative name like `target`, because `${target%/*}` is then `target`
+    # itself and it does not exist yet.
+    #
+    # That aborted the whole gate with exit 1 and no output, before the first
+    # `step` printed: `df` failed, the pipeline's status propagated through the
+    # assignment, and `set -e` stopped there. A gate that dies silently is worse
+    # than one that warns, so the probe falls back to the nearest directory that
+    # does exist.
+    probe="${target%/*}"
+    [ -d "$probe" ] || probe="."
+    free_kib="$(df -Pk "$probe" 2>/dev/null | awk 'NR==2 {print $4}')" || free_kib=""
     if [ -n "${free_kib:-}" ] && [ "$free_kib" -lt $((6 * 1024 * 1024)) ]; then
         printf 'warning: %s has %s MiB free; a debug build of this workspace needs several GiB.\n' \
-            "${target%/*}" "$((free_kib / 1024))" >&2
+            "$probe" "$((free_kib / 1024))" >&2
         printf '         A linker failure reading "No space left on device" is disk, not code.\n' >&2
     fi
 }
