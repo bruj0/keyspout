@@ -493,3 +493,4 @@ Stated so a later reader does not over-read the level:
 - GitHub, *Artifact attestations* — the L2/L3 boundary for GitHub Actions
 - [`SECURITY.md`](../SECURITY.md) — what the release proves, in user-facing terms
 - [`docs/known-defects.md`](known-defects.md) — the open defects this assessment assumes
+
