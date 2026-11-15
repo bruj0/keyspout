@@ -15,7 +15,17 @@
 #   smoke                 run the built binaries, before anything is published
 #   host                  upload the artifacts and create the release
 #   publish-homebrew-formula  push the formula to bruj0/homebrew-tap
-#   announce              finalise the release body
+#
+# The generated `announce` job is deliberately absent. `dist-workspace.toml`
+# leaves `github-release` at its default, so `host` already creates the release
+# with its final title and body; `dist host --steps=announce` had nothing left
+# to do. It also had no checkout step, so it ran in an empty runner directory
+# and failed every release with
+#
+#   × Failed to find Cargo.toml in an ancestor of /home/runner/work/...
+#
+# A job that can only fail is worse than no job: it marks a good release red.
+# `dist init` will regenerate it, so delete it again if that happens.
 #
 # The `.deb` and `.rpm` packages are a separate workflow (`packages.yml`),
 # because `cargo-dist` does not build them.
@@ -220,34 +230,28 @@ jobs:
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Cache the privileged target directory
-        if: needs.changes.outputs.scope != 'docs'
-        # The second target directory, and the second cache.
-        #
-        # `principals` runs under `sudo` with its own `CARGO_TARGET_DIR`, because
-        # a root-owned `target/` breaks every later non-root build. That
-        # separation is correct and stays. What was wrong is that a *separate*
-        # directory was also a *cold* one: measured on run 43709676015,
-        # `principals` spent 73 seconds compiling 322 crates and 2.35 seconds
-        # running its five tests. It was the second-largest cost in the gate and
-        # almost none of it was the test.
-        #
-        # A separate directory does not have to be uncached. The dependency graph
-        # is identical to the one the first cache holds, so a warm restore here
-        # removes the compile; the workspace crates still rebuild, which is
-        # seconds.
-        #
-        # `workspaces` is `". -> target-root"`, relative to the checkout, which
-        # is the form `rust-cache` resolves correctly. The absolute-path form is
-        # what silently restored nothing before — see the note on the first cache
-        # step. `key` must differ from the first cache's, or the two would fight
-        # over one entry and each would invalidate the other.
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: ". -> target-root"
-          key: root-target
-          cache-on-failure: "true"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # NO CACHE FOR THE PRIVILEGED TARGET DIRECTORY, and the reason is measured.
+      #
+      # WP1 of `docs/plans/gate-performance.md` proposed caching it: `principals`
+      # spent 73 of its 75 seconds compiling because its target directory is
+      # separate and therefore cold. The plan suggested `target-root` inside the
+      # checkout with a second `rust-cache` entry.
+      #
+      # That was tried and it fails, on run 43761322911:
+      #
+      #   thread 'two_accounts_complete_the_session_and_the_kernel_keeps_them_apart'
+      #   panicked at crates/ksp/tests/principals.rs:524:22:
+      #   the binary runs: Os { code: 13, kind: PermissionDenied }
+      #
+      # The privileged run writes `target-root/` as **root**. The next non-root
+      # invocation then cannot execute the binary it needs, because the directory
+      # and its contents belong to root. That is the same failure the separate
+      # target directory exists to prevent — moving it inside the checkout
+      # reintroduces it, just one level down.
+      #
+      # So the directory stays outside the workspace and stays uncached. The 73
+      # seconds are the price of the permission isolation, and the isolation is
+      # the thing the test is about.
 
       - name: Install build dependencies
         if: needs.changes.outputs.scope != 'docs'
@@ -470,20 +474,12 @@ jobs:
         # `CARGO_TARGET_DIR`. The runner has the disk for it; the 19 GiB ceiling
         # that forced `/tmp` is a property of the local VM, not of a GitHub runner.
         #
-        # `KSP_ROOT_TARGET_DIR` is a sibling of `target`, not a child of it, and
-        # that is deliberate. `rust-cache` saves the whole target directory, so a
-        # `target/root` would be stored by the first cache as well as the second,
-        # and the two would then disagree about one directory. A sibling keeps the
-        # two caches disjoint.
-        #
-        # It is the second cache below. Measured on run 43709676015: `principals`
-        # spent 73 of its 75 seconds compiling and 2.35 seconds testing, because
-        # its target directory is separate (a root-owned `target/` breaks every
-        # later non-root build) and was therefore cold on every run. A separate
-        # directory does not have to be an uncached one.
+        # `KSP_ROOT_TARGET_DIR` is NOT set here, so the gate uses its default of
+        # `/tmp/ksp-gate-root-target` — outside the checkout, and uncached. See
+        # the note above the gate's cache steps for why caching it inside the
+        # workspace was tried and reverted.
         env:
           CARGO_TARGET_DIR: target
-          KSP_ROOT_TARGET_DIR: target-root
           SCOPE: ${{ needs.changes.outputs.scope }}
         run: bash scripts/ksp-gate.sh ci --scope "$SCOPE" < /dev/null
 
@@ -1092,30 +1088,3 @@ jobs:
             git commit -m "${name} ${version}"
           done
           git push
-
-  announce:
-    needs:
-      - plan
-      - host
-    runs-on: ubuntu-22.04
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    if: ${{ needs.host.result == 'success' && (!fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases) }}
-    steps:
-      # `dist` is not on the runner image, and this job had no install step, so it
-      # failed with
-      #
-      #   line 1: dist: command not found
-      #   Process completed with exit code 127
-      #
-      # It was the last job to run and the only one that never installed the tool
-      # it calls. The version matches the `cargo-dist-version` pinned in
-      # `dist-workspace.toml`, so the announce step cannot disagree with the plan
-      # that produced the release.
-      - name: Install dist
-        shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/cargo-dist-installer.sh | sh"
-
-      - name: Announce
-        run: |
-          dist host ${{ needs.plan.outputs.tag-flag }} --allow-dirty --steps=announce
