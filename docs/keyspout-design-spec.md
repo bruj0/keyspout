@@ -1824,6 +1824,89 @@ make the following true by construction rather than by careful coding:
 6. **A lease is armable at any level that allows TTL** — `admin` and `agent` —
    subject to the backend contract (§4.5). `user` records are permanent by design.
 
+#### 3.8.1 Who can read what: the actors, and the boundary that separates them
+
+> **Status: [Implemented].** The modes below are the constants in
+> `crates/ksp-cli/src/layout.rs` — `HOME_MODE`, `LEVEL_PARENT_MODE`,
+> `LEVEL_MODE`, `AGENT_LEVEL_MODE`, `ADMIN_KEY_MODE`, `AGENT_KEY_MODE`,
+> `POLICY_MODE`, `ISSUANCE_LEDGER_MODE` and `ARM_JOURNAL_MODE` — and they are
+> measured against the disk by `audit` in the same file. The one-user-per-
+> deployment rule is enforced by `admin user add` in `crates/ksp-cli/src/admin.rs`
+> (`AlreadyEnrolled`, exit `2`), and by `Deployment` naming exactly one `user` and
+> one `admin` in `crates/ksp-cli/src/deployment.rs`.
+
+The levels table above says what a level *means*. This one says who actually
+holds which key, which account, and therefore what they can reach. Read it before
+answering "can Bob see Alice's secret" — the answer is not "no because the code
+checks", it is "no because there is no path and no key".
+
+**First, the constraint that decides most rows: one deployment holds one user.**
+`Deployment` names a single `user` principal and a single `admin` principal, and a
+second `admin user add` on the same host is refused:
+
+```
+ksp: this host already holds a sealed vault for 084cfed2-…: enrolling again would
+replace it and lock that principal out of every record sealed to her; use
+`ksp vault rekey` to change the password
+ksp: refused (exit 2: policy denied the operation)
+```
+
+So Alice and Bob are **two deployments**, not two users of one. Each has its own
+`KSP_HOME`, its own `store/`, its own vault and its own ledger. The path grammar
+`p/<vault>/<principal-uuid>/…` can express many principals under one vault, and
+the record type supports it, but no command creates a second one today.
+
+| Actor | Holds | UNIX account | Can read | Cannot read | Enforced by |
+|---|---|---|---|---|---|
+| **Admin** | Ed25519 policy-signing **private** key (`admin/`, `0700`); Alice's **public** keys from `deployment.cbor` | the admin account | The policy it signed; `admin`-level records it wrote (it knew those values at entry); every level's *metadata* it can name; `withdrawals.jsonl` (write) and `issuance.jsonl` (read) | **Any `user`-level value.** It holds no X25519 private key, so it cannot open an envelope sealed to Alice | Asymmetric keys (§4.0). Plus `0711` on the deployment root and `0700` on `user/` |
+| **Alice** (the user principal) | X25519 **private** key + Ed25519 token-signing **private** key, both sealed under her phrase in `vault.cbor` (`0600`) | her own account, bound at `admin user add --unix-user` | Her `user/` level (`0700`, she is the owner); `admin/` records addressed to her; every `agent-<id>/` copy she made; `issuance.jsonl` (write); `withdrawals.jsonl` (read) | Another principal's levels — there are none in her deployment; a sibling deployment's store entirely | `0700` on `user/`; the vault password; the store root's group membership |
+| **Alice's agent** (`agent-alice-1`) | Its **own** Ed25519 + X25519 private keys (`agent/`, `0700`); a delivery token sealed to its recipient key | **the same account as Alice on `file`** — see the warning below | Only the exact record versions its token names, decrypted with the content key the token carried; `agent-alice-1/` (its own level, `0730`) | `user/`, `admin/`, `agent-alice-2/`, the vault, the admin key | **Landlock** (§3.8 mechanism 1) + the lease. **Not** a separate UNIX account |
+| **Bob** (a second user) | His own vault, his own keys, his own store | his own account, in his own deployment | Everything in **his** deployment, exactly as Alice does in hers | **Everything in Alice's deployment.** Not one record, not one path | Separate `KSP_HOME` on disk. There is no shared store to attack |
+| **Bob's agent** (`agent-bob-2`) | Its own keypairs; a token sealed to it | same account as Bob on `file` | Only what Bob's token names, inside Bob's deployment | Alice's deployment entirely; Bob's `user/` and `admin/` levels | Landlock + the lease, within Bob's store |
+
+**The `agent-<id>` level is `0730`, not `0700`, and that is deliberate.** Group
+write without group read: the admin (in the store's group) can unlink a version it
+knows from the arming scope, and cannot list the level or read a copy. `user/` and
+`admin/` stay `0700`. Nothing is widened to other.
+
+**The warning that matters most.** On the `file` backend an agent launched by
+`ksp run --agent <id>` runs as **the user's own UNIX account**. Its containment is
+Landlock confining it to `agent-<id>/`, plus the lease — *not* a separate account.
+Two consequences a reader must not miss:
+
+- **On macOS there is no Landlock**, so the child runs unconfined and can read
+  anything Alice's account can, including `user/` and the sealed vault. §2.4
+  records this as an accepted risk. Level confinement on macOS requires a Linux
+  host.
+- **A same-account process that is not the confined child** — a shell Alice left
+  open, a `cp`, a backup agent — is not bounded by Landlock at all. The level tree
+  separates *principals* (admin / user / agent), not processes within one account.
+
+**What is kernel-enforced and what is not.** This is the distinction the table
+above cannot show in a cell:
+
+| Boundary | Enforced by the kernel? | Where |
+|---|---|---|
+| Admin ↔ user (different accounts) | **Yes** — `0700` on `user/`, `0711` on the parent | `file`, and `sftp` |
+| Alice ↔ Bob (different deployments) | **Yes** — separate directories, separate accounts | any backend |
+| User ↔ agent (same account) | **Only by Landlock, and only on Linux** | `file` |
+| Agent ↔ agent (same account) | **Only by Landlock, and only on Linux** | `file` |
+| Agent ↔ agent (separate accounts) | **Yes** | `sftp` only, and `sftp` does not exist: no file implements it |
+| Any actor ↔ a *copied* plaintext | **No mechanism exists** | §3.7.2 |
+
+**Why the admin can read `issuance.jsonl` but not `user/`.** The ledger is `0640`
+in the store's group because a withdrawal has to be visible to the principal it
+withdraws from (§4.10). `user/` is `0700` because a record is sealed to Alice's
+X25519 key and there is nothing for the admin to read there even if the mode
+allowed it. The mode and the cryptography agree; neither is doing the other's job.
+
+**Confinement is not authentication, and the table shows both.** `0700` and
+Landlock restrict *paths*. Only a signature establishes *which key* is speaking —
+the admin anchor for policy, Alice's enrolled key for her leases, the agent's
+Ed25519 key for proof of possession. An actor that satisfies the path rules and
+not the signature rules reaches nothing, and an actor that satisfies the signature
+rules still cannot read a level its account cannot open.
+
 ### 3.9 Consume is not exactly-once delivery
 > **Status: [Implemented].** `crates/ksp-deletion/src/consume.rs` implements the
 > order — retrieve, decrypt, hand to the child, delete, report — and the
@@ -2605,6 +2688,284 @@ Revoke or rotate the credential at its upstream provider to stop future use of
 that credential; this is distinct from Keyspout key rotation and still cannot
 erase plaintext already learned.
 
+### 4.10 The issuance ledger: what this host minted, and what it no longer honours
+> **Status: [Implemented].** `crates/ksp-identity/src/issuance.rs` holds the
+> whole mechanism; the CLI reaches it from `crates/ksp-cli/src/token.rs`
+> (mint, list, revoke), `run.rs` (the standing check), `admin.rs` (`admin
+> revoke`) and `audit_verify.rs` (withdrawals). Tests:
+> `crates/ksp-identity/tests/issuance.rs`, `crates/ksp-cli/tests/issuance.rs`.
+
+This section is written for a developer who has to change the ledger. It states
+what the two files are, who may write each, what a reader may conclude from
+them, and which of those conclusions the design deliberately refuses to make.
+
+#### The problem it solves
+
+An agent holds a token as a file. Nothing in that file records where it came
+from, and every Keyspout command is a foreground process that exits. So after a
+mint there is no process left that could answer two questions an operator will
+ask:
+
+1. **What did this machine issue?** `token list` has no subject without a record.
+2. **Is that token still good?** `token revoke` has nothing to mark.
+
+The ledger is that record. It is the minting host's own memory, and it is the
+only state Keyspout keeps that is not derived from a sealed artifact.
+
+#### Two files, one writer each
+
+```
+$KSP_HOME/issuance.jsonl      0640  owned by the user principal
+$KSP_HOME/withdrawals.jsonl   0640  owned by the admin
+```
+
+Both are `0640` — owner read/write, **group read** — in the store's group, which
+is the group both deployment accounts belong to. The parent directory is `0750`.
+
+**Why two files and not one.** The ledger has three writers and they are not one
+account:
+
+| Event | Written by | Command | File |
+|---|---|---|---|
+| `issued` | the user principal | `secret share`, `token mint` | `issuance.jsonl` |
+| `token_revoked` | the user principal | `token revoke` | `issuance.jsonl` |
+| `grant_withdrawn` | the admin | `admin revoke` | `withdrawals.jsonl` |
+
+A single shared file would have to be group-**writable**, and a mint history any
+group member can rewrite is a history that member can forge: appending a
+revocation is how a token stops working, and removing one is how it starts again.
+Splitting the file keeps the write bit with exactly one account per file, so
+`0640` is enough.
+
+**Why not per-principal ledgers.** A withdrawal has to be visible to the
+principal it withdraws from. If the admin wrote his decision into his own
+principal's file, the user's `run` would not read it, revocation would stop
+working, and every command would still report success. One shared view is the
+only shape that keeps the two accounts' decisions mutually visible.
+
+The routing is not the caller's choice. `IssuanceLedger::append` inspects the
+event variant and picks the file, so no command can write into the file it does
+not own.
+
+#### The on-disk format
+
+JSON Lines: one event per line, append-only. Three event shapes, discriminated by
+`event`:
+
+```jsonl
+{"event":"issued","issuance":{"token_id":"s1-5539…-1","agent":"5539…","secret":"s1","version":1,"deadline":1794748454,"policy_revision":1}}
+{"event":"token_revoked","mark":{"token_id":"s1-5539…-1","at":1794741261}}
+```
+
+```jsonl
+{"event":"grant_withdrawn","withdrawal":{"withdrawal":{"agent":"5539…"},"policy_revision":2,"at":1794741267}}
+```
+
+`Issuance` carries **identifiers, a version, a deadline and a policy revision**.
+There is deliberately no field that could hold a secret, a content key or a
+value: the ledger is trust state, and a type that cannot carry a key cannot leak
+one. `token_id` is the `jti` the token header carries — an opaque identifier,
+never a name.
+
+The file is a **log, not a mutable document**. A revocation appends a decision
+rather than rewriting an entry, so a crash can only ever cut the tail, never
+half-rewrite a token that was already recorded.
+
+#### The write path: seal, then record, then hand back
+
+`IssuanceLedger::publish_recorded` is the body a mint's publication closure runs,
+and the order is the whole point:
+
+```rust
+pub fn publish_recorded<T, E>(&self, issuance: Issuance, seal: impl FnOnce() -> Result<T, E>)
+    -> Result<T, PublishError<E>>
+{
+    let published = seal().map_err(PublishError::Seal)?;   // 1. seal
+    self.append(&LedgerEvent::Issued { issuance })
+        .map_err(PublishError::Ledger)?;                    // 2. record
+    Ok(published)                                          // 3. hand back
+}
+```
+
+- A **seal that fails records nothing**, so an entry never names an artifact that
+  was never made.
+- A **ledger that refuses the entry drops the artifact** instead of returning it,
+  so a token cannot reach an agent with no record behind it.
+
+A mint refused before its arm never reaches this call, which is why an
+armed-but-unpublished mint leaves the ledger empty. `mint.rs` calls `arm(...)`
+first and `publish_recorded` second, which is §4.8's arm-before-publication rule
+expressed in code.
+
+**The asymmetry is deliberate.** The caller's own output step can still fail
+after `publish_recorded` returns, leaving an entry that names a token no agent
+holds. That direction is benign — a record of something that did not reach an
+agent. The reverse, a token that reached an agent with no record, is the one this
+order makes impossible.
+
+#### Durability and the torn tail
+
+Each append is **one short `write_all` of one line**, then `sync_all`. One write
+is the smallest window a crash can tear, which is why a torn tail is the only
+damage the file can suffer.
+
+If the append also **created** the file, the parent directory is `fsync`ed too: a
+new file whose directory entry has not reached the disk can vanish in a power
+loss, which would be a token without the record this module promises precedes it.
+That is also why a directory `fsync` needs read permission on the directory — a
+write-only journal cannot acknowledge durability.
+
+Reading classifies a damaged line by position:
+
+| Position | Classification | Response |
+|---|---|---|
+| Any line but the last | `LedgerError::Corrupt { line }` | Refused; a complete line was followed by a complete append, so damage there is corruption |
+| The last line only | `torn_tail = true` | Reported, complete entries kept |
+
+**Appending to a torn file is refused** (`LedgerError::TornTail`), not repaired.
+Rewriting the file to drop the fragment would discard whatever it was, and
+appending would glue a new decision onto a fragment the reader classifies as torn
+and drops — a revocation that reports success and does not survive. The check
+reads the **last byte** rather than trusting the parse: a complete line that lost
+its newline parses fine and still cannot be appended to.
+
+`withdrawals()` refuses to answer at all when the tail is torn, because a cut
+line may have been a withdrawal and reporting an agent as current on the strength
+of a decision the file cannot show is the one claim verification must never make.
+
+#### Permissions are checked, not assumed
+
+`open_for_append` refuses a file whose mode is writable by group or other
+(`mode & 0o022 != 0` → `LedgerError::InsecurePermissions`). Group **read** is
+required, not a widening: the other account has to read what this one wrote —
+`run` must see a withdrawal, and the admin's `audit verify` must see an
+issuance. A write bit for anyone else is a second writer, and a mint history with
+a second writer is a history that writer can forge.
+
+The file is opened `O_NOFOLLOW`, so the ledger is a file this host chose, never
+whatever a symlink at that path points at. `ksp status` measures both files
+against `ISSUANCE_LEDGER_MODE` as protected roots, and a drift is reported rather
+than repaired.
+
+#### The read path: three states, not two
+
+`standing(token_id)` answers with `TokenStanding`:
+
+| Variant | Meaning | `refuses_run()` | `can_judge()` |
+|---|---|---|---|
+| `Live(Issuance)` | this host minted it and holds no mark | no | yes |
+| `Revoked { issuance, reason, at }` | this host minted it and something marks it | **yes** | yes |
+| `Unknown { ledger_present }` | this host has no record of it | no | only if a ledger exists |
+
+**`Unknown` is never "invalid".** A token presented on a host that never minted
+it is unremarkable, and a host with no ledger at all cannot judge one. Refusing a
+token because this host has no record of it would be a false accusation, and it
+would break every deployment where the mint and the run are different machines.
+`run` therefore continues on `Unknown` and prints a note saying it could not tell
+whether the token was revoked.
+
+`Revoked` has two causes, and they are different decisions:
+
+- **`TokenMarked`** — `token revoke` marked this identifier directly.
+- **`GrantWithdrawn { policy_revision }`** — `admin revoke` withdrew the grant the
+  token was minted under.
+
+The second is why `GrantWithdrawal::covers` compares revisions:
+
+```rust
+pub fn covers(&self, issuance: &Issuance) -> bool {
+    let grant_removed = match &self.withdrawal {
+        Withdrawal::Secret(secret) => secret == &issuance.secret,
+        Withdrawal::Agent(agent)   => agent  == &issuance.agent,
+    };
+    grant_removed && self.policy_revision >= issuance.policy_revision
+}
+```
+
+A withdrawal reaches every token minted under the grant **up to and including**
+its own revision. A token minted later under a revision that re-granted the same
+pair is **not** covered: a re-grant is a new trust state, and pretending the old
+withdrawal still bites would make a legitimate grant unusable for the life of the
+vault.
+
+#### Who reads it, and when
+
+| Reader | Call | Why it reads |
+|---|---|---|
+| `ksp run` | `standing(jti)` | Refuses a revoked token **before** the record is read or the key is used, so a revoked token stops before producing a plaintext |
+| `ksp token list` | `listing()` | One row per minted token, with its standing and the honest scope sentence |
+| `ksp token revoke` | `revoke(id, at)` | Refuses an id the ledger does not name; marking twice is a no-op returning the earlier mark |
+| `ksp admin revoke` | `withdraw_grant(record)` | Records the withdrawal after signing the narrower policy |
+| `ksp audit verify` | `withdrawals()` | A withdrawal is the only evidence a grant is gone; absence from the policy is not used, because an agent that was never shared with looks identical to one whose grant was withdrawn |
+
+`token list`'s scope sentence is a claim about **this host**, never about tokens
+in general:
+
+```
+1 token(s) minted on this host; a token minted elsewhere is unknown here
+```
+
+A host with no ledger says so instead, and that is a different answer from an
+empty one.
+
+#### Idempotency, so a retry is safe
+
+Both write paths are safe to repeat, and each is idempotent on the **decision**,
+not the timestamp:
+
+- `revoke` returns the existing mark rather than appending a second one.
+- `withdraw_grant` compares `same_decision` — the withdrawal and the policy
+  revision, ignoring the clock — and reports the record already in force.
+
+That is what makes a retried `admin revoke` safe after a crash between the mark
+and the caller's policy write.
+
+`admin_revoke` fixes the order: **sign the narrower policy first, record second**.
+A withdrawal that withdraws nothing is refused before anything is written, and if
+the ledger cannot record it the narrower policy is dropped rather than returned.
+The residual is the other direction — a crash between the mark and the caller's
+policy write leaves a record naming a revision no file contains, so a local
+client refuses a token the still-current policy grants. That is a **false
+refusal**, healed by running the command again, chosen over a token left live
+locally against a grant the next mint already refuses.
+
+#### What the ledger does not do
+
+This is the part a new developer is most likely to over-claim, so it is stated as
+the code states it. `REVOCATION_REACH` is the sentence every surface prints:
+
+> revocation stops future mints and is honoured by every client that holds this
+> ledger; it does not recall a copy taken earlier, which still opens with the
+> agent's own key
+
+- **It is trust state, not a recall.** A mark stops future mints and is honoured
+  by clients holding this ledger. It cannot reach a token an agent already
+  copied: those bytes are sealed to a recipient key this host never had.
+  `tests/issuance.rs` opens a pre-revocation artifact with the agent's own key
+  after the mark is written, so the limit is demonstrated rather than asserted.
+- **It is local.** There is no registry service, no replication and no publishing
+  command. A token minted on another host is `Unknown` here, not invalid.
+- **It is not an audit log.** §7's signed chain records what happened; the ledger
+  records what this host will still honour. They are separate files with separate
+  guarantees, and neither substitutes for the other.
+- **It carries no key material**, by construction of the types.
+
+#### Changing it: the rules that must hold
+
+1. **One writer per file.** A new event variant must be routed to exactly one
+   account's file in `append`, and that account must be the one that runs the
+   command producing it.
+2. **Never rewrite, always append.** A mutation in place turns a crash into a
+   half-written decision instead of a cut tail, and the reader's torn-tail
+   classification no longer covers it.
+3. **A new reader must handle `Unknown` as "cannot judge", not as "invalid".**
+4. **A new event that can revoke must go through `Contents::standing_for`**, so
+   `run` and `token list` cannot disagree about what a mark means.
+5. **Keep the mode at `0640` and the check at `0o022`.** Widening it to
+   group-write to make a third account work is the change that turns the ledger
+   into a forgeable history; `docs/known-defects.md` D1 records the remaining
+   case where a third account cannot append, and why the answer is a clearer
+   refusal rather than a wider mode.
 
 
 
