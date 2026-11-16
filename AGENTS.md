@@ -230,8 +230,14 @@ tree's own public documents, which it assembles at build time.
 python3.14 scripts/site/prepare-docs.py --source .   # assemble the reference section
 python3.14 scripts/site/check-links.py --root site/docs
 python3.14 scripts/site/check-mermaid.py site/docs
-mkdocs build --strict -f site/mkdocs.yml
+mkdocs build --strict --site-dir "$PWD/site/build" -f site/mkdocs.yml
 ```
+
+The site directory is absolute on purpose. MkDocs resolves a relative
+`--site-dir` against the *configuration file's* directory, not the working
+directory, so `--site-dir site/site` writes to `site/site/site`. The uploaded
+artifact would then hold the site one level too deep, and Pages — which
+serves the artifact's root — would answer every page with a 404.
 
 `site/docs/` holds the site's own pages and is tracked. `site/docs/reference/`
 and `site/docs/assets/` are **generated** and are not: the reference section is
