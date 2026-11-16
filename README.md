@@ -2,6 +2,16 @@
   <img src="assets/logo.svg" alt="Keyspout" width="320">
 </p>
 
+<p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#how-the-parts-fit-together">How it fits</a> &middot;
+  <a href="#day-to-day-use">Day-to-day</a> &middot;
+  <a href="#features">Features</a> &middot;
+  <a href="#documentation">Docs</a> &middot;
+  <a href="#build-from-source">Build</a> &middot;
+  <a href="#status">Status</a>
+</p>
+
 # Keyspout
 
 **A secret manager for one operator or a team, with no server to run.**
@@ -9,6 +19,13 @@
 Secrets live in a sealed store you own. Your agents get a short-lived, sealed
 copy instead of a long-lived credential. Nothing phones home, and there is no
 Keyspout service in the trust path.
+
+## Not sure yet? Read the docs
+
+The full documentation is published at
+**<https://bruj0.github.io/keyspout/>** — the architecture, the workflow
+walkthroughs, a deep dive per crate, and this repository's own design
+documents, rendered and searchable.
 
 ## Install
 
@@ -472,6 +489,7 @@ above, and every run discloses it.
 
 | Document | What it is |
 |---|---|
+| [The documentation site](https://bruj0.github.io/keyspout/) | All of the below, plus the architecture and a deep dive per crate, rendered and searchable. |
 | [`QUICKSTART.md`](QUICKSTART.md) | Every step from nothing to a delivered secret, with real output. |
 | [`docs/keyspout-design-spec.md`](docs/keyspout-design-spec.md) | The design. Normative, and it wins over anything you infer from the code. |
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | Toolchain, services, and the platform facts that cost time to learn. |
