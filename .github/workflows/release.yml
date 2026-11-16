@@ -709,12 +709,27 @@ jobs:
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
 
       - name: Upload artifacts
+        # HAND-ADDED, and the reason the SBOMs never shipped.
+        #
+        # `steps.cargo-dist.outputs.paths` is `dist
+        # print-upload-files-from-manifest`, so it lists exactly what `dist`
+        # itself built: the tarball, its `.sha256`, the source tarball. An SBOM
+        # is not a `dist` artifact and is not in that list. The SBOM step above
+        # wrote the files into `target/distrib/` and its closing `ls` showed
+        # them, so nothing looked wrong — but this step uploaded only the
+        # manifest's paths, and `host` publishes from `artifacts/*`. A file that
+        # is not uploaded cannot be published, and GitHub reported no error.
+        #
+        # `BUILD_MANIFEST_NAME` is the same shape of hand-added path, for the
+        # same reason: it exists, it is not a `dist` artifact, and it has to be
+        # named here to travel.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+            target/distrib/*.cdx.json
 
   # ---------------------------------------------------------------------------
   # HAND-ADDED. The attestation signer, called as a reusable workflow.
@@ -762,6 +777,11 @@ jobs:
       attestations: write
     uses: ./.github/workflows/attest.yml
     with:
+      # One target per matrix entry, so this is `*<target>*`. It deliberately
+      # covers two files: the tarball and the SBOM beside it. That is why the
+      # SBOM has to carry the target string in its name — a rename that dropped
+      # it would leave the SBOM published and unattested, and `Report what was
+      # attested` would show a count of one where a reader expects two.
       subject-path: "target/distrib/*${{ join(matrix.targets, ', ') }}*"
       subject-name: "${{ join(matrix.targets, ', ') }}"
 
