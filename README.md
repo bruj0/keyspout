@@ -3,6 +3,15 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/bruj0/keyspout/releases/latest"><img src="https://img.shields.io/github/v/release/bruj0/keyspout?style=flat-square" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/bruj0/keyspout?style=flat-square" alt="License: MIT"></a>
+  <a href="https://github.com/bruj0/keyspout/actions/workflows/release.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/bruj0/keyspout/release.yml?branch=main&label=gate&style=flat-square" alt="The release pipeline on main is passing (it runs the gate)"></a>
+  <a href="#verify-a-download"><img src="https://img.shields.io/badge/provenance-attested-brightgreen?style=flat-square" alt="Release tarballs carry a build-provenance attestation"></a>
+  <a href="https://bruj0.github.io/keyspout/"><img src="https://img.shields.io/badge/docs-live-brightgreen?style=flat-square" alt="Documentation site"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square" alt="Platforms: macOS and Linux">
+</p>
+
+<p align="center">
   <a href="#install">Install</a> &middot;
   <a href="#how-the-parts-fit-together">How it fits</a> &middot;
   <a href="#day-to-day-use">Day-to-day</a> &middot;
@@ -96,13 +105,16 @@ which works offline.
 
 ## Verify a download
 
-Every release asset carries a build-provenance attestation: it records which
-repository, which workflow and which commit produced the bytes.
+Every platform tarball — `ksp-<target>.tar.xz` — carries a build-provenance
+attestation recording which repository, which workflow and which commit produced
+the bytes. The attestation covers the tarball and nothing else: the checksum
+lists, the installer script, the Homebrew formula and `dist-manifest.json` are
+not attested, so verify the tarball and then check the others against it.
 
 ```bash
 gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
   --repo bruj0/keyspout \
-  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+  --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
 ```
 
 That proves the binary came from this repository's release workflow at a specific

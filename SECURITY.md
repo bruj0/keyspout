@@ -21,7 +21,7 @@ gh release download v0.1.0 --repo bruj0/keyspout --pattern 'sha256.sum'
 # --- 2. Prove which commit and workflow built it --------------------------
 gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
   --repo bruj0/keyspout \
-  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+  --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
 
 # --- 3. Check the bytes against the published checksums -------------------
 sha256sum --check sha256.sum --ignore-missing
@@ -41,13 +41,13 @@ jq -r 'select(.verificationResult) |
        .verificationResult.signature.certificate |
        {issuer, subject: .subjectAlternativeName}' ./*.jsonl
 # expect: issuer https://token.actions.githubusercontent.com
-#         subject .../bruj0/keyspout/.github/workflows/release.yml
+#         subject .../bruj0/keyspout/.github/workflows/attest.yml
 
 # --- 6. Verify offline, without GitHub --------------------------------
 gh attestation verify ./ksp-x86_64-unknown-linux-musl.tar.xz \
   --bundle ./*.jsonl \
   --repo bruj0/keyspout \
-  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+  --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
 
 # --- 7. Read what is inside the binary --------------------------------
 gh release download v0.1.0 --repo bruj0/keyspout --pattern '*sbom.cdx.json'
@@ -71,7 +71,7 @@ Steps 1–3 are explained in §1, step 4–6 in §1.1, step 7 in §4, and step 8
 
 ## 1. Verify a download
 
-Every release asset carries a GitHub build-provenance attestation. It records
+Every platform tarball carries a GitHub build-provenance attestation. It records
 which repository, which workflow and which commit produced the bytes.
 
 ```bash
@@ -82,7 +82,7 @@ gh release download v0.1.0 --repo bruj0/keyspout \
 # 2. Prove it was built by this repository's release workflow.
 gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
   --repo bruj0/keyspout \
-  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+  --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
 
 # 3. Check the checksum against the published list.
 gh release download v0.1.0 --repo bruj0/keyspout --pattern 'sha256.sum'
@@ -157,7 +157,7 @@ network access to GitHub:
 gh attestation verify ./ksp-x86_64-unknown-linux-musl.tar.xz \
   --bundle ./*.jsonl \
   --repo bruj0/keyspout \
-  --signer-workflow bruj0/keyspout/.github/workflows/release.yml
+  --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
 ```
 
 **Check the transparency log.** Rekor is append-only and public, so the entry can
@@ -183,8 +183,10 @@ cosign verify-blob \
 
 It proves **which source produced the binary**. Specifically:
 
-- the artifact was built by `.github/workflows/release.yml` in
-  `bruj0/keyspout`, not by a fork, a laptop, or a different workflow;
+- the artifact was built by this repository's release pipeline, and signed by
+  `.github/workflows/attest.yml` — a reusable workflow that does nothing but
+  sign, so the build job never holds the signing identity. The claim is about
+  that signer, not about a fork, a laptop, or a different workflow;
 - it was built from a specific commit, whose SHA is in the attestation;
 - the bytes you hold are the bytes that build produced, because the attestation
   names their digest.
