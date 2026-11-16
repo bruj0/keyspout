@@ -820,9 +820,9 @@ impl SweeperArming {
   still going, so one missing run is not evidence that the schedule is broken.
   There is no user key here: a LaunchAgent runs as the account that loads it and a
   LaunchDaemon runs as root, so install it under the account that owns KSP_HOME.
-  `ksp backend arm-sweep --install` writes this file under the operator's own
-  home and loads it with `launchctl bootstrap`. An install is a declaration, not
-  evidence: the capability stays None until a run writes a signed sweep proof.
+  The install flag writes this file under the operator's own home and loads it
+  with `launchctl bootstrap`. An install is a declaration, not evidence: the
+  capability stays None until a run writes a signed sweep proof.
 -->
 <plist version="1.0">
 <dict>
@@ -1087,9 +1087,28 @@ impl ArmingQuery {
     }
 
     /// What can be measured for a kind, given that nothing is spawned here.
+    ///
+    /// # Why launchd is no longer `Unknown`
+    ///
+    /// It used to return `Unknown` for both kinds, with the note that "this build
+    /// records the query and the operator runs it". That was true of the *query*
+    /// and false of the *fact*: `launchctl print` reports the job's state, its
+    /// next elapse and its last trigger, and this build knows how to read them
+    /// (see [`Self::interpret_launchctl`]). A status line that says `unknown`
+    /// while the answer is one command away tells an operator their schedule is
+    /// unverifiable when it is not.
+    ///
+    /// The state is still `Unknown` here, because this function is pure: it has
+    /// no process to spawn. The caller that *can* spawn fills the answer in; see
+    /// `ArmingQuery::measure`.
     pub fn for_kind(kind: ArmingKind) -> MeasuredUnitState {
         match kind {
-            ArmingKind::Systemd | ArmingKind::Launchd => MeasuredUnitState::Unknown {
+            ArmingKind::Systemd => MeasuredUnitState::Unknown {
+                reason: "this build records the query and the operator runs it; no schedule was \
+                         interrogated"
+                    .to_string(),
+            },
+            ArmingKind::Launchd => MeasuredUnitState::Unknown {
                 reason: "this build records the query and the operator runs it; no schedule was \
                          interrogated"
                     .to_string(),
@@ -1100,6 +1119,127 @@ impl ArmingQuery {
                     other.label()
                 ),
             },
+        }
+    }
+
+    /// The command that reports a `launchd` job's state.
+    ///
+    /// `launchctl print` takes a service target, not a label: `gui/<uid>/<label>`
+    /// for a LaunchAgent, which is what `--install` writes. The uid is the
+    /// caller's, because the job is loaded in the caller's own session.
+    pub fn launchctl_command(identifier: &str, uid: u32) -> (&'static str, Vec<String>) {
+        (
+            "launchctl",
+            vec!["print".to_string(), format!("gui/{uid}/{identifier}")],
+        )
+    }
+
+    /// Measure the schedule by asking the service manager, where this host can.
+    ///
+    /// # Why this is separate from `for_kind`
+    ///
+    /// `for_kind` is pure and returns the state a host *could* report. This
+    /// function spawns the query, so it belongs where spawning is allowed, and it
+    /// falls back to `for_kind` whenever the manager cannot be asked: a missing
+    /// binary, a non-zero exit, or an output the interpreter does not recognise.
+    ///
+    /// # What it does not do
+    ///
+    /// It does not treat a failed query as an absent job. `launchctl print` exits
+    /// non-zero both for "no such job" and for "cannot talk to the manager", and
+    /// those are different facts. Both become `Unknown` with the reason the query
+    /// gave, because this function cannot tell them apart from an exit code.
+    pub fn measure(kind: ArmingKind, identifier: &str) -> MeasuredUnitState {
+        let (program, args) = match kind {
+            ArmingKind::Launchd => {
+                // The job is loaded in the caller's own GUI session, so the uid
+                // is this process's.
+                let uid = ksp_posture::permissions::effective_uid();
+                Self::launchctl_command(identifier, uid)
+            }
+            // systemd is measured by the operator's own `systemctl show`, whose
+            // command `systemd_command` prints. Spawning it here would need a
+            // session bus this process does not have, so the recorded-query
+            // answer stands.
+            _ => return Self::for_kind(kind),
+        };
+
+        let output = match std::process::Command::new(program).args(&args).output() {
+            Ok(output) => output,
+            Err(_) => {
+                return MeasuredUnitState::Unknown {
+                    reason: format!("{program} is not available on this host"),
+                };
+            }
+        };
+        if !output.status.success() {
+            return MeasuredUnitState::Unknown {
+                reason: format!(
+                    "{program} reported no job: it exited {} and printed nothing this build reads",
+                    output
+                        .status
+                        .code()
+                        .map_or_else(|| "on a signal".to_string(), |code| code.to_string())
+                ),
+            };
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Self::interpret_launchctl(&stdout)
+    }
+
+    /// Interpret `launchctl print` output. Pure: no process, no clock, no store.
+    ///
+    /// The output is a plist-shaped dump with lines like:
+    ///
+    /// ```text
+    ///     state = not running
+    ///     runs = 0
+    ///     last exit code = (never exited)
+    /// ```
+    ///
+    /// Note the **space before the `=`**. `launchctl` pads its keys, so a parser
+    /// that looks for `name=` finds nothing — measured: the first version of this
+    /// function returned "the manager printed no state" for a job `launchctl`
+    /// was reporting normally. The separator is `=` with optional whitespace on
+    /// either side, not `name=`.
+    ///
+    /// A job that is loaded but has never run reports `state = not running` and
+    /// `runs = 0`, which is a real answer and not an absence: the schedule is
+    /// installed and waiting. A label the manager does not know produces no
+    /// `state` line at all, and that is `Unknown` with the reason, because a
+    /// missing line is not evidence the job is stopped.
+    pub fn interpret_launchctl(stdout: &str) -> MeasuredUnitState {
+        let field = |name: &str| {
+            stdout.lines().find_map(|line| {
+                let rest = line.trim().strip_prefix(name)?;
+                // `state` must not match `statefoo`; the next character has to be
+                // whitespace or the separator.
+                if !rest.starts_with(|c: char| c == '=' || c.is_whitespace()) {
+                    return None;
+                }
+                rest.trim_start().strip_prefix('=').map(str::trim)
+            })
+        };
+        let Some(state) = field("state") else {
+            return MeasuredUnitState::Unknown {
+                reason: "the manager printed no state for this job, so it does not know it"
+                    .to_string(),
+            };
+        };
+        // `runs` is how many times the manager has started the job. It is not a
+        // next elapse and not a last trigger, and printing it as either would
+        // claim a timestamp nobody reported.
+        let runs = field("runs").unwrap_or("0");
+        let detail = format!("state={state} runs={runs}");
+        MeasuredUnitState::Reported {
+            active: state == "running" || state == "waiting",
+            detail,
+            // launchd reports neither a next elapse nor a last trigger in a form
+            // this build can read without parsing a date it cannot verify. Both
+            // stay absent, and the renderer says so per field rather than
+            // inventing one from `runs`.
+            next_elapse: None,
+            last_trigger: None,
         }
     }
 }
@@ -1872,7 +2012,7 @@ mod tests {
         );
     }
 
-    /// The systemd unit follows the same rule, and names the user as `User=`.
+    /// The systemd unit follows the same rule, and names the user as `=`.
     #[test]
     fn a_user_armings_unit_runs_the_user_sweep() {
         let unit = user_systemd_arming()
@@ -1886,6 +2026,106 @@ mod tests {
             !unit.contains("User=ksp-admin"),
             "a user's job does not run as the admin account: {unit}"
         );
+    }
+
+    /// The plist's comment must not contain `--`, which XML forbids.
+    ///
+    /// A `--` inside an XML comment is invalid by the spec. `plutil` tolerates it
+    /// and `launchd` parses the file anyway, so the job runs — but a strict
+    /// parser rejects the whole document. Measured: `plistlib.loads` raised
+    /// `ExpatError: not well-formed (invalid token): line 13, column 27` on a
+    /// plist whose comment read `` `ksp backend arm-sweep --install` writes… ``.
+    ///
+    /// The check is scoped to the comment body rather than the whole document,
+    /// because the document legitimately contains `--` in `<string>` elements
+    /// (`--user-arming`, `--passphrase-file`). A whole-document scan would fail
+    /// on the correct artifact.
+    #[test]
+    fn the_plist_comment_contains_no_double_hyphen() {
+        for (label, plist) in [
+            (
+                "admin",
+                launchd_arming()
+                    .launchd_plist("/usr/local/bin/ksp", "/tmp")
+                    .expect("a launchd arming has a plist"),
+            ),
+            (
+                "user",
+                user_launchd_arming()
+                    .launchd_plist("/usr/local/bin/ksp", "/Users/alice/.ksp")
+                    .expect("a launchd arming has a plist"),
+            ),
+        ] {
+            let start = plist.find("<!--").expect("the plist carries a comment");
+            let end = plist.find("-->").expect("the comment is closed");
+            let comment = &plist[start + 4..end];
+            // The opening `<!--` and closing `-->` are delimiters, not body.
+            assert!(
+                !comment.contains("--"),
+                "the {label} plist's XML comment contains `--`, which XML forbids \
+                 and a strict parser rejects: {comment}"
+            );
+        }
+    }
+
+    /// `launchctl` pads its keys, and a parser that expects `name=` finds nothing.
+    ///
+    /// Measured: the first version of `interpret_launchctl` looked for `state=`
+    /// and reported "the manager printed no state" for a job `launchctl print`
+    /// was describing normally. The real line is `state = not running`, with a
+    /// space before the separator.
+    #[test]
+    fn the_launchctl_parser_tolerates_the_space_before_the_separator() {
+        let padded =
+            "gui/501/ksp-sweep = {\n\tactive count = 0\n\tstate = not running\n\truns = 0\n}\n";
+        match ArmingQuery::interpret_launchctl(padded) {
+            MeasuredUnitState::Reported { active, detail, .. } => {
+                assert!(!active, "a job that has never run is not active: {detail}");
+                assert!(
+                    detail.contains("not running"),
+                    "the state the manager reported must survive into the detail: {detail}"
+                );
+            }
+            MeasuredUnitState::Unknown { reason } => {
+                panic!("a padded `state = ...` line was not read: {reason}")
+            }
+        }
+    }
+
+    /// A label the manager does not know is `Unknown`, not "stopped".
+    ///
+    /// `launchctl print` prints nothing usable for an unknown label. Reporting
+    /// that as `active=false` would claim the job exists and is idle, which is a
+    /// different and more reassuring fact than the one established.
+    #[test]
+    fn an_unknown_launchd_label_is_unknown_not_stopped() {
+        match ArmingQuery::interpret_launchctl("Could not find service\n") {
+            MeasuredUnitState::Unknown { reason } => {
+                assert!(
+                    reason.contains("no state"),
+                    "the reason must say what was missing: {reason}"
+                );
+            }
+            MeasuredUnitState::Reported { .. } => {
+                panic!("an answer with no state line must not be read as a reported state")
+            }
+        }
+    }
+
+    /// A running job is active, and `runs` survives into the detail.
+    #[test]
+    fn a_running_launchd_job_is_active() {
+        let running = "\tstate = running\n\truns = 3\n";
+        match ArmingQuery::interpret_launchctl(running) {
+            MeasuredUnitState::Reported { active, detail, .. } => {
+                assert!(active, "a running job is active: {detail}");
+                assert!(
+                    detail.contains("runs=3"),
+                    "the run count is what says the schedule has fired: {detail}"
+                );
+            }
+            MeasuredUnitState::Unknown { reason } => panic!("a running job was not read: {reason}"),
+        }
     }
 
     /// The plist has to carry the interval, the home and the label the job runs

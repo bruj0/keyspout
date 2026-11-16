@@ -38,11 +38,61 @@ them.
 2. **The vault password.** It is not stored and cannot be reset. It must arrive
    on stdin or from a file, never in argv. Ask where the file is, or have the
    operator type it when a step prompts.
+
+   **If the operator creates the file, tell them to lock it down.** A password
+   file readable by every account on the host defeats the vault:
+   `chmod 600 <file>`. `ksp` does not check this and will accept a `0644` file
+   without comment, so the instruction is the only thing that prevents it.
 3. **Whether this is a single-account host or a two-account host.** A
    single-account host runs every step as the operator. A two-account host runs
    `admin init` and `admin user add` as the admin account and everything else as
    the user. `ksp admin user add` needs root on the two-account host because it
    hands the vault to another account.
+
+## If `ksp` is not installed
+
+Do not install it yourself — the operator chooses the method. But do not leave
+them without an answer either: tell them **where the current version is** and
+**which artifact their host needs**.
+
+**Never pin a version in your instructions.** Read the latest tag and use it:
+
+```bash
+gh release view --repo bruj0/keyspout --json tagName --jq .tagName
+# or, without gh: https://github.com/bruj0/keyspout/releases/latest
+```
+
+Then pick the artifact from the host, not from a guess:
+
+```bash
+uname -s    # Darwin -> apple-darwin,  Linux -> unknown-linux-gnu or -musl
+uname -m    # arm64/aarch64 -> aarch64,  x86_64 -> x86_64
+```
+
+| Host | Command |
+|---|---|
+| macOS, either architecture | `brew install bruj0/tap/ksp` |
+| Linux | the release's `ksp-installer.sh`, or the tarball for the triple below |
+
+The six published triples are `aarch64`/`x86_64` × `apple-darwin`,
+`unknown-linux-gnu`, `unknown-linux-musl`. **Choose musl when the host has no
+glibc** (Alpine, a scratch container); choose gnu otherwise. A gnu binary on a
+musl host fails at load with a missing-interpreter error that names nothing
+useful.
+
+**Verify before you continue, and stop on a mismatch:**
+
+```bash
+ksp version    # must print the same version as the tag you read
+```
+
+A different version is a **stop**, not a warning. Every later finding in this
+skill is about the version that ran, and a mismatch makes all of them ambiguous.
+
+**One trap, until it is gone.** `brew search ksp` has returned two formulae with
+the same description: `bruj0/tap/ksp` (current) and `bruj0/tap/ksp-cli` (the
+pre-rename name, pinned at 1.0.0 with none of the fixes). Name
+`bruj0/tap/ksp` explicitly rather than searching.
 
 Confirm `ksp` is on `PATH` before anything else:
 
@@ -220,14 +270,30 @@ Grant first. A grant is a policy statement; it delivers nothing.
 ksp admin policy --agent <agent-uuid> --secret <record-id>
 ```
 
-**`admin policy` replaces the whole grant set.** A call naming one agent revokes
-every other grant. Before and after this step, read what the host holds:
+**`admin policy` merges by default.** A call naming one agent adds that grant and
+keeps every grant it does not name. The output says so:
+
+```
+policy:      revision=2  merged
+added:       agents=<uuid>  secrets=<record-id>
+removed:     agents=none  secrets=none
+grants not named here were kept; pass --replace to withdraw them
+```
+
+**`--replace` is the destructive form.** It withdraws every grant the call does
+not name. That is the flag to be careful with, and the one to reach for when the
+intent really is "this agent and nothing else".
+
+Either way, read what the host holds before and after:
 
 ```bash
 ksp admin policy --show
 ```
 
-If grants already exist, re-sign with **all** of them named, not just the new one.
+The read-back is how you see what a `--replace` will destroy, and how you confirm
+a merge did what the output claimed. Do not skip it because the default is safe:
+the default is safe for *adding*, and a policy that already holds a grant you did
+not expect is a fact you want before you act, not after.
 This is the single most destructive mistake available in this skill, and the
 read-back is the only way to avoid it.
 
@@ -286,6 +352,12 @@ The scoped view opens the vault, because that is how it decides which records yo
 may see. Without the flag it reads the password from a terminal, and refuses when
 there is none. Do not tell the operator "no password is needed" for this one.
 
+**Always pass `--passphrase-file` for this command.** On a terminal the password
+prompt used to print nothing and to require Ctrl-D rather than Enter, so an agent
+that omitted the flag hung a terminal with no output. That is fixed — the prompt
+now appears and Enter submits — but the flag is still the right form: it is the
+only one that works the same from a script, a terminal and a closed pipe.
+
 ## Report
 
 ### What I did
@@ -332,8 +404,10 @@ recovery phrase restores the sealed file; it does not restore the password.
   the barrier is `mlock`, reported `weakened` — never `memfd_secret`.
 - **A verified chain is not a complete one.** A deleted tail verifies like a
   whole one until a head digest arrives from outside the log.
-- **`admin policy` replaces the whole grant set.** Re-sign with every grant named
-  or the others are revoked.
+- **`admin policy` merges; `--replace` withdraws.** A write adds the grants it
+  names and keeps the rest. `--replace` writes the named grants as the whole set
+  and drops every other, so it is the flag to be careful with. `admin revoke`
+  drops one grant and records the decision.
 - **`token list` knows only this host.** A token minted elsewhere is invisible.
 
 ## Refusals

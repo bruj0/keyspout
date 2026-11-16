@@ -620,27 +620,56 @@ fn a_proof_that_does_not_verify_is_unknown_and_never_scheduled() {
     );
 }
 
-/// FR-005 and FR-006: the next elapse and the last trigger are `unknown` with a
-/// reason when this build does not interrogate the host.
+/// FR-005 and FR-006: the unit state is measured where the host can answer, and
+/// the two timestamps are `unknown` with a reason.
+///
+/// # This test used to assert `unknown` for all three, on every host
+///
+/// It pinned the behaviour that this build never interrogated the host. That is
+/// now true of **systemd only**: `launchctl print` reports the job's state and the
+/// build reads it, so a Mac's status line that said `unknown` while the answer
+/// was one command away told an operator their schedule was unverifiable when it
+/// was not.
+///
+/// # Why this asserts a shape rather than a sentence
+///
+/// `arm` does not pass `--kind`, so the host's default applies: systemd on Linux,
+/// launchd on macOS. The two kinds now answer differently, and a test that pinned
+/// one of them would pass on one platform and fail on the other — which is what
+/// the first version of this change did, caught by CI.
+///
+/// What holds on both: the unit line is measured (`reported`) or an `unknown`
+/// with a reason — never a bare `unknown` — and the two timestamps are always
+/// `unknown`, because neither manager reports them in a form this build verifies.
 #[test]
-fn the_next_elapse_and_last_trigger_are_unknown_with_a_reason() {
+fn the_unit_state_is_measured_where_the_host_can_answer() {
     let home = tempfile::tempdir().unwrap();
     let owner = provision(home.path());
     arm(home.path(), &scope(owner), "300s", false);
 
     let (code, output) = ksp_in(home.path(), &["status"], None);
     assert_eq!(code, exit::SUCCESS, "status failed: {output}");
+
+    // Measured (`reported`), or an `unknown` with a reason. Both are correct and
+    // which one appears depends on the kind: `launchd` is measured, `systemd` is
+    // recorded for the operator to run. What must never appear is a bare
+    // `unknown` with no reason.
     assert!(
-        output.contains("unit:        unknown (this build records the query"),
-        "the unit state says it was not interrogated: {output}"
+        output.contains("unit:        reported")
+            || output.contains("unit:        unknown (this build records the query")
+            || output.contains("unit:        unknown (the manager"),
+        "the unit state is measured, or says why it was not: {output}"
+    );
+
+    // The two timestamps are unknown on every host, and the trigger note still
+    // says a trigger is not evidence of a sweep.
+    assert!(
+        output.contains("next elapse: unknown ("),
+        "no manager reports a next elapse this build verifies: {output}"
     );
     assert!(
-        output.contains("next elapse: unknown (this build records the query"),
-        "and so does the elapse: {output}"
-    );
-    assert!(
-        output.contains("last trigger: unknown (this build records the query"),
-        "and the trigger: {output}"
+        output.contains("last trigger: unknown ("),
+        "no manager reports a last trigger this build verifies: {output}"
     );
     assert!(
         output.contains("trigger note: a last trigger is when the manager started the job"),

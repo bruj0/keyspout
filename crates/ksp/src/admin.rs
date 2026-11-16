@@ -1415,6 +1415,11 @@ pub fn audit(layout: &Layout) -> Result<crate::output::AuditView, AdminError> {
 }
 
 /// Read a password from `reader`.
+///
+/// Reads to end of stream, which is right for a file and for a pipe whose writer
+/// has closed. It is **not** right for a terminal, where end of stream means
+/// Ctrl-D rather than Enter; `read_password_from_terminal` is the one that
+/// handles that case.
 pub fn read_password<R: Read>(reader: &mut R) -> Result<Vec<u8>, AdminError> {
     let mut buffer = Vec::new();
     reader
@@ -1427,6 +1432,54 @@ pub fn read_password<R: Read>(reader: &mut R) -> Result<Vec<u8>, AdminError> {
         return Err(AdminError::NoPassword);
     }
     Ok(buffer)
+}
+
+/// Read a password from a terminal, one line, after naming what is wanted.
+///
+/// # Why this is not `read_password`
+///
+/// `read_password` reads to **end of stream**. On a terminal that is Ctrl-D, not
+/// Enter, so an operator who typed the password and pressed Enter saw nothing
+/// happen and concluded the command had hung. Measured on a pty: the password
+/// followed by Enter left the process waiting indefinitely, and only Ctrl-D
+/// released it. Every other password prompt in the world accepts Enter.
+///
+/// # The prompt
+///
+/// Written to stderr, because stdout is the command's result and a caller may be
+/// parsing it. It is written *before* the read, so a blocked command says what it
+/// is blocked on rather than presenting as a hang.
+///
+/// Echo is left on. Turning it off needs a terminal-mode call, and this crate
+/// denies `unsafe_code`, so the choice is between an echoed password and an
+/// unsafe block. The password is visible to anyone looking at the screen, which is
+/// a smaller cost than the alternative, and it is stated here so a later reader
+/// does not read the echo as an oversight.
+pub fn read_password_from_terminal() -> Result<Vec<u8>, AdminError> {
+    use std::io::Write as _;
+    let mut stderr = std::io::stderr();
+    let _ = write!(stderr, "Vault password (press Enter when done): ");
+    let _ = stderr.flush();
+
+    let mut line = String::new();
+    // `read_line` stops at a newline, which is what Enter delivers, so this
+    // returns on Enter rather than waiting for Ctrl-D.
+    match std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
+        // Zero bytes is end of stream before any input: Ctrl-D on an empty line,
+        // or a terminal that closed. That is the same condition as an empty
+        // password, and the caller is told to supply one.
+        Ok(0) => Err(AdminError::NoPassword),
+        Ok(_) => {
+            while matches!(line.as_bytes().last(), Some(b'\n') | Some(b'\r')) {
+                line.pop();
+            }
+            if line.is_empty() {
+                return Err(AdminError::NoPassword);
+            }
+            Ok(line.into_bytes())
+        }
+        Err(_) => Err(AdminError::NoPassword),
+    }
 }
 
 /// Run one `admin` subcommand that needs no password or payload.

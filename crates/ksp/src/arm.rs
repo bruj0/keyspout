@@ -418,10 +418,18 @@ fn record(request: &ArmRequest<'_>, layout: &Layout) -> Result<ArmingView, ArmEr
     };
 
     let query = if request.query {
-        let state = ArmingQuery::for_kind(kind);
+        // Measured, not merely described: `measure` asks the service manager
+        // where this host can, so `status` reports the job's real state rather
+        // than saying it never asked.
+        let state = ArmingQuery::measure(kind, identifier);
         let command = match kind {
             ArmingKind::Systemd => {
                 let (program, args) = ArmingQuery::systemd_command(identifier);
+                Some(format!("{program} {}", args.join(" ")))
+            }
+            ArmingKind::Launchd => {
+                let uid = ksp_posture::permissions::effective_uid();
+                let (program, args) = ArmingQuery::launchctl_command(identifier, uid);
                 Some(format!("{program} {}", args.join(" ")))
             }
             _ => None,
