@@ -91,13 +91,46 @@ jobs:
         # `--strict` turns a warning into a failure. A warning here is a
         # broken link or a file that is not in the nav, and both are worth
         # failing on rather than shipping.
-        run: mkdocs build --strict --site-dir site/site -f site/mkdocs.yml
+        #
+        # The site directory is given as an **absolute** path. MkDocs
+        # resolves a relative `--site-dir` against the directory of the
+        # configuration file, not against the working directory, so
+        # `--site-dir site/site` would write to `site/site/site` and the
+        # uploaded artifact would hold the site one directory too deep.
+        # Pages serves the artifact's root, so a site one level down is a
+        # 404 for every page.
+        run: |
+          set -euo pipefail
+          mkdocs build --strict --site-dir "$PWD/site/build" -f site/mkdocs.yml
+
+      - name: Check the build root
+        # The upload step tars the *contents* of the path it is given, and
+        # Pages serves the artifact's root. An `index.html` one directory
+        # down is a 404 for every page, and the deployment still reports
+        # success — the artifact was uploaded, it was just uploaded with
+        # the wrong shape.
+        #
+        # So the shape is checked here, before the upload, where a mistake
+        # is a red build rather than a silent 404.
+        run: |
+          set -euo pipefail
+          test -f site/build/index.html || {
+            echo "site/build/index.html is missing; the site was built
+          somewhere else." >&2
+            exit 1
+          }
+          # Nothing may sit between the artifact root and index.html.
+          test ! -d site/build/site || {
+            echo "site/build/site exists; the site was built one directory
+          too deep and Pages would serve it at /site/." >&2
+            exit 1
+          }
+          echo "the build root holds $(find site/build -name '*.html' | wc -l) page(s)"
 
       - name: Upload the Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: site/site
-
+          path: ${{ github.workspace }}/site/build
   deploy:
     name: Deploy to GitHub Pages
     needs: build
