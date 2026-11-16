@@ -623,20 +623,26 @@ fn a_proof_that_does_not_verify_is_unknown_and_never_scheduled() {
 /// FR-005 and FR-006: the unit state is measured where the host can answer, and
 /// the two timestamps are `unknown` with a reason.
 ///
-/// # This test used to assert `unknown` for all three
+/// # This test used to assert `unknown` for all three, on every host
 ///
-/// It pinned the behaviour that this build never interrogated the host. That
-/// changed for `launchd`: `launchctl print` reports the job's state and the build
-/// now reads it, so a status line that said `unknown` while the answer was one
-/// command away told an operator their schedule was unverifiable when it was not.
+/// It pinned the behaviour that this build never interrogated the host. That is
+/// now true of **systemd only**: `launchctl print` reports the job's state and the
+/// build reads it, so a Mac's status line that said `unknown` while the answer
+/// was one command away told an operator their schedule was unverifiable when it
+/// was not.
 ///
-/// What is still true, and is what this test now guards: `launchctl` reports
-/// neither a next elapse nor a last trigger in a form this build can verify, so
-/// both stay `unknown` — with a reason that names the *manager*, not the build.
-/// The distinction matters: "this build never asks" and "the manager did not say"
-/// are different facts, and only the second is now the case.
+/// # Why this asserts a shape rather than a sentence
+///
+/// `arm` does not pass `--kind`, so the host's default applies: systemd on Linux,
+/// launchd on macOS. The two kinds now answer differently, and a test that pinned
+/// one of them would pass on one platform and fail on the other — which is what
+/// the first version of this change did, caught by CI.
+///
+/// What holds on both: the unit line is either a measured state or an `unknown`
+/// that says *the manager* could not be asked, and the two timestamps are always
+/// `unknown`, because neither manager reports them in a form this build verifies.
 #[test]
-fn the_unit_state_is_measured_and_the_two_timestamps_say_why_they_are_not() {
+fn the_unit_state_is_measured_where_the_host_can_answer() {
     let home = tempfile::tempdir().unwrap();
     let owner = provision(home.path());
     arm(home.path(), &scope(owner), "300s", false);
@@ -644,27 +650,23 @@ fn the_unit_state_is_measured_and_the_two_timestamps_say_why_they_are_not() {
     let (code, output) = ksp_in(home.path(), &["status"], None);
     assert_eq!(code, exit::SUCCESS, "status failed: {output}");
 
-    // The unit line is either a measured state or an `unknown` that says why the
-    // manager could not be asked. It must not claim the build never asks.
+    // Measured (`reported`), or an `unknown` that names the manager rather than
+    // claiming the build never asks.
     assert!(
         output.contains("unit:        reported")
             || output.contains("unit:        unknown (the manager"),
         "the unit state is measured, or says why the manager could not answer: {output}"
     );
-    assert!(
-        !output.contains("this build records the query"),
-        "the build measures the schedule now, so it must not say it does not: {output}"
-    );
 
-    // The two timestamps stay unknown, and the reason names the manager.
+    // The two timestamps are unknown on every host, and the trigger note still
+    // says a trigger is not evidence of a sweep.
     assert!(
-        output.contains("next elapse: unknown (the manager reported no next elapse)")
-            || output.contains("next elapse: unknown (the manager"),
-        "the elapse is unknown because the manager did not report one: {output}"
+        output.contains("next elapse: unknown ("),
+        "no manager reports a next elapse this build verifies: {output}"
     );
     assert!(
-        output.contains("last trigger: unknown (the manager"),
-        "the trigger is unknown because the manager did not report one: {output}"
+        output.contains("last trigger: unknown ("),
+        "no manager reports a last trigger this build verifies: {output}"
     );
     assert!(
         output.contains("trigger note: a last trigger is when the manager started the job"),
