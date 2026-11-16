@@ -37,32 +37,27 @@ graph TB
   CAPCFG["capability_config.rs<br/>the host capability vocabulary"]
   KEY["content_key.rs<br/>the 32-byte AEAD key"]
   SHAMIR["shamir.rs<br/>GF(2^8) secret sharing"]
+
+  META ~~~ CBOR
+  CBOR ~~~ DOM
+  DOM ~~~ EVID
+  EVID ~~~ CAP
+  CAP ~~~ CAPCFG
+  CAPCFG ~~~ KEY
+  KEY ~~~ SHAMIR
 ```
 
 ## Identifiers
 
-```mermaid
-classDiagram
-  class VaultId
-  class PrincipalId {
-    +parse(text) Result~PrincipalId~
-  }
-  class AgentId
-  class ActorId {
-    <<enum>>
-    User
-    Agent
-    Admin
-  }
-  class OpaqueSecretId
-  class RecordVersion
-  class Level {
-    <<enum>>
-    Admin
-    User
-    Agent(AgentId)
-  }
-```
+| Identifier | Shape | Notes |
+|---|---|---|
+| `VaultId` | opaque | Names the vault |
+| `PrincipalId` | a strict UUID | `parse` checks length, hyphen positions, lowercase hex, the v4 version nibble and the RFC 4122 variant nibble |
+| `AgentId` | a `PrincipalId` | The agent's own UUID |
+| `ActorId` | enum | `User`, `Agent`, `Admin`; prints as `user:`, `agent:` or `admin:` |
+| `OpaqueSecretId` | opaque | The secret's name in the store, and nothing else |
+| `RecordVersion` | a number | One version of one secret |
+| `Level` | enum | `Admin`, `User`, `Agent(AgentId)`; `parse` refuses an `agent-` level that is not a UUID |
 
 ### `PrincipalId` is strict
 
@@ -168,31 +163,16 @@ Two of these carry a specific weight:
 
 ## The Two Capability Vocabularies
 
-```mermaid
-classDiagram
-  class LeaseCapability {
-    <<enum>>
-    None
-    NativeExpiry
-    Scheduled
-  }
+| Type | Variants | What it describes |
+|---|---|---|
+| `LeaseCapability` | `None`, `NativeExpiry`, `Scheduled { interval }` | What a **store** can do about expiry |
+| `HostCapability` | `PathConfinement`, `MemoryBarrier` | What a **machine** can enforce |
+| `GuaranteeLevel` | `Full`, `Weakened`, `None` | How much of a capability was established |
+| `AdmissionDecision` | - | Whether a lease is admitted |
+| `AdmissionRefusal` | - | Why it is not |
 
-  class HostCapability {
-    <<enum>>
-    PathConfinement
-    MemoryBarrier
-  }
-
-  class GuaranteeLevel {
-    <<enum>>
-    Full
-    Weakened
-    None
-  }
-
-  class AdmissionDecision
-  class AdmissionRefusal
-```
+`GuaranteeLevel` is ordered `Full > Weakened > None`, and `None` means *no
+mechanism*, not a weaker form of one.
 
 `GuaranteeLevel` is ordered `Full > Weakened > None`. `None` means *no
 mechanism*, not a weaker form of one.
@@ -225,33 +205,15 @@ confine a process.
 
 `evidence.rs` defines the shapes that more than one subsystem must agree on.
 
-```mermaid
-classDiagram
-  class DeletionIntent {
-    +record: BoundMetadata
-    +deadline: Timestamp
-    +authorized_deleters: Set~ActorId~
-  }
+| Structure | Fields | What it says |
+|---|---|---|
+| `DeletionIntent` | `record`, `deadline`, `authorized_deleters` | What may be deleted, by when, and by whom |
+| `DeletionReport` | `record`, `actor`, `reported_deleted_at` | What an actor says it did |
+| `AbsenceObservation` | `record`, `observed_at`, `state` | What somebody saw was not there |
+| `AuditRecord` | `operation`, `target`, `actor`, `outcome` | What happened, to what, by whom |
 
-  class DeletionReport {
-    +record: BoundMetadata
-    +actor: ActorId
-    +reported_deleted_at: Timestamp
-  }
-
-  class AbsenceObservation {
-    +record: BoundMetadata
-    +observed_at: Timestamp
-    +state: VersionState
-  }
-
-  class AuditRecord {
-    +operation: AuditOperation
-    +target: AuditTarget
-    +actor: ActorId
-    +outcome: Outcome
-  }
-```
+Every one of them carries the record's identity, and none of them carries a
+key.
 
 `DeletionReport.reported_deleted_at` is documented in the code as "the
 actor's claim about the deletion time. **Not evidence of erasure**". The

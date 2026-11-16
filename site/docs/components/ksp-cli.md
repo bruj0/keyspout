@@ -44,6 +44,7 @@ graph TB
   EXIT["exit.rs<br/>the constants and the mapping functions"]
 
   subgraph Feature["Feature modules, one per area"]
+      direction TB
     ADMIN["admin.rs"]
     SECRET["secret.rs"]
     TOKEN["token.rs"]
@@ -57,6 +58,7 @@ graph TB
   end
 
   subgraph Runpath["The run path"]
+      direction TB
     RUN["run.rs<br/>load, verify, sign the proof"]
     GATE["run_gate.rs<br/>verify, confine, launch"]
     CONSUME["consume.rs<br/>authorise, spend, delete, journal"]
@@ -65,6 +67,7 @@ graph TB
   end
 
   subgraph Host["The host-facing half"]
+      direction TB
     LAYOUT["layout.rs<br/>the protected-root table"]
     ESTABLISH["establish.rs<br/>adapter selection"]
     PROBE["probe.rs<br/>measure and configure"]
@@ -87,6 +90,9 @@ graph TB
   RUN --> GATE
   GATE --> PROCESS
   CONSUME --> DELIVER
+  CLI --> Feature
+  Feature --> Runpath
+  Runpath --> Host
 ```
 
 ## The Command Surface
@@ -255,25 +261,27 @@ integer.
 ```mermaid
 flowchart TD
   subgraph Subsystems["Each subsystem owns its own typed error"]
+    direction TB
     SE["SecretError"]
     TE["TokenError"]
     RE["RunError"]
     AE["AdminError"]
     VE["VaultError"]
     CE["ConsumeFailure"]
+    SE ~~~ TE
+    TE ~~~ RE
+    RE ~~~ AE
+    AE ~~~ VE
+    VE ~~~ CE
   end
 
-  EXIT["exit.rs<br/>the only constants"]
   MAP["from_mint, from_run, from_consume,<br/>from_admission, from_policy"]
+  EXIT["exit.rs<br/>the only constants"]
+  OUT["the integer the process returns"]
 
-  SE --> MAP
-  TE --> MAP
-  RE --> MAP
-  AE --> MAP
-  VE --> MAP
-  CE --> MAP
+  Subsystems --> MAP
   MAP --> EXIT
-  EXIT --> OUT["the integer the process returns"]
+  EXIT --> OUT
 ```
 
 Three of the codes exist because collapsing them would tell a calling agent

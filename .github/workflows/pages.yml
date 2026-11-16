@@ -87,6 +87,13 @@ jobs:
           python3 scripts/site/check-mermaid.py site/docs \
             --puppeteer-config site/puppeteer.json
 
+      - name: Check the diagrams are vertical
+        # The wide diagrams are chained so each subgraph hangs below the
+        # last. The check is here so a diagram that is added wide, or a
+        # transformation that is not applied, fails the build rather than
+        # shipping a diagram nobody can read.
+        run: python3 scripts/site/verticalise.py --check
+
       - name: Build the site
         # `--strict` turns a warning into a failure. A warning here is a
         # broken link or a file that is not in the nav, and both are worth

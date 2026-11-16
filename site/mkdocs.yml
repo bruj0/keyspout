@@ -55,6 +55,7 @@ extra_css:
 # others. The script is registered here.
 extra_javascript:
   - media/nav-accordion.js
+  - media/diagram-zoom.js
 
 markdown_extensions:
   - admonition
