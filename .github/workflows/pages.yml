@@ -101,6 +101,11 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    # The `github-pages` environment allows only `main`, so a pull request's
+    # run is rejected by the environment's branch policy. The deployment is
+    # therefore conditional rather than attempted-and-refused: a red job on
+    # every pull request would train contributors to ignore it.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
