@@ -1,0 +1,26 @@
+/* Keyspout documentation - small additions on top of Material's defaults. */
+
+/* The Mermaid diagrams are wide. Let them scroll rather than force the page
+   to scroll sideways, and keep the diagram centred when it fits. */
+.md-typeset .mermaid {
+  text-align: center;
+  overflow-x: auto;
+}
+
+.md-typeset .mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* A table with many columns - the exit-code table, the layout table - needs
+   to be readable rather than squeezed into the content column. */
+.md-typeset table:not([class]) {
+  font-size: 0.76rem;
+}
+
+/* The reference documents are the project's own prose, and they open with a
+   heading the site nav already names. Hide that first heading so the page
+   does not repeat its own title. */
+.md-typeset > h1:first-child {
+  display: none;
+}

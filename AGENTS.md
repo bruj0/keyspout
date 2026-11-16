@@ -220,7 +220,37 @@ Before you commit:
 
 ---
 
-## 6. Design vocabulary
+## 6. The documentation site
+
+`site/` is a MkDocs Material site. It publishes the project's architecture —
+the overview, the workflow walkthroughs and a deep dive per crate — and the
+tree's own public documents, which it assembles at build time.
+
+```bash
+python3.14 scripts/site/prepare-docs.py --source .   # assemble the reference section
+python3.14 scripts/site/check-links.py --root site/docs
+python3.14 scripts/site/check-mermaid.py site/docs
+mkdocs build --strict -f site/mkdocs.yml
+```
+
+`site/docs/` holds the site's own pages and is tracked. `site/docs/reference/`
+and `site/docs/assets/` are **generated** and are not: the reference section is
+the design specification, the quickstart, the security model, the known
+defects and the eight crate context files, read from this tree at build time.
+Tracking them would ship a second copy of the design specification, and two
+copies drift.
+
+`.github/workflows/pages.yml` builds and deploys the site on every push to
+`main`. It runs the link check and the Mermaid check first, so a diagram that
+does not parse fails the build rather than shipping as an empty box.
+
+A page that documents a mechanism names the file that implements it. A marker
+without a path is an assertion, and an assertion about a security control is
+worth very little.
+
+---
+
+## 7. Design vocabulary
 
 Source comments and the context files use a few shorthand labels. They are
 defined here so a reader does not have to guess.
@@ -248,7 +278,7 @@ sentence, not the letter.
 
 ---
 
-## 7. Reporting a security issue
+## 8. Reporting a security issue
 
 Do not open a public issue for a vulnerability. Email the maintainer directly
 and allow time for a fix before disclosure.
