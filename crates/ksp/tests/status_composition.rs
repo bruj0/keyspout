@@ -638,8 +638,8 @@ fn a_proof_that_does_not_verify_is_unknown_and_never_scheduled() {
 /// one of them would pass on one platform and fail on the other — which is what
 /// the first version of this change did, caught by CI.
 ///
-/// What holds on both: the unit line is either a measured state or an `unknown`
-/// that says *the manager* could not be asked, and the two timestamps are always
+/// What holds on both: the unit line is measured (`reported`) or an `unknown`
+/// with a reason — never a bare `unknown` — and the two timestamps are always
 /// `unknown`, because neither manager reports them in a form this build verifies.
 #[test]
 fn the_unit_state_is_measured_where_the_host_can_answer() {
@@ -650,12 +650,15 @@ fn the_unit_state_is_measured_where_the_host_can_answer() {
     let (code, output) = ksp_in(home.path(), &["status"], None);
     assert_eq!(code, exit::SUCCESS, "status failed: {output}");
 
-    // Measured (`reported`), or an `unknown` that names the manager rather than
-    // claiming the build never asks.
+    // Measured (`reported`), or an `unknown` with a reason. Both are correct and
+    // which one appears depends on the kind: `launchd` is measured, `systemd` is
+    // recorded for the operator to run. What must never appear is a bare
+    // `unknown` with no reason.
     assert!(
         output.contains("unit:        reported")
+            || output.contains("unit:        unknown (this build records the query")
             || output.contains("unit:        unknown (the manager"),
-        "the unit state is measured, or says why the manager could not answer: {output}"
+        "the unit state is measured, or says why it was not: {output}"
     );
 
     // The two timestamps are unknown on every host, and the trigger note still
