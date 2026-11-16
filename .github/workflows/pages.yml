@@ -76,10 +76,16 @@ jobs:
         # `mmdc` needs a headless Chromium. The runner has one, and the
         # version is pinned so a renderer change cannot turn a passing build
         # red without a change in the tree.
+        #
+        # `site/puppeteer.json` disables the Chromium sandbox, because a CI
+        # runner executes as root and Chromium refuses to start its sandbox
+        # there. Without it the browser fails to launch and every diagram
+        # reports as a failure that is not a diagram's fault.
         run: |
           set -euo pipefail
           npm install --global "@mermaid-js/mermaid-cli@12.0.0"
-          python3 scripts/site/check-mermaid.py site/docs
+          python3 scripts/site/check-mermaid.py site/docs \
+            --puppeteer-config site/puppeteer.json
 
       - name: Build the site
         # `--strict` turns a warning into a failure. A warning here is a

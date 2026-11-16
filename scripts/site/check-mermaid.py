@@ -37,6 +37,13 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", help="A markdown file or a directory of them.")
     parser.add_argument("--mmdc", default="mmdc", help="The mmdc binary.")
+    parser.add_argument(
+        "--puppeteer-config",
+        type=Path,
+        help="A Puppeteer configuration file passed to mmdc. Chromium needs "
+        "--no-sandbox in a container that runs as root, which is what a CI "
+        "runner is.",
+    )
     parser.add_argument("--keep-svgs", type=Path, help="Save the rendered SVGs here.")
     args = parser.parse_args(argv)
 
@@ -53,6 +60,10 @@ def main(argv: list[str]) -> int:
 
     total = ok = failed = 0
 
+    command = [args.mmdc]
+    if args.puppeteer_config:
+        command += ["--puppeteerConfigFile", str(args.puppeteer_config)]
+
     for path in files:
         bodies = blocks(path.read_text(encoding="utf-8"))
         for number, body in enumerate(bodies, 1):
@@ -62,7 +73,7 @@ def main(argv: list[str]) -> int:
                 target = Path(work) / "diagram.svg"
                 source.write_text(body + "\n", encoding="utf-8")
                 result = subprocess.run(
-                    [args.mmdc, "--input", str(source), "--output", str(target)],
+                    command + ["--input", str(source), "--output", str(target)],
                     capture_output=True,
                     text=True,
                     check=False,
