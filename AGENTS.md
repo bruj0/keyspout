@@ -230,6 +230,10 @@ tree's own public documents, which it assembles at build time.
 python3.14 scripts/site/prepare-docs.py --source .   # assemble the reference section
 python3.14 scripts/site/check-links.py --root site/docs
 python3.14 scripts/site/check-mermaid.py site/docs
+# Stack each wide diagram's subgraphs one below the next. This one renders,
+# because which layout is narrowest differs per diagram and cannot be decided
+# by a rule; CI runs it with --check to catch an unstacked diagram.
+python3.14 scripts/site/stack-subgraphs.py --puppeteer-config site/puppeteer.json
 mkdocs build --strict --site-dir "$PWD/site/build" -f site/mkdocs.yml
 ```
 

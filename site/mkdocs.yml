@@ -54,7 +54,25 @@ extra_css:
 # The accordion keeps the sidebar readable: opening one section collapses the
 # others. The script is registered here.
 extra_javascript:
+  # Mermaid has to be the first script on the page, and it has to be this
+  # copy.
+  #
+  # Material draws Mermaid diagrams itself: it takes each `pre.mermaid`,
+  # renders it, and replaces it with a `div.mermaid` whose **closed** shadow
+  # root holds the SVG. Its renderer is only loaded if `window.mermaid` is
+  # already defined - otherwise Material pulls Mermaid 11 from unpkg, which
+  # makes the whole site's diagrams depend on a third party being reachable.
+  # Defining the global here is what stops that request being made.
+  #
+  # The version is 11 for the same reason: Material's bundle calls
+  # `mermaid.render(id, text)` and expects `{svg, fn}` back, and passes
+  # `themeCSS`, all of which are the version 11 API. It is the version
+  # Material itself would have fetched.
+  - media/mermaid.min.js
   - media/nav-accordion.js
+  # Panzoom is vendored for the same no-CDN reason, and must come before the
+  # script that uses it.
+  - media/panzoom.min.js
   - media/diagram-zoom.js
 
 markdown_extensions:

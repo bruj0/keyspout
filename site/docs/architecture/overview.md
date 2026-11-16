@@ -57,12 +57,10 @@ flowchart TD
   Client["Operator or agent shell"]
 
   subgraph Host["The operator's host"]
-    direction TB
     BIN["ksp binary<br/>Rust, single executable<br/>clap CLI, dispatch, output"]
   end
 
   subgraph Storage["The sealed store"]
-    direction TB
     BLOBS[("Record blobs<br/>file, valkey or s3<br/>HPKE-sealed ciphertext")]
     ARMS[("Arm records<br/>signed deletion intents<br/>create-only")]
     AUDIT[("Audit chain<br/>per-writer append-only segments")]
@@ -70,7 +68,6 @@ flowchart TD
   end
 
   subgraph Keys["Key material - never in the store"]
-    direction TB
     ADMINKEY["Admin signing key<br/>owner-only file<br/>cannot decrypt"]
     USERKEY["User key pair<br/>owner-only file<br/>vault key is sealed to it"]
     AGENTKEY["Agent key pair<br/>owner-only file<br/>on the agent's host"]
@@ -79,8 +76,8 @@ flowchart TD
   Client -->|"one invocation"| BIN
   BIN -->|"seals and writes the blobs,<br/>arms before publishing,<br/>appends the signed records,<br/>writes a proof after a sweep"| Storage
   BIN -->|"reads the keys"| Keys
-  Storage --> Keys
-  Host --> Storage
+  Storage ~~~ Keys
+  Host ~~~ Storage
 
 ```
 
@@ -102,7 +99,6 @@ Eight crates. The CLI is the only place they are wired together.
 ```mermaid
 graph TB
   subgraph CLI["ksp - the CLI and application layer"]
-    direction TB
     COMMANDS["commands.rs<br/>the clap tree"]
     APP["app.rs<br/>dispatch and per-group handlers"]
     OUTPUT["output.rs<br/>Report enum, text and JSON rendering"]
@@ -117,7 +113,6 @@ graph TB
   end
 
   subgraph IDENTITY["ksp-identity - who is speaking"]
-    direction TB
     ENROL["enrolment.rs<br/>fingerprint-bound enrolment, rotation"]
     POP["pop.rs<br/>proof of possession, argv hash, time buckets"]
     DELIV["delivery.rs<br/>sealed delivery artifact"]
@@ -132,7 +127,6 @@ graph TB
   end
 
   subgraph RECORD["ksp-record - record cryptography"]
-    direction TB
     ENV["envelope.rs<br/>the HPKE envelope"]
     KEM["kem.rs<br/>the KEM validation gate"]
     VERSION["version.rs<br/>immutable versions, conditional head"]
@@ -142,7 +136,6 @@ graph TB
   end
 
   subgraph STORAGE["ksp-backend - the store"]
-    direction TB
     FILE["file.rs<br/>the local filesystem store"]
     VALKEY["valkey.rs<br/>the Redis-protocol store"]
     S3["s3.rs<br/>the object store"]
@@ -156,7 +149,6 @@ graph TB
   end
 
   subgraph EVIDENCE["ksp-deletion - what is known"]
-    direction TB
     INTENT["intent.rs<br/>the signed, key-free intent"]
     REPORT["report.rs<br/>the actor's signed report"]
     OBSERVE["observation.rs<br/>the absence observation"]
@@ -166,7 +158,6 @@ graph TB
   end
 
   subgraph HOST["ksp-posture - what the host can do"]
-    direction TB
     CONF["confinement.rs<br/>Landlock path confinement"]
     BARRIER["barrier.rs<br/>memfd_secret, mlock"]
     DESC["descriptors.rs<br/>descriptor sanitation"]
@@ -176,11 +167,11 @@ graph TB
     DESC --> CONF
   end
 
-  CLI --> IDENTITY
-  IDENTITY --> RECORD
-  RECORD --> STORAGE
-  STORAGE --> EVIDENCE
-  EVIDENCE --> HOST
+  CLI ~~~ IDENTITY
+  IDENTITY ~~~ RECORD
+  RECORD ~~~ STORAGE
+  STORAGE ~~~ EVIDENCE
+  EVIDENCE ~~~ HOST
 
 ```
 

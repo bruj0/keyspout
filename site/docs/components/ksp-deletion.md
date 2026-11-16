@@ -33,26 +33,22 @@ None of these is a tombstone, and none of them contains a key.
 ```mermaid
 graph TB
   subgraph Evidence["The evidence types"]
-      direction TB
     INTENT["intent.rs<br/>SignedIntent, AuthorizedIntent"]
     REPORT["report.rs<br/>SignedReport"]
     OBS["observation.rs<br/>SignedObservation, VersionState"]
   end
 
   subgraph Durable["The durable half"]
-      direction TB
     JOURNAL["journal.rs<br/>AcknowledgementJournal, retry_report"]
     AUDIT["audit.rs<br/>AuditChain, attribute, verify"]
   end
 
   subgraph Verify["The verification half"]
-      direction TB
     VERIFY["verify.rs<br/>verify_report, ReportAuthority"]
     SIGN["signing.rs<br/>EvidenceSigningKey, EvidenceSignature"]
   end
 
   subgraph Use["The use"]
-      direction TB
     CONSUME["consume.rs<br/>deliver, delete, report"]
   end
 
@@ -63,9 +59,9 @@ graph TB
   VERIFY --> REPORT
   REPORT --> SIGN
   AUDIT --> SIGN
-  Evidence --> Durable
-  Durable --> Verify
-  Verify --> Use
+  Evidence ~~~ Durable
+  Durable ~~~ Verify
+  Verify ~~~ Use
 ```
 
 ## The Three Facts

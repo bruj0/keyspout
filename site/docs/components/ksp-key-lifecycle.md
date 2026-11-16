@@ -42,7 +42,7 @@ graph TB
   end
 
   LIB --> FILE
-  LIB --> Ops
+  LIB ~~~ Ops
   FILE --> SAFE["safe_segment<br/>the name becomes a path"]
 
   GEN ~~~ SAVE

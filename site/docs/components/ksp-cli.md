@@ -84,15 +84,14 @@ graph TB
   COMMANDS --> APP
   APP --> EXIT
   APP --> OUTPUT
-  APP --> Feature
-  APP --> Runpath
-  APP --> Host
+  APP ~~~ Feature
+  APP ~~~ Runpath
+  APP ~~~ Host
   RUN --> GATE
   GATE --> PROCESS
   CONSUME --> DELIVER
-  CLI --> Feature
-  Feature --> Runpath
-  Runpath --> Host
+  Feature ~~~ Runpath
+  Runpath ~~~ Host
 ```
 
 ## The Command Surface
@@ -279,7 +278,7 @@ flowchart TD
   EXIT["exit.rs<br/>the only constants"]
   OUT["the integer the process returns"]
 
-  Subsystems --> MAP
+  Subsystems ~~~ MAP
   MAP --> EXIT
   EXIT --> OUT
 ```

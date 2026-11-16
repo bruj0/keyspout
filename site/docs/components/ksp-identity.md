@@ -33,7 +33,6 @@ crate exists to make both structurally impossible rather than merely checked.
 ```mermaid
 graph TB
   subgraph Enrol["Enrolment and trust"]
-      direction TB
     ENROL["enrolment.rs<br/>UserVault, SealedVault, TrustStore, Rotation"]
     FP["fingerprint.rs<br/>the five-way binding"]
     KB["key_bundle.rs<br/>typed identity bundles and pins"]
@@ -41,14 +40,12 @@ graph TB
   end
 
   subgraph Auth["Authorisation"]
-      direction TB
     POLICY["policy.rs<br/>Policy, TrustAnchors, VerificationOutcome"]
     CKPT["checkpoint.rs<br/>trusted checkpoints and rollback detection"]
     SCOPE["scope.rs<br/>who may read which audit records"]
   end
 
   subgraph Use["Use"]
-      direction TB
     POP["pop.rs<br/>argv hash, time buckets, sign and verify"]
     DELIV["delivery.rs<br/>seal, verify, open, downstream copy"]
     HDR["header.rs<br/>the delivery header, version 2"]
@@ -57,7 +54,6 @@ graph TB
   end
 
   subgraph Mint["The mint path"]
-      direction TB
     MINT["mint.rs<br/>arm, then publish"]
     ISSU["issuance.rs<br/>the ledger, revocations, withdrawals"]
     REC["recovery.rs<br/>Shamir over the sealed bundle"]
@@ -72,9 +68,9 @@ graph TB
   DELIV --> HDR
   DELIV --> SIG
   POP --> RUN
-  Enrol --> Auth
-  Auth --> Use
-  Use --> Mint
+  Enrol ~~~ Auth
+  Auth ~~~ Use
+  Use ~~~ Mint
 ```
 
 ## The Fingerprint Binding
@@ -97,7 +93,7 @@ flowchart LR
   SHA["SHA-256"]
   OUT["the 32-byte fingerprint"]
 
-  Subject --> PRE
+  Subject ~~~ PRE
   DOM --> PRE
   PRE --> SHA
   SHA --> OUT

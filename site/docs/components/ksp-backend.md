@@ -31,44 +31,40 @@ three opaque methods; it never learns what it is storing.
 ```mermaid
 graph TB
   subgraph Contract["The contract"]
-      direction TB
     STORE["store.rs<br/>BlobStore, path validation"]
     ARMSTORE["arming.rs<br/>ArmingStore, ArmRecord"]
     SWSTORE["sweep.rs<br/>SweepStore, remove_exact"]
   end
 
   subgraph Backends["The three backends"]
-      direction TB
     FILE["file.rs<br/>the local filesystem"]
     VALKEY["valkey.rs<br/>the Redis protocol"]
     S3["s3.rs<br/>the S3 API"]
   end
 
   subgraph Decision["The decision half"]
-      direction TB
     ADMIT["admission.rs<br/>classify_file, classify_valkey, classify_s3"]
     PROOF["proof.rs<br/>the signed proof gate"]
     SWEEP["sweep.rs<br/>the foreground sweep"]
   end
 
   subgraph Configuration["The configuration half"]
-      direction TB
     SWEEPER["sweeper.rs<br/>the schedule, the scope, the platform mapping"]
     USES["usebound.rs<br/>the mutable use counter"]
     STATUS["status.rs<br/>the disclosure surface"]
   end
 
-  FILE --> Contract
-  VALKEY --> Contract
-  S3 --> Contract
+  FILE ~~~ Contract
+  VALKEY ~~~ Contract
+  S3 ~~~ Contract
   ADMIT --> PROOF
   PROOF --> SWEEP
   SWEEP --> ARMSTORE
   ARMSTORE --> USES
   SWEEPER -.->|"configuration, not evidence"| ADMIT
-  Contract --> Backends
-  Backends --> Decision
-  Decision --> Configuration
+  Contract ~~~ Backends
+  Backends ~~~ Decision
+  Decision ~~~ Configuration
 ```
 
 The last edge is dashed on purpose. The sweeper arming is what the operator

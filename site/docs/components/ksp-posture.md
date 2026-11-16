@@ -32,7 +32,6 @@ The crate's first rule is in its own module docs:
 ```mermaid
 graph TB
   subgraph Model["The model"]
-      direction TB
     POSTURE["posture.rs<br/>HostPosture, CapabilityDisclosure"]
     CONF["confinement.rs<br/>restrict_then_launch, ConfinementSpec"]
     BARRIER["barrier.rs<br/>allocate a BarrieredRegion"]
@@ -43,14 +42,12 @@ graph TB
   end
 
   subgraph Resolve["The selection"]
-      direction TB
     RESOLVER["resolver.rs<br/>resolve_confinement,<br/>resolve_memory_barrier"]
     ADAPT["adapters/<br/>the five adapters"]
     LANDLOCKT["landlock_types.rs<br/>CompatLevel, LandlockAbi"]
   end
 
   subgraph Platform["The platform layer"]
-      direction TB
     SYS["sys.rs<br/>the one unsafe module"]
   end
 
@@ -63,8 +60,8 @@ graph TB
   RESOLVER --> POSTURE
   CONF --> SYS
   MEMLOCK --> SYS
-  Model --> Resolve
-  Resolve --> Platform
+  Model ~~~ Resolve
+  Resolve ~~~ Platform
 ```
 
 ## The Two Capability Vocabularies
@@ -111,6 +108,7 @@ graph TB
   REG --> MS
   REG --> SM
   REG --> ML
+  Path ~~~ Mem
 ```
 
 Three points about that table:

@@ -68,6 +68,13 @@ jobs:
       - name: Check the internal links
         run: python3 scripts/site/check-links.py --root site/docs
 
+      - name: Check the scripts are registered
+        # A file in `site/docs/media/` is published whether or not
+        # `extra_javascript` names it, so a script can be added and never
+        # loaded. The site shipped that way once: every diagram was invisible
+        # because Mermaid was never registered, and nothing said so.
+        run: python3 scripts/site/check-assets.py
+
       - name: Check the Mermaid diagrams
         # Every diagram is rendered through the real Mermaid parser, so a
         # diagram that does not parse fails the build instead of shipping as
@@ -87,12 +94,17 @@ jobs:
           python3 scripts/site/check-mermaid.py site/docs \
             --puppeteer-config site/puppeteer.json
 
-      - name: Check the diagrams are vertical
-        # The wide diagrams are chained so each subgraph hangs below the
-        # last. The check is here so a diagram that is added wide, or a
-        # transformation that is not applied, fails the build rather than
-        # shipping a diagram nobody can read.
-        run: python3 scripts/site/verticalise.py --check
+      - name: Check the diagrams are stacked
+        # A wide diagram is laid out with each subgraph below the last. Which
+        # layout is narrowest differs per diagram, so the script renders the
+        # candidates and keeps the narrowest; the check therefore only has to
+        # confirm the result was committed. It fails rather than shipping a
+        # diagram that is wide because nobody re-ran it.
+        #
+        # The Chromium flags match the check above, and for the same reason:
+        # as root without them every render fails, every width is
+        # unmeasurable, and a check that measures nothing passes.
+        run: python3 scripts/site/stack-subgraphs.py --check --puppeteer-config site/puppeteer.json
 
       - name: Build the site
         # `--strict` turns a warning into a failure. A warning here is a

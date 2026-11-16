@@ -139,12 +139,10 @@ seven.
 ```mermaid
 graph TB
   subgraph Top["Application layer"]
-      direction TB
     CLI["ksp<br/>CLI and dispatch"]
   end
 
   subgraph Domain["Domain crates"]
-      direction TB
     ID["ksp-identity<br/>enrolment, PoP, policy, delivery"]
     LIFE["ksp-key-lifecycle<br/>durable key files"]
     DEL["ksp-deletion<br/>deletion evidence"]
@@ -152,13 +150,11 @@ graph TB
   end
 
   subgraph Storage["Storage layer"]
-      direction TB
     BACK["ksp-backend<br/>backends, admission, arming"]
     REC["ksp-record<br/>record cryptography"]
   end
 
   subgraph Base["Shared vocabulary"]
-      direction TB
     TYPES["ksp-types<br/>identifiers and encodings"]
   end
 
@@ -180,9 +176,9 @@ graph TB
   REC --> TYPES
   DEL --> TYPES
   POST --> TYPES
-  Top --> Domain
-  Domain --> Storage
-  Storage --> Base
+  Top ~~~ Domain
+  Domain ~~~ Storage
+  Storage ~~~ Base
 ```
 
 The `ksp-deletion` to `ksp-identity` edge is **dev-only**, on purpose: the
