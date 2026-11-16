@@ -723,7 +723,25 @@ fn a_listing_names_what_this_host_minted() {
         "{output}"
     );
     assert!(output.contains("version=1"), "{output}");
-    assert!(output.contains("live"), "{output}");
+
+    // The standing is not `live`, and that is the point of the column. This
+    // fixture records a ledger entry and **no sealed record** — the state a
+    // `--consume` run leaves behind — so the row must not offer a copy.
+    //
+    // It reads `unknown: the deployment or store could not be opened` rather than
+    // `consumed`, because the fixture has no deployment to look the record up
+    // under. That is the honest answer for this state: this host could not check,
+    // which is a different claim from "it checked and found nothing". Reporting
+    // `live` here — which this test used to assert — told an operator a copy
+    // existed while `ksp run` would refuse the token with exit 6.
+    assert!(
+        !output.contains("live"),
+        "the listing must not offer a copy it has not confirmed: {output}"
+    );
+    assert!(
+        output.contains("unknown:") || output.contains("consumed"),
+        "an unconfirmed copy is unknown or consumed, never live: {output}"
+    );
 }
 
 #[test]

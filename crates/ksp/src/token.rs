@@ -545,27 +545,122 @@ pub fn inspect(
     })
 }
 
+/// What a ledger row's `standing` says, given what the store reported.
+///
+/// Split out so the decision is testable without a deployment, a store or a
+/// ledger. The integration case needs all three; the *rule* is these few lines,
+/// and the rule is what the defect was about.
+///
+/// # The rule
+///
+/// A revocation wins over presence: a token this host marked is not live even if
+/// the record is still on disk, because the mark is a decision and the bytes are
+/// an accident of timing.
+///
+/// With no revocation, the store's answer decides. `Present` is `live`.
+/// `Absent` is `consumed` — the copy can no longer be fetched, which is the
+/// question the column answers. `Unreadable` is `unknown`, because an error is
+/// not evidence of absence and claiming `consumed` for an unreadable record would
+/// assert a deletion nobody established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presence {
+    /// The record is at the path the ledger names.
+    Present,
+    /// The store says there is nothing there.
+    Absent,
+    /// The store could not answer.
+    Unreadable,
+    /// The deployment or the store could not be opened at all.
+    Unreachable,
+}
+
+fn standing_for(revoked: Option<&str>, presence: Presence) -> String {
+    if let Some(reason) = revoked {
+        return format!("revoked: {reason}");
+    }
+    match presence {
+        Presence::Present => "live".to_string(),
+        Presence::Absent => "consumed".to_string(),
+        Presence::Unreadable => "unknown: the record could not be read".to_string(),
+        Presence::Unreachable => "unknown: the deployment or store could not be opened".to_string(),
+    }
+}
+
 /// What `token list` prints: this host's ledger and its honest scope.
+///
+/// # Why the ledger alone is not enough
+///
+/// The ledger knows about revocation and nothing else. A `--consume` run deletes
+/// the sealed record and reports it, but it does not revoke the token: the lease
+/// is not withdrawn, its copy is gone. So a row that consulted only the ledger
+/// said `live` for a token whose bytes no longer existed, while `ksp run` refused
+/// the same token with exit 6. Measured: after a consume, `token list` reported
+/// `standing: live` with a deadline 118 minutes in the future.
+///
+/// The row therefore also asks the store whether the record it names is still
+/// there. That is the same question `ksp run` asks — same store, same path — so
+/// the two cannot disagree.
+///
+/// # What this can and cannot see
+///
+/// Presence is checked at the path the ledger names. A store that reports an
+/// absent record as an error rather than as `None` yields `unknown`, not
+/// `consumed`: this host cannot tell a deleted record from an unreadable one, and
+/// saying `consumed` for both would claim an absence nobody established.
 pub fn listing(layout: &Layout) -> Result<crate::output::TokenLedger, TokenError> {
     let ledger = ksp_identity::IssuanceLedger::at(layout.issuance_ledger());
     let listing = ledger
         .listing()
         .map_err(|error| TokenError::Ledger(error.to_string()))?;
 
+    // The deployment names the vault and the user the records live under; the
+    // ledger row names the level, the secret and the version. Together they are
+    // the record path, built the same way `ksp run` builds it.
+    //
+    // A host with no deployment has no records to look for, so every row is
+    // `unknown` rather than `consumed` — an absent deployment is not an absent
+    // record.
+    let deployment = crate::deployment::require(layout).ok();
+    let store = crate::config::open_file_store(layout).ok();
+
     let rows = listing
         .entries
         .iter()
-        .map(|entry| crate::output::LedgerRow {
-            token_id: entry.issuance.token_id.clone(),
-            agent: entry.issuance.agent.to_string(),
-            secret: entry.issuance.secret.as_str().to_string(),
-            version: entry.issuance.version.0,
-            deadline: entry.issuance.deadline,
-            policy_revision: entry.issuance.policy_revision,
-            standing: match &entry.reason {
-                Some(reason) => format!("revoked: {reason}"),
-                None => "live".to_string(),
-            },
+        .map(|entry| {
+            let presence = match (&deployment, &store) {
+                (Some((deployment, _anchor)), Some(store)) => {
+                    let metadata = ksp_types::BoundMetadata {
+                        vault_id: deployment.vault.clone(),
+                        user_id: deployment.user,
+                        level: ksp_types::Level::Agent(entry.issuance.agent),
+                        secret_id: entry.issuance.secret.clone(),
+                        version: entry.issuance.version.0,
+                    };
+                    let path = ksp_record::RecordPath::of(&metadata);
+                    match ksp_record::version::BlobStore::get(store, path.as_str()) {
+                        Ok(Some(_)) => Presence::Present,
+                        Ok(None) => Presence::Absent,
+                        Err(_) => Presence::Unreadable,
+                    }
+                }
+                _ => Presence::Unreachable,
+            };
+            crate::output::LedgerRow {
+                token_id: entry.issuance.token_id.clone(),
+                agent: entry.issuance.agent.to_string(),
+                secret: entry.issuance.secret.as_str().to_string(),
+                version: entry.issuance.version.0,
+                deadline: entry.issuance.deadline,
+                policy_revision: entry.issuance.policy_revision,
+                standing: standing_for(
+                    entry
+                        .reason
+                        .as_ref()
+                        .map(|reason| reason.to_string())
+                        .as_deref(),
+                    presence,
+                ),
+            }
         })
         .collect();
 
@@ -883,5 +978,67 @@ mod tests {
 
         assert_eq!(error.exit_code(), exit::POLICY_DENIAL);
         assert!(!out.exists());
+    }
+
+    /// A consumed lease must not be listed as live.
+    ///
+    /// The ledger knows about revocation and nothing else, so a row that
+    /// consulted only the ledger said `live` for a token whose sealed record a
+    /// `--consume` run had deleted — while `ksp run` refused the same token with
+    /// exit 6. Measured on a real deployment: after a consume, `token list`
+    /// reported `standing: live` with a deadline 118 minutes in the future.
+    ///
+    /// The rule is what this test pins, because the rule is what was wrong. The
+    /// integration case needs a deployment, a store and a ledger; the decision
+    /// does not.
+    #[test]
+    fn a_consumed_lease_is_not_listed_as_live() {
+        // Absent from the store, no revocation: the copy cannot be fetched, so
+        // the listing must not offer it as usable.
+        assert_eq!(standing_for(None, Presence::Absent), "consumed");
+
+        // Present and unrevoked is the only `live`.
+        assert_eq!(standing_for(None, Presence::Present), "live");
+    }
+
+    /// An unreadable record is not evidence of a deletion.
+    ///
+    /// The tempting shorthand is `Ok(None) => consumed, Err(_) => consumed`,
+    /// because both mean "no bytes came back". They are different claims: an
+    /// error says this host could not look, and `consumed` says it looked and
+    /// found nothing. Reporting the second for the first asserts an absence
+    /// nobody established.
+    #[test]
+    fn an_unreadable_record_is_unknown_not_consumed() {
+        let unreadable = standing_for(None, Presence::Unreadable);
+        assert!(
+            unreadable.starts_with("unknown"),
+            "an unreadable record is not a consumed one: {unreadable}"
+        );
+        assert!(
+            !unreadable.contains("consumed"),
+            "the listing must not claim a deletion it could not observe: {unreadable}"
+        );
+
+        let unreachable = standing_for(None, Presence::Unreachable);
+        assert!(
+            unreachable.starts_with("unknown"),
+            "a store that cannot be opened is not an absent record: {unreachable}"
+        );
+    }
+
+    /// A revocation wins over presence.
+    ///
+    /// A token this host marked is not live even when the record is still on
+    /// disk: the mark is a decision, and the bytes are an accident of timing.
+    /// Ordering the other way would let a revoked token read as `live` for as
+    /// long as the sweep had not run.
+    #[test]
+    fn a_revocation_outranks_presence() {
+        let standing = standing_for(Some("token marked"), Presence::Present);
+        assert!(
+            standing.starts_with("revoked"),
+            "a marked token is not live whatever the store holds: {standing}"
+        );
     }
 }

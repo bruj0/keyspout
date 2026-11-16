@@ -593,8 +593,13 @@ const STDIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 fn read_password_from_stdin() -> Result<Vec<u8>, crate::admin::AdminError> {
     use std::io::IsTerminal as _;
     if std::io::stdin().is_terminal() {
-        // The operator types and presses Enter, so a blocking read is correct.
-        return crate::admin::read_password(&mut std::io::stdin());
+        // The operator types and presses Enter, so the read must stop at the
+        // newline. `read_password` reads to end of stream, which on a terminal
+        // is Ctrl-D — so an operator who typed the password and pressed Enter
+        // saw nothing happen. `read_password_from_terminal` also names what it
+        // wants before it blocks, so a waiting command does not present as a
+        // hang.
+        return crate::admin::read_password_from_terminal();
     }
 
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -941,7 +946,7 @@ fn compose_facts(
             signer_key_id: arming.signer_key_id.clone(),
             // The query is *described*, never run and never consulted by the
             // admission path: this build records what the operator would ask.
-            unit: ksp_backend::sweeper::ArmingQuery::for_kind(arming.kind),
+            unit: ksp_backend::sweeper::ArmingQuery::measure(arming.kind, &arming.identifier),
         },
     };
     (

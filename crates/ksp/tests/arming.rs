@@ -428,10 +428,22 @@ fn both_local_schedulers_are_accepted_and_a_local_crontab_is_refused() {
     );
 }
 
-/// FR-006: a launchd query reports unknown with a reason, and names no command
+/// FR-006: a launchd query reports what the manager says, and names no command
 /// this host could run.
+///
+/// # This test used to assert `unknown:`
+///
+/// It pinned the behaviour that `ArmingQuery::for_kind` returned `Unknown` for
+/// `launchd`, with the note that this build records the query and the operator
+/// runs it. That was true of the *query* and false of the *fact*: `launchctl
+/// print` reports the job's state, and the build now reads it. A status line that
+/// said `unknown` while the answer was one command away told an operator their
+/// schedule was unverifiable when it was not.
+///
+/// What still holds, and is what this test is for: the query names no `systemctl`
+/// command on a Mac, and it decides nothing.
 #[test]
-fn a_launchd_query_reports_unknown_and_names_no_command() {
+fn a_launchd_query_measures_the_job_and_names_no_systemctl_command() {
     let home = tempfile::tempdir().unwrap();
     let owner = provision(home.path());
 
@@ -441,7 +453,13 @@ fn a_launchd_query_reports_unknown_and_names_no_command() {
         &["--kind", "launchd", "--query"],
     );
     assert_eq!(code, exit::SUCCESS, "{output}");
-    assert!(output.contains("unknown:"), "{output}");
+    // The job is not installed in this fixture, so the manager cannot report it.
+    // Both `reported` and `unknown` are correct answers here; what must not
+    // appear is a `systemctl` command, which a Mac cannot run.
+    assert!(
+        output.contains("unknown:") || output.contains("reported"),
+        "the query must say what the manager answered, or why it could not: {output}"
+    );
     assert!(output.contains("decides nothing"), "{output}");
     assert!(
         !output.contains("systemctl show"),

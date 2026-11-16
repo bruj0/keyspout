@@ -620,27 +620,51 @@ fn a_proof_that_does_not_verify_is_unknown_and_never_scheduled() {
     );
 }
 
-/// FR-005 and FR-006: the next elapse and the last trigger are `unknown` with a
-/// reason when this build does not interrogate the host.
+/// FR-005 and FR-006: the unit state is measured where the host can answer, and
+/// the two timestamps are `unknown` with a reason.
+///
+/// # This test used to assert `unknown` for all three
+///
+/// It pinned the behaviour that this build never interrogated the host. That
+/// changed for `launchd`: `launchctl print` reports the job's state and the build
+/// now reads it, so a status line that said `unknown` while the answer was one
+/// command away told an operator their schedule was unverifiable when it was not.
+///
+/// What is still true, and is what this test now guards: `launchctl` reports
+/// neither a next elapse nor a last trigger in a form this build can verify, so
+/// both stay `unknown` — with a reason that names the *manager*, not the build.
+/// The distinction matters: "this build never asks" and "the manager did not say"
+/// are different facts, and only the second is now the case.
 #[test]
-fn the_next_elapse_and_last_trigger_are_unknown_with_a_reason() {
+fn the_unit_state_is_measured_and_the_two_timestamps_say_why_they_are_not() {
     let home = tempfile::tempdir().unwrap();
     let owner = provision(home.path());
     arm(home.path(), &scope(owner), "300s", false);
 
     let (code, output) = ksp_in(home.path(), &["status"], None);
     assert_eq!(code, exit::SUCCESS, "status failed: {output}");
+
+    // The unit line is either a measured state or an `unknown` that says why the
+    // manager could not be asked. It must not claim the build never asks.
     assert!(
-        output.contains("unit:        unknown (this build records the query"),
-        "the unit state says it was not interrogated: {output}"
+        output.contains("unit:        reported")
+            || output.contains("unit:        unknown (the manager"),
+        "the unit state is measured, or says why the manager could not answer: {output}"
     );
     assert!(
-        output.contains("next elapse: unknown (this build records the query"),
-        "and so does the elapse: {output}"
+        !output.contains("this build records the query"),
+        "the build measures the schedule now, so it must not say it does not: {output}"
+    );
+
+    // The two timestamps stay unknown, and the reason names the manager.
+    assert!(
+        output.contains("next elapse: unknown (the manager reported no next elapse)")
+            || output.contains("next elapse: unknown (the manager"),
+        "the elapse is unknown because the manager did not report one: {output}"
     );
     assert!(
-        output.contains("last trigger: unknown (this build records the query"),
-        "and the trigger: {output}"
+        output.contains("last trigger: unknown (the manager"),
+        "the trigger is unknown because the manager did not report one: {output}"
     );
     assert!(
         output.contains("trigger note: a last trigger is when the manager started the job"),
