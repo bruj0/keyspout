@@ -107,9 +107,11 @@ which works offline.
 
 Every platform tarball — `ksp-<target>.tar.xz` — carries a build-provenance
 attestation recording which repository, which workflow and which commit produced
-the bytes. The attestation covers the tarball and nothing else: the checksum
-lists, the installer script, the Homebrew formula and `dist-manifest.json` are
-not attested, so verify the tarball and then check the others against it.
+the bytes. The attestation covers each file whose name carries a target: the
+tarball, its `.sha256`, and from the release after v1.0.2 its CycloneDX SBOM.
+`sha256.sum`, `source.tar.gz`, `source.tar.gz.sha256`, `ksp-installer.sh`,
+`ksp.rb` and `dist-manifest.json` are not attested, so verify them against a
+tarball that is.
 
 ```bash
 gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \

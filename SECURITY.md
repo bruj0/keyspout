@@ -14,9 +14,13 @@ check rather than take on trust.
 
 ```bash
 # --- 1. Download an artifact and its checksum list -------------------------
-gh release download v0.1.0 --repo bruj0/keyspout \
+# The tag is resolved rather than written down. A pinned tag in a recipe goes
+# stale silently: it keeps succeeding against an old release while reading as
+# the way to verify the current one.
+TAG=$(gh release view --repo bruj0/keyspout --json tagName -q .tagName)
+gh release download "$TAG" --repo bruj0/keyspout \
   --pattern 'ksp-x86_64-unknown-linux-musl.tar.xz'
-gh release download v0.1.0 --repo bruj0/keyspout --pattern 'sha256.sum'
+gh release download "$TAG" --repo bruj0/keyspout --pattern 'sha256.sum'
 
 # --- 2. Prove which commit and workflow built it --------------------------
 gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
@@ -50,7 +54,8 @@ gh attestation verify ./ksp-x86_64-unknown-linux-musl.tar.xz \
   --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
 
 # --- 7. Read what is inside the binary --------------------------------
-gh release download v0.1.0 --repo bruj0/keyspout --pattern '*sbom.cdx.json'
+# Empty for a release published before SBOMs existed; see 1.2.
+gh release download "$TAG" --repo bruj0/keyspout --pattern '*sbom.cdx.json'
 jq '.components[] | {name, version}' ksp-*-sbom.cdx.json | head
 
 # --- 8. Check the transparency log yourself ---------------------------
@@ -64,19 +69,28 @@ from a specific commit, and the bytes you hold are the bytes that build produced
 **What it does not prove:** that the commit is safe. A backdoor merged to `main`
 produces a valid attestation. §3 is the section to read.
 
-Steps 1–3 are explained in §1, step 4–6 in §1.1, step 7 in §4, and step 8 in
+Steps 1–3 are explained in §1, step 4–6 in §1.1, step 7 in §1.2, and step 8 in
 §1.1. The rest of this document is the reasoning behind them.
 
 ---
 
 ## 1. Verify a download
 
-Every platform tarball carries a GitHub build-provenance attestation. It records
-which repository, which workflow and which commit produced the bytes.
+Every file whose name carries a target triple carries a GitHub
+build-provenance attestation: the tarball, its `.sha256`, and from the release
+after v1.0.2 its SBOM. It records which repository, which workflow and which
+commit produced the bytes.
+
+`sha256.sum`, `source.tar.gz`, `source.tar.gz.sha256`, `ksp-installer.sh`,
+`ksp.rb` and `dist-manifest.json` are not attested. That is the shape of the
+pipeline rather than an oversight: the attestation globs
+`target/distrib/*<target>*`, and none of those names contains a target.
 
 ```bash
-# 1. Download the artifact.
-gh release download v0.1.0 --repo bruj0/keyspout \
+# 1. Download the artifact. The tag is resolved, never pinned: a pinned tag
+#    keeps verifying an old release while reading as the current recipe.
+TAG=$(gh release view --repo bruj0/keyspout --json tagName -q .tagName)
+gh release download "$TAG" --repo bruj0/keyspout \
   --pattern 'ksp-x86_64-unknown-linux-musl.tar.xz'
 
 # 2. Prove it was built by this repository's release workflow.
@@ -85,11 +99,11 @@ gh attestation verify ksp-x86_64-unknown-linux-musl.tar.xz \
   --signer-workflow bruj0/keyspout/.github/workflows/attest.yml
 
 # 3. Check the checksum against the published list.
-gh release download v0.1.0 --repo bruj0/keyspout --pattern 'sha256.sum'
+gh release download "$TAG" --repo bruj0/keyspout --pattern 'sha256.sum'
 sha256sum --check sha256.sum --ignore-missing
 
-# 4. Read what is inside it.
-gh release download v0.1.0 --repo bruj0/keyspout --pattern '*sbom.cdx.json'
+# 4. Read what is inside it. See 1.2.
+gh release download "$TAG" --repo bruj0/keyspout --pattern '*sbom.cdx.json'
 jq '.components[] | {name, version}' ksp-*-sbom.cdx.json | head
 ```
 
@@ -97,6 +111,10 @@ Step 2 is the one that answers the question. `gh attestation verify` exits 0 onl
 if the artifact's digest is named in an attestation signed by that workflow, in
 that repository, through GitHub's OIDC identity. A binary built anywhere else
 fails it.
+
+Step 3 prints `sha256sum: WARNING: 1 line is improperly formatted` on a good
+release: `sha256.sum` ends with a blank line. The verdict is the
+`<file>: OK` line at the end, and the command exits 0.
 
 The `.deb` and `.rpm` are attested too. Use the same command on them.
 
@@ -164,6 +182,27 @@ gh attestation verify ./ksp-x86_64-unknown-linux-musl.tar.xz \
 be found without trusting this repository at all. Search
 `https://search.sigstore.dev` for the artifact's digest. A signature that is not
 in the log is not a signature this project produced.
+
+### 1.2 What is inside the binary
+
+Each platform tarball ships with a CycloneDX SBOM, `ksp-<target>-sbom.cdx.json`,
+generated from the same `Cargo.lock` the binary was built against. It lists the
+crates and versions that were actually linked, not the ranges in `Cargo.toml`.
+
+```bash
+TAG=$(gh release view --repo bruj0/keyspout --json tagName -q .tagName)
+gh release download "$TAG" --repo bruj0/keyspout --pattern '*sbom.cdx.json'
+jq '.components[] | {name, version}' ksp-*-sbom.cdx.json | head
+```
+
+There is one SBOM per target rather than one for the workspace, because a musl
+build and a gnu build link different crates and one file claiming otherwise would
+misdescribe every binary beside it.
+
+**SBOMs ship with every release after v1.0.2.** That release predates them, so
+the download above matches nothing there and `gh` exits non-zero. On any later
+release it matches one file per target, and each one is attested by the same
+command as the tarball — the glob covers both files.
 
 ### If you do not have `gh`
 
@@ -382,7 +421,9 @@ the same commit in the same container image produce the same bytes.
 
 ```bash
 git clone https://github.com/bruj0/keyspout && cd keyspout
-git checkout v0.1.0
+git checkout "$(gh release view --repo bruj0/keyspout --json tagName -q .tagName)"
+# or, without gh:
+#   git checkout "$(git describe --tags "$(git rev-list --tags --max-count=1)")"
 
 export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 export RUSTFLAGS="--remap-path-prefix=$PWD=/build/keyspout \
