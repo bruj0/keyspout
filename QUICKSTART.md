@@ -56,7 +56,7 @@ ksp 0.1.0
 bruj0
 ```
 
-If `ksp` is not found, see [Build and install](#build-and-install) at the end.
+If `ksp` is not found, see [Build and install](#install) at the end.
 
 Set the deployment home and a helper for running commands as the admin
 account. The deployment lives in the **admin** account's home, because that is
@@ -991,7 +991,7 @@ colima ssh -- bash -lc '
 
 macOS defaults to `zsh`; most Linux distributions default to `bash`. Every block
 on this page parses and runs under both. The one place it matters is the `PATH`
-line in [Build and install](#build-and-install), which belongs in `~/.zshrc` on a
+line in [Build and install](#install), which belongs in `~/.zshrc` on a
 Mac and `~/.bashrc` on Linux.
 
 ### 5. Creating the `keyspout` account

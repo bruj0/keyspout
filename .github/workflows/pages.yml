@@ -1,0 +1,119 @@
+# Build and publish the documentation site on GitHub Pages.
+#
+# What it does, in order:
+#
+#   check     the links and the Mermaid diagrams, before anything is built
+#   prepare   assemble the reference section from this tree
+#   build     render the site with MkDocs Material
+#   deploy    publish it to GitHub Pages
+#
+# The reference section - the design specification, the quickstart, the
+# security model, the known defects and the eight crate context files - is
+# **generated** from this repository by `scripts/site/prepare-docs.py`. It is
+# not tracked here, so a change to a published document reaches the site
+# through this script rather than through a copy that can drift.
+#
+# The site's own pages - the project overview, the architecture overview, the
+# workflow overview and the eight deep dives - are tracked, under `site/docs/`.
+#
+# This workflow lives in the public repository on purpose. A workflow
+# committed upstream would run against the upstream repository, which is
+# private, and a Pages deployment from there would publish a site nobody can
+# read. `scripts/public/sync.py` fails the sync if a workflow appears
+# upstream.
+
+name: Pages
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# One deployment at a time. A second push while the first is deploying would
+# otherwise race, and the older one could win.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install the site tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "mkdocs-material==9.6.14" "markdown==3.9"
+
+      - name: Prepare the reference section
+        run: python3 scripts/site/prepare-docs.py --source .
+
+      - name: Check the internal links
+        run: python3 scripts/site/check-links.py --root site/docs
+
+      - name: Check the Mermaid diagrams
+        # Every diagram is rendered through the real Mermaid parser, so a
+        # diagram that does not parse fails the build instead of shipping as
+        # an empty box.
+        #
+        # `mmdc` needs a headless Chromium. The runner has one, and the
+        # version is pinned so a renderer change cannot turn a passing build
+        # red without a change in the tree.
+        #
+        # `site/puppeteer.json` disables the Chromium sandbox, because a CI
+        # runner executes as root and Chromium refuses to start its sandbox
+        # there. Without it the browser fails to launch and every diagram
+        # reports as a failure that is not a diagram's fault.
+        run: |
+          set -euo pipefail
+          npm install --global "@mermaid-js/mermaid-cli@12.0.0"
+          python3 scripts/site/check-mermaid.py site/docs \
+            --puppeteer-config site/puppeteer.json
+
+      - name: Build the site
+        # `--strict` turns a warning into a failure. A warning here is a
+        # broken link or a file that is not in the nav, and both are worth
+        # failing on rather than shipping.
+        run: mkdocs build --strict --site-dir site/site -f site/mkdocs.yml
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    # The `github-pages` environment allows only `main`, so a pull request's
+    # run is rejected by the environment's branch policy. The deployment is
+    # therefore conditional rather than attempted-and-refused: a red job on
+    # every pull request would train contributors to ignore it.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

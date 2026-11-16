@@ -29,3 +29,10 @@ tmp/
 __pycache__/
 *.pyc
 target-root/
+
+# The documentation site. The reference section and the static assets are
+# generated at build time by `scripts/site/prepare-docs.py`, so they are not
+# tracked; the site's own source pages are.
+site/site/
+site/docs/reference/
+site/docs/assets/

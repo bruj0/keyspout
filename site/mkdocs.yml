@@ -1,0 +1,128 @@
+site_name: Keyspout
+site_description: >-
+  A serverless, contract-based secret manager for agents. Architecture,
+  workflows and the reference documents of the Keyspout project.
+site_url: https://bruj0.github.io/keyspout/
+repo_url: https://github.com/bruj0/keyspout
+repo_name: bruj0/keyspout
+edit_uri: blob/main/site/docs/
+
+# Directory URLs put a page at `reference/overview/index.html`, so a relative
+# link written in `reference/overview.md` resolves differently in the browser
+# than it does in the source tree. That mismatch breaks every link to a
+# static asset, and MkDocs rewrites only the links between documents.
+#
+# With flat URLs a page sits at `reference/overview.html`, and a relative
+# link means the same thing in the source tree, in the browser and in the
+# link checker. One rule, three places, no exceptions.
+use_directory_urls: false
+copyright: >-
+  Keyspout is MIT licensed. This documentation is generated from the project
+  tree and published by GitHub Pages.
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - toc.follow
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to the dark theme
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to the light theme
+  icon:
+    logo: material/shield-lock-outline
+
+extra_css:
+  - media/extra.css
+
+# The accordion keeps the sidebar readable: opening one section collapses the
+# others. The script is registered here.
+extra_javascript:
+  - media/nav-accordion.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Link to this section
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      # Material renders a Mermaid diagram from a `<pre class="mermaid">`
+      # element, so the fence has to produce one. Without this custom fence
+      # the block is rendered as ordinary code and the diagram never draws.
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+# The nav is flat on purpose: the section labels are the top-level items and
+# `navigation.indexes` would give each section its own landing page. The
+# accordion script collapses the sections, so a flat nav stays readable
+# without `navigation.expand`, which would force every section open on load.
+nav:
+  - Home: index.md
+  - Architecture:
+      - architecture/overview.md
+      - workflows/overview.md
+  - Components:
+      - components/ksp-cli.md
+      - components/ksp-identity.md
+      - components/ksp-backend.md
+      - components/ksp-posture.md
+      - components/ksp-deletion.md
+      - components/ksp-record.md
+      - components/ksp-types.md
+      - components/ksp-key-lifecycle.md
+  - Reference:
+      - reference/overview.md
+      - reference/design-spec.md
+      - reference/QUICKSTART.md
+      - reference/SECURITY.md
+      - reference/known-defects.md
+      - reference/CONTEXT-MAP.md
+      - reference/DEVELOPMENT.md
+      - reference/supply-chain-level.md
+      - reference/supply-chain-vetting.md
+      - reference/skills-README.md
+      - reference/context-ksp.md
+      - reference/context-ksp-types.md
+      - reference/context-ksp-record.md
+      - reference/context-ksp-identity.md
+      - reference/context-ksp-backend.md
+      - reference/context-ksp-posture.md
+      - reference/context-ksp-deletion.md
+      - reference/context-ksp-key-lifecycle.md
+
+# The reference section is prepared from the public tree by
+# `scripts/site/prepare-docs.py` at build time, not committed as source in the
+# upstream tree. The files exist when the site is built.
+not_in_nav: |
+  reference/*.md
