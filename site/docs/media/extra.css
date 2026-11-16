@@ -31,7 +31,7 @@
    of the drawing and never intercepts a click meant for the diagram. It is
    right-aligned so it reads as a control attached to the diagram's edge
    rather than as a label for the paragraph above it. */
-.ksp-pz__open {
+.dgz__open {
   display: block;
   width: fit-content;
   margin: 0 0 0.4rem auto;
@@ -47,18 +47,18 @@
   transition: border-color 125ms, color 125ms;
 }
 
-.ksp-pz__open:hover {
+.dgz__open:hover {
   border-color: var(--md-accent-fg-color);
   color: var(--md-accent-fg-color);
 }
 
-.ksp-pz__open:focus-visible {
+.dgz__open:focus-visible {
   outline: 2px solid var(--md-accent-fg-color);
   outline-offset: 1px;
 }
 
 /* The overlay covers the viewport and holds the enlarged diagram. */
-.ksp-pz {
+.dgz {
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -68,7 +68,7 @@
 /* The stage is the pannable area. The diagram sits inside it and is
    moved by a CSS transform, so the stage is what the pointer interacts
    with. */
-.ksp-pz__stage {
+.dgz__stage {
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -79,7 +79,7 @@
     0 0 / 24px 24px;
 }
 
-.ksp-pz__content {
+.dgz__content {
   position: absolute;
   top: 0;
   left: 0;
@@ -87,14 +87,14 @@
   will-change: transform;
 }
 
-.ksp-pz__content svg {
+.dgz__content svg {
   max-width: none;
   height: auto;
   display: block;
 }
 
 /* The 3x3 control grid, in the bottom-right corner. */
-.ksp-pz__controls {
+.dgz__controls {
   position: absolute;
   right: 1rem;
   bottom: 1rem;
@@ -108,7 +108,7 @@
   box-shadow: 0 0.2rem 0.6rem rgba(0, 0, 0, 0.25);
 }
 
-.ksp-pz__cell {
+.dgz__cell {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -122,23 +122,23 @@
   transition: background 125ms, color 125ms;
 }
 
-.ksp-pz__cell:hover {
+.dgz__cell:hover {
   background: var(--md-accent-fg-color);
   color: var(--md-accent-fg-color-bg, #fff);
 }
 
-.ksp-pz__cell:focus-visible {
+.dgz__cell:focus-visible {
   outline: 2px solid var(--md-accent-fg-color);
   outline-offset: -2px;
 }
 
-.ksp-pz__cell--empty {
+.dgz__cell--empty {
   background: var(--md-default-bg-color);
   pointer-events: none;
 }
 
 /* The close button, in the top-right corner. */
-.ksp-pz__close {
+.dgz__close {
   position: absolute;
   top: 1rem;
   right: 1rem;
@@ -156,18 +156,18 @@
   cursor: pointer;
 }
 
-.ksp-pz__close:hover {
+.dgz__close:hover {
   border-color: var(--md-accent-fg-color);
   color: var(--md-accent-fg-color);
 }
 
-.ksp-pz__close:focus-visible {
+.dgz__close:focus-visible {
   outline: 2px solid var(--md-accent-fg-color);
   outline-offset: 1px;
 }
 
 /* The zoom level, in the top-left corner. */
-.ksp-pz__level {
+.dgz__level {
   position: absolute;
   top: 1rem;
   left: 1rem;
@@ -182,21 +182,21 @@
 }
 
 /* While the viewer is open, the page behind it must not scroll. */
-body.ksp-pz--open {
+body.dgz--open {
   overflow: hidden;
 }
 
 /* On a small screen the control grid would cover the diagram, so it
    shrinks and the diagram gets the room. */
 @media screen and (max-width: 40rem) {
-  .ksp-pz__controls {
+  .dgz__controls {
     grid-template-columns: repeat(3, 1.7rem);
     grid-template-rows: repeat(3, 1.7rem);
     right: 0.5rem;
     bottom: 0.5rem;
   }
 
-  .ksp-pz__cell {
+  .dgz__cell {
     font-size: 0.85rem;
   }
 }

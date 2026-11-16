@@ -205,16 +205,16 @@
     const label = diagramLabel(host);
 
     const overlay = document.createElement("div");
-    overlay.className = "ksp-pz";
+    overlay.className = "dgz";
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
     overlay.setAttribute("aria-label", label);
 
     const stage = document.createElement("div");
-    stage.className = "ksp-pz__stage";
+    stage.className = "dgz__stage";
 
     const content = document.createElement("div");
-    content.className = "ksp-pz__content";
+    content.className = "dgz__content";
     content.style.width = size.width + "px";
     content.style.height = size.height + "px";
     content.appendChild(clone);
@@ -226,7 +226,7 @@
     overlay.appendChild(buildLevel());
 
     document.body.appendChild(overlay);
-    document.body.classList.add("ksp-pz--open");
+    document.body.classList.add("dgz--open");
 
     // The overlay claims to be modal, so the page behind it must not take
     // the keyboard. `inert` is the honest way to say that: it removes the
@@ -295,7 +295,7 @@
       setTransform: applyTransform,
     });
 
-    const level = overlay.querySelector(".ksp-pz__level__value");
+    const level = overlay.querySelector(".dgz__level__value");
 
     content.addEventListener("panzoomchange", (event) => {
       if (level) {
@@ -366,7 +366,7 @@
     };
 
     overlay.addEventListener("click", (event) => {
-      const action = event.target.getAttribute("data-ksp-pz");
+      const action = event.target.getAttribute("data-dgz");
       if (!action) return;
       event.stopPropagation();
       const handler = actions[action];
@@ -489,14 +489,14 @@
         window.removeEventListener("resize", onResize);
         panzoom.destroy();
         overlay.remove();
-        document.body.classList.remove("ksp-pz--open");
+        document.body.classList.remove("dgz--open");
         for (const child of inerted) child.removeAttribute("inert");
       },
     };
 
     // The close button takes the keyboard, so that a reader who opened the
     // viewer with the keyboard can close it again without hunting.
-    const closeButton = overlay.querySelector(".ksp-pz__close");
+    const closeButton = overlay.querySelector(".dgz__close");
     if (closeButton) closeButton.focus();
   }
 
@@ -512,7 +512,7 @@
 
   function buildControls() {
     const grid = document.createElement("div");
-    grid.className = "ksp-pz__controls";
+    grid.className = "dgz__controls";
     grid.setAttribute("role", "group");
     grid.setAttribute("aria-label", "Move and zoom the diagram");
 
@@ -531,14 +531,14 @@
     for (const [action, glyph, title] of cells) {
       if (!action) {
         const spacer = document.createElement("span");
-        spacer.className = "ksp-pz__cell ksp-pz__cell--empty";
+        spacer.className = "dgz__cell dgz__cell--empty";
         grid.appendChild(spacer);
         continue;
       }
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "ksp-pz__cell";
-      button.setAttribute("data-ksp-pz", action);
+      button.className = "dgz__cell";
+      button.setAttribute("data-dgz", action);
       button.setAttribute("aria-label", title);
       button.setAttribute("title", title);
       button.textContent = glyph;
@@ -551,8 +551,8 @@
   function buildClose() {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "ksp-pz__close";
-    button.setAttribute("data-ksp-pz", "close");
+    button.className = "dgz__close";
+    button.setAttribute("data-dgz", "close");
     button.setAttribute("aria-label", "Close the diagram");
     button.setAttribute("title", "Close (Escape)");
     button.textContent = "×";
@@ -562,9 +562,9 @@
 
   function buildLevel() {
     const level = document.createElement("div");
-    level.className = "ksp-pz__level";
+    level.className = "dgz__level";
     const value = document.createElement("span");
-    value.className = "ksp-pz__level__value";
+    value.className = "dgz__level__value";
     value.textContent = "100%";
     level.appendChild(value);
     return level;
@@ -583,7 +583,7 @@
    * unless the diagram contains a link.
    */
   function decorate(host) {
-    if (host.dataset.kspPz === "done") return;
+    if (host.dataset.dgz === "done") return;
 
     const root = roots.get(host);
     if (!root) return;
@@ -594,11 +594,11 @@
     // every diagram on a page reached by instant navigation, because the
     // new page's elements exist before Material has drawn them.
     if (!root.querySelector("svg")) return;
-    host.dataset.kspPz = "done";
+    host.dataset.dgz = "done";
 
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "ksp-pz__open";
+    button.className = "dgz__open";
     button.setAttribute("aria-label", "Open this diagram in the viewer");
     button.setAttribute("title", "Open the diagram in a full-screen viewer");
     button.textContent = "Expand";
@@ -672,10 +672,10 @@
   // and the scan is restarted for the new page's diagrams.
   document.addEventListener("DOMContentSwitch", () => {
     close();
-    document.querySelectorAll("[data-ksp-pz]").forEach((element) => {
-      delete element.dataset.kspPz;
+    document.querySelectorAll("[data-dgz]").forEach((element) => {
+      delete element.dataset.dgz;
     });
-    document.querySelectorAll(".ksp-pz__open").forEach((button) => {
+    document.querySelectorAll(".dgz__open").forEach((button) => {
       button.remove();
     });
     scheduleScan();
