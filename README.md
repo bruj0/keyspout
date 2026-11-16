@@ -2,6 +2,8 @@
   <img src="assets/logo.svg" alt="Keyspout" width="320">
 </p>
 
+<p align="center"><strong>A secret manager for one operator or a team, with no server to run.</strong></p>
+
 <p align="center">
   <a href="https://github.com/bruj0/keyspout/releases/latest"><img src="https://img.shields.io/github/v/release/bruj0/keyspout?style=flat-square" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/bruj0/keyspout?style=flat-square" alt="License: MIT"></a>
@@ -22,8 +24,6 @@
 </p>
 
 # Keyspout
-
-**A secret manager for one operator or a team, with no server to run.**
 
 Secrets live in a sealed store you own. Your agents get a short-lived, sealed
 copy instead of a long-lived credential. Nothing phones home, and there is no
