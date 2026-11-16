@@ -113,10 +113,9 @@ sequenceDiagram
   participant Ksp as ksp binary
   participant Admit as Admission
   participant Store as Sealed store
-  participant Anchor as Pinned anchor
 
   Op->>Ksp: ksp secret share my-api-key --agent deploy-bot --out lease.ksp
-  Ksp->>Anchor: read the pinned admin public key
+  Ksp->>Ksp: read the pinned admin public key
   Ksp->>Admit: classify the backend with the fresh sweep proof
   Admit-->>Ksp: Scheduled, interval 15m
   Ksp->>Ksp: check the agent binding and the policy grant
@@ -157,19 +156,16 @@ sequenceDiagram
   participant Run as ksp run
   participant Deliver as ksp __deliver
   participant Child as The child process
-  participant Store as Sealed store
 
   Agent->>Run: ksp run --token lease.ksp --consume -- ./deploy.sh
-  Run->>Store: read the leased version
+  Run->>Run: read the leased version from the store
   Run->>Run: verify the issuer against the pinned user key
   Run->>Run: confine the process tree
   Run->>Deliver: spawn the delivery process with the value on stdin
   Deliver->>Child: launch with the value in one named env var
   Child-->>Deliver: exit
   Deliver-->>Run: exit
-  Run->>Store: delete the version
-  Run->>Store: journal the acknowledgement
-  Run->>Store: append the audit record
+  Run->>Run: delete the version, journal it, append the audit record
   Run-->>Agent: the outcome
 ```
 
@@ -273,7 +269,7 @@ environment variable. The dashed edges are the two boundaries where the
 plaintext crosses into a process that must not be trusted.
 
 ```mermaid
-flowchart LR
+flowchart TD
   Input["Value on stdin"] --> Seal["Seal the content blob<br/>name inside the ciphertext"]
   Seal --> Env["Seal the content key<br/>HPKE to the recipient"]
   Env --> Store[("Store the version")]

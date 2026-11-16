@@ -74,13 +74,11 @@ flowchart TD
   end
 
   Client -->|"one invocation"| BIN
-  BIN -->|"seals and writes"| BLOBS
-  BIN -->|"arms before publishing"| ARMS
-  BIN -->|"appends signed records"| AUDIT
-  BIN -->|"writes a proof after a sweep"| PROOFS
-  BIN -->|"reads"| ADMINKEY
-  BIN -->|"reads"| USERKEY
-  BIN -->|"reads"| AGENTKEY
+  BIN -->|"seals and writes the blobs,<br/>arms before publishing,<br/>appends the signed records,<br/>writes a proof after a sweep"| Storage
+  BIN -->|"reads the keys"| Keys
+  Storage ~~~ Keys
+  Host ~~~ Storage
+
 ```
 
 Three properties of this diagram are load-bearing:
@@ -100,25 +98,44 @@ Eight crates. The CLI is the only place they are wired together.
 
 ```mermaid
 graph TB
-  subgraph CLI["ksp - CLI and application layer"]
+  subgraph CLI["ksp - the CLI and application layer"]
     COMMANDS["commands.rs<br/>the clap tree"]
     APP["app.rs<br/>dispatch and per-group handlers"]
     OUTPUT["output.rs<br/>Report enum, text and JSON rendering"]
     EXIT["exit.rs<br/>the exit-code contract"]
     RUN["run.rs and run_gate.rs<br/>verify, confine, launch"]
     CONSUME["consume.rs<br/>deliver, delete, journal, report"]
+    COMMANDS --> APP
+    APP --> OUTPUT
+    APP --> EXIT
+    APP --> RUN
+    RUN --> CONSUME
   end
 
-  subgraph Identity["ksp-identity - who is speaking"]
+  subgraph IDENTITY["ksp-identity - who is speaking"]
     ENROL["enrolment.rs<br/>fingerprint-bound enrolment, rotation"]
     POP["pop.rs<br/>proof of possession, argv hash, time buckets"]
     DELIV["delivery.rs<br/>sealed delivery artifact"]
     POLICY["policy.rs<br/>policy, trust anchors, verification"]
     MINT["mint.rs<br/>arm, then publish"]
     ISSUANCE["issuance.rs<br/>the issuance ledger"]
+    ENROL --> POP
+    ENROL --> DELIV
+    ENROL --> POLICY
+    ENROL --> MINT
+    MINT --> ISSUANCE
   end
 
-  subgraph Storage["ksp-backend - the store"]
+  subgraph RECORD["ksp-record - record cryptography"]
+    ENV["envelope.rs<br/>the HPKE envelope"]
+    KEM["kem.rs<br/>the KEM validation gate"]
+    VERSION["version.rs<br/>immutable versions, conditional head"]
+    PATH["path.rs<br/>the one record path definition"]
+    ENV --> KEM
+    VERSION --> PATH
+  end
+
+  subgraph STORAGE["ksp-backend - the store"]
     FILE["file.rs<br/>the local filesystem store"]
     VALKEY["valkey.rs<br/>the Redis-protocol store"]
     S3["s3.rs<br/>the object store"]
@@ -126,63 +143,57 @@ graph TB
     ARMING["arming.rs<br/>durable, create-only arm records"]
     PROOF["proof.rs<br/>the signed sweep proof gate"]
     SWEEP["sweep.rs<br/>the foreground sweep"]
+    ADMISSION --> PROOF
+    PROOF --> SWEEP
+    ARMING --> SWEEP
   end
 
-  subgraph Evidence["ksp-deletion - what is known"]
+  subgraph EVIDENCE["ksp-deletion - what is known"]
     INTENT["intent.rs<br/>the signed, key-free intent"]
     REPORT["report.rs<br/>the actor's signed report"]
     OBSERVE["observation.rs<br/>the absence observation"]
     JOURNAL["journal.rs<br/>the acknowledgement journal"]
     AUDITCHAIN["audit.rs<br/>the per-writer chain"]
+    JOURNAL --> AUDITCHAIN
   end
 
-  subgraph Host["ksp-posture - what the host can do"]
+  subgraph HOST["ksp-posture - what the host can do"]
     CONF["confinement.rs<br/>Landlock path confinement"]
     BARRIER["barrier.rs<br/>memfd_secret, mlock"]
     DESC["descriptors.rs<br/>descriptor sanitation"]
     RESOLVE["resolver.rs<br/>which adapter runs"]
+    CONF --> RESOLVE
+    BARRIER --> RESOLVE
+    DESC --> CONF
   end
 
-  subgraph Record["ksp-record - record cryptography"]
-    ENV["envelope.rs<br/>the HPKE envelope"]
-    KEM["kem.rs<br/>the KEM validation gate"]
-    VERSION["version.rs<br/>immutable versions, conditional head"]
-    PATH["path.rs<br/>the one record path definition"]
-  end
+  CLI ~~~ IDENTITY
+  IDENTITY ~~~ RECORD
+  RECORD ~~~ STORAGE
+  STORAGE ~~~ EVIDENCE
+  EVIDENCE ~~~ HOST
 
-  COMMANDS --> APP
-  APP --> OUTPUT
-  APP --> EXIT
-  APP --> RUN
-  RUN --> CONSUME
-  APP --> IDENTITY
-  APP --> STORAGE
-  APP --> HOST
-  MINT --> ARMING
-  MINT --> ADMISSION
-  ADMISSION --> PROOF
-  PROOF --> SWEEP
-  SWEEP --> JOURNAL
-  SWEEP --> REPORT
-  DELIV --> ENV
-  ENV --> KEM
-  VERSION --> PATH
-  CONSUME --> INTENT
-  CONSUME --> AUDITCHAIN
-  RUN --> CONF
-  RUN --> DESC
-  CONF --> RESOLVE
-  BARRIER --> RESOLVE
 ```
 
-Note the direction of the two interesting edges:
+The diagram stacks the crates in dependency order, and the chain edges are
+the dependency edges. The edges *within* a crate are the ones that matter
+inside it.
 
-- `ksp-identity` depends on `ksp-backend`, because the **mint path** needs the
+Three cross-crate calls are worth naming, because the diagram's chain cannot
+show them without becoming unreadably wide:
+
+- **`ksp-identity` calls `ksp-record`**, to seal a delivery. The delivery
+  seal uses `ksp-record`'s HPKE adapter, so the low-order-point rejection is
+  one implementation and not a second copy.
+- **`ksp-identity` calls `ksp-backend`**, because the **mint path** needs the
   admission decision and the arming store. The dependency does not run the
   other way.
-- `ksp-backend` depends on `ksp-deletion`, because the **sweep** must journal
+- **`ksp-backend` calls `ksp-deletion`**, because the **sweep** must journal
   its acknowledgement and write its report. Deletion does not depend on the
   backend.
+
+A diagram that draws every edge is not a diagram that can be read; these
+three are the ones a reader would otherwise have to read the source for.
 
 ## Architectural Patterns
 

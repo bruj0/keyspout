@@ -67,6 +67,7 @@ flowchart TD
 
   BLOB --> RECORD["the stored record"]
   ENV --> RECORD
+  Plain ~~~ Bound
 ```
 
 Two properties follow from this shape:
@@ -130,6 +131,7 @@ flowchart TD
     D3 -->|"yes"| D4["typed error<br/>NO PLAINTEXT PRODUCED"]
     D3 -->|"no"| D5["proceed"]
   end
+  Encapsulate ~~~ Decapsulate
 ```
 
 The probe uses a **fixed non-zero** secret key. The check is on the *shared

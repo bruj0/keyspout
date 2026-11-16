@@ -33,6 +33,31 @@ def blocks(text: str) -> list[str]:
     return [match.strip("\n") for match in BLOCK.findall(text)]
 
 
+def diagram_width(svg: Path) -> int:
+    """The intrinsic width of a diagram, in CSS pixels.
+
+    Mermaid writes the root `<svg>` as `width="100%"` with the diagram's
+    natural width in the `viewBox` and repeated in `style` as `max-width`.
+    The `viewBox` is the authority: it is the coordinate system the drawing
+    was laid out in, so it is the width the diagram *wants* regardless of
+    the container it ends up in.
+
+    Reading `max-width` instead would report the same number for a diagram
+    that has been squeezed into a narrow column, which is exactly the case
+    where the intrinsic width is what a reader needs to know.
+    """
+    import re
+
+    text = svg.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r'<svg[^>]*\bviewBox="[^"]*?([0-9.]+)\s+([0-9.]+)"', text)
+    if match:
+        return round(float(match.group(1)))
+    match = re.search(r"max-width:\s*([0-9.]+)px", text)
+    if match:
+        return round(float(match.group(1)))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", help="A markdown file or a directory of them.")
@@ -98,9 +123,15 @@ def main(argv: list[str]) -> int:
 
                 ok += 1
                 size = target.stat().st_size // 1024
-                print(f"OK  {path}:{number} ({size} KB)")
+                width = diagram_width(target)
+                print(f"OK  {path}:{number} ({size} KB, {width}px wide)")
                 if args.keep_svgs:
-                    name = f"{path.stem}-block-{number}.svg"
+                    # The name is built from the path *relative to the site
+                    # root*, so two files with the same stem - two
+                    # `overview.md` - do not overwrite each other.
+                    relative = path.relative_to(path.parents[len(path.parts) - 1])
+                    stem = "_".join(relative.with_suffix("").parts)
+                    name = f"{stem}-block-{number}.svg"
                     (args.keep_svgs / name).write_bytes(target.read_bytes())
 
     print(f"\nchecked {total} mermaid block(s): {ok} OK, {failed} FAIL")

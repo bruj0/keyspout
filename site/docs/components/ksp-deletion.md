@@ -59,6 +59,9 @@ graph TB
   VERIFY --> REPORT
   REPORT --> SIGN
   AUDIT --> SIGN
+  Evidence ~~~ Durable
+  Durable ~~~ Verify
+  Verify ~~~ Use
 ```
 
 ## The Three Facts

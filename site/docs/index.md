@@ -176,6 +176,9 @@ graph TB
   REC --> TYPES
   DEL --> TYPES
   POST --> TYPES
+  Top ~~~ Domain
+  Domain ~~~ Storage
+  Storage ~~~ Base
 ```
 
 The `ksp-deletion` to `ksp-identity` edge is **dev-only**, on purpose: the

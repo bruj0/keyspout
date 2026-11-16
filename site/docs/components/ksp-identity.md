@@ -68,6 +68,9 @@ graph TB
   DELIV --> HDR
   DELIV --> SIG
   POP --> RUN
+  Enrol ~~~ Auth
+  Auth ~~~ Use
+  Use ~~~ Mint
 ```
 
 ## The Fingerprint Binding
@@ -90,7 +93,7 @@ flowchart LR
   SHA["SHA-256"]
   OUT["the 32-byte fingerprint"]
 
-  Subject --> PRE
+  Subject ~~~ PRE
   DOM --> PRE
   PRE --> SHA
   SHA --> OUT

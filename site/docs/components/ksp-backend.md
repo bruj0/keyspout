@@ -54,14 +54,17 @@ graph TB
     STATUS["status.rs<br/>the disclosure surface"]
   end
 
-  FILE --> Contract
-  VALKEY --> Contract
-  S3 --> Contract
+  FILE ~~~ Contract
+  VALKEY ~~~ Contract
+  S3 ~~~ Contract
   ADMIT --> PROOF
   PROOF --> SWEEP
   SWEEP --> ARMSTORE
   ARMSTORE --> USES
   SWEEPER -.->|"configuration, not evidence"| ADMIT
+  Contract ~~~ Backends
+  Backends ~~~ Decision
+  Decision ~~~ Configuration
 ```
 
 The last edge is dashed on purpose. The sweeper arming is what the operator
@@ -70,40 +73,27 @@ lease.
 
 ## The Backend Contract
 
-```mermaid
-classDiagram
-  class BlobStore {
-    <<trait>>
-    +put(key, bytes) Result
-    +get(key) Result~Option~
-    +delete(key) Result
-  }
+| Trait | Method | What it does |
+|---|---|---|
+| `BlobStore` | `put(key, bytes) -> Result` | Write a blob |
+| | `get(key) -> Result<Option>` | Read a blob |
+| | `delete(key) -> Result` | Remove a blob |
+| `ArmingStore` | `arm_once(intent) -> Result<ArmingAcknowledgement>` | Write the arm record, once |
+| | `read_arm(identity) -> Result<Option<ArmRecord>>` | Read one arm record |
+| | `list_arms() -> Result<Vec<ArmRecord>>` | Every arm record, for the sweep |
+| | `remaining_uses(identity) -> Result<Option<u32>>` | The use counter |
+| `SweepStore` | `remove_exact(metadata) -> Result<Option<String>>` | Remove exactly one version |
 
-  class ArmingStore {
-    <<trait>>
-    +arm_once(intent) Result~ArmingAcknowledgement~
-    +read_arm(identity) Result~Option~ArmRecord~~
-    +list_arms() Result~Vec~ArmRecord~~
-    +remaining_uses(identity) Result~Option~u32~~
-  }
+Each backend implements the first two, and `file` implements the third:
 
-  class SweepStore {
-    <<trait>>
-    +remove_exact(metadata) Result~Option~String~~
-  }
+| Backend | `BlobStore` | `ArmingStore` | `SweepStore` |
+|---|---|---|---|
+| `FileStore` | yes | yes | yes |
+| `ValkeyStore` | yes | yes | - |
+| `S3Store` | yes | yes | - |
 
-  class FileStore
-  class ValkeyStore
-  class S3Store
-
-  BlobStore <|.. FileStore
-  BlobStore <|.. ValkeyStore
-  BlobStore <|.. S3Store
-  ArmingStore <|.. FileStore
-  ArmingStore <|.. ValkeyStore
-  ArmingStore <|.. S3Store
-  SweepStore <|.. FileStore
-```
+A class diagram of six classes and six inheritance edges is a diagram that
+cannot be read in a column. The table says the same thing and can be.
 
 `remove_exact` takes the **bound metadata** rather than a key, because the
 sweep must remove exactly one version of one secret at one level. A

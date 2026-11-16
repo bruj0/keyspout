@@ -60,6 +60,8 @@ graph TB
   RESOLVER --> POSTURE
   CONF --> SYS
   MEMLOCK --> SYS
+  Model ~~~ Resolve
+  Resolve ~~~ Platform
 ```
 
 ## The Two Capability Vocabularies
@@ -106,6 +108,7 @@ graph TB
   REG --> MS
   REG --> SM
   REG --> ML
+  Path ~~~ Mem
 ```
 
 Three points about that table:

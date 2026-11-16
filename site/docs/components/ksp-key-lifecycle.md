@@ -42,8 +42,14 @@ graph TB
   end
 
   LIB --> FILE
-  LIB --> Ops
+  LIB ~~~ Ops
   FILE --> SAFE["safe_segment<br/>the name becomes a path"]
+
+  GEN ~~~ SAVE
+  SAVE ~~~ LOAD
+  LOAD ~~~ ROT
+  ROT ~~~ SAVEADM
+  SAVEADM ~~~ LOADADM
 ```
 
 ## What This Crate Is Not
