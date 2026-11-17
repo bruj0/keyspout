@@ -108,6 +108,7 @@ Eight crates. The CLI is the only place they are wired together.
 ```mermaid
 graph TB
   subgraph CLI["ksp - the CLI and application layer"]
+      direction TB
     COMMANDS["commands.rs<br/>the clap tree"]
     APP["app.rs<br/>dispatch and per-group handlers"]
     OUTPUT["output.rs<br/>Report enum, text and JSON rendering"]
@@ -135,6 +136,7 @@ graph TB
   end
 
   subgraph IDENTITY["ksp-identity - who is speaking"]
+      direction TB
     ENROL["enrolment.rs<br/>fingerprint-bound enrolment, rotation"]
     POP["pop.rs<br/>proof of possession, argv hash, time buckets"]
     DELIV["delivery.rs<br/>sealed delivery artifact"]
@@ -151,6 +153,7 @@ graph TB
   end
 
   subgraph RECORD["ksp-record - record cryptography"]
+      direction TB
     ENV["envelope.rs<br/>the HPKE envelope"]
     KEM["kem.rs<br/>the KEM validation gate"]
     VERSION["version.rs<br/>immutable versions, conditional head"]
@@ -160,6 +163,7 @@ graph TB
   end
 
   subgraph STORAGE["ksp-backend - the store"]
+      direction TB
     FILE["file.rs<br/>the local filesystem store"]
     VALKEY["valkey.rs<br/>the Redis-protocol store"]
     S3["s3.rs<br/>the object store"]
@@ -173,6 +177,7 @@ graph TB
   end
 
   subgraph EVIDENCE["ksp-deletion - what is known"]
+      direction TB
     INTENT["intent.rs<br/>the signed, key-free intent"]
     REPORT["report.rs<br/>the actor's signed report"]
     OBSERVE["observation.rs<br/>the absence observation"]
@@ -182,6 +187,7 @@ graph TB
   end
 
   subgraph HOST["ksp-posture - what the host can do"]
+      direction TB
     CONF["confinement.rs<br/>Landlock path confinement"]
     BARRIER["barrier.rs<br/>memfd_secret, mlock"]
     DESC["descriptors.rs<br/>descriptor sanitation"]
