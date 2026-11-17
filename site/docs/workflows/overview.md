@@ -1,6 +1,6 @@
 ---
 title: Workflow Overview
-description: The six core workflows of Keyspout, step by step, with the sequence diagrams.
+description: The seven core workflows of Keyspout, step by step, with the sequence diagrams.
 ---
 
 # Workflow Overview
@@ -56,8 +56,16 @@ sequenceDiagram
    that binds her identity, both public keys and both key IDs.
 4. **`ksp agent enroll`** generates the agent's two keys and writes its
    enrolment record. The private halves never leave the owner-only file.
-5. **`ksp admin policy`** signs the grants. The policy is read by every
+5. **`ksp admin policy`** signs the grants. A write **merges**: the grants it
+   names are added and the others are kept. `--replace` is the whole-set write
+   that withdraws everything it does not name. The signed policy is read by every
    principal and replaceable only with the admin key.
+
+   Two grant surfaces exist, and they answer different questions. The grant set
+   above authorises a **leased copy** (`secret share --agent`). A **policy edge**
+   (`admin policy create`) authorises one publication and is what workflow 4
+   delivers through - one signed artifact per grant, so a read-back can report on
+   that grant alone.
 
 The last step of the policy is the important one: the operator reads the
 agent's fingerprint aloud, or sends it over another channel, and the agent
@@ -145,7 +153,71 @@ sequenceDiagram
 6. **The issuance ledger is appended.** One row per minted lease, by
    `publish_recorded`, so `token list` and `token revoke` have a subject.
 
-### Workflow 4: Consume a lease
+### Workflow 4: Publish a grant and deliver without a copy
+
+The second delivery shape, and the one that keeps the **admin's** secret out of
+the user's reach. Nothing is copied: the admin publishes one sealed entry, signs
+a grant that names it, and the token the user exports carries a reference instead
+of a key.
+
+```mermaid
+sequenceDiagram
+  participant Admin as Admin principal
+  participant Ksp as ksp binary
+  participant Store as Sealed store
+  participant User as User principal
+  participant Agent as Agent process
+
+  Admin->>Ksp: ksp admin seal-vault
+  Ksp->>Store: admin-vault.cbor, 0600
+  Admin->>Ksp: ksp admin put published --name published --own
+  Ksp->>Store: the admin-level record, sealed to the admin vault
+  Admin->>Ksp: ksp admin policy create --user U --secret published --agent A
+  Ksp->>Store: append the decision to policy-events.jsonl
+  Ksp->>Store: write the signed edge at the admin principal
+  Ksp->>Store: seal one publication entry to the agent's recipient key
+  Ksp->>Store: write the token beside the edge
+  Ksp-->>Admin: the grant, and where the token is
+  User->>Ksp: ksp secret share published --policy ID --out pub.token
+  Ksp-->>User: the token, copied out: no password, no key
+  User->>Agent: hand over pub.token
+  Agent->>Ksp: ksp run --token pub.token --env VAR -- child
+  Ksp->>Store: verify the grant, open the entry with the agent's key
+  Ksp->>Agent: one environment variable, never argv
+```
+
+**Steps:**
+
+1. **`admin seal-vault`** creates the admin's own sealed vault. Every
+   publication entry's content key is sealed to it, so it is created once and
+   cannot be replaced: re-sealing would leave every existing entry naming a key
+   nobody holds.
+2. **`admin put --own`** writes the record the publication is made from, sealed
+   to the admin's *public* recipient key - no password, because writing needs no
+   private half. Without `--own` the same verb is the transfer to the user, which
+   is a different record at a different principal.
+3. **`admin policy create`** signs one edge. The order is the control: the
+   decision is appended to `policy-events.jsonl`, then the edge is written, then
+   the publication entry is sealed to the agent, then the token is minted last.
+   A failure before the publication leaves an edge that reads `dangling`, not a
+   token that names nothing.
+4. **The grant is verified before anything is opened.** The anchor, the target,
+   the secret version and both ends of the validity window are checked against
+   the signed edge. A withdrawal removes the edge, so a withdrawn grant stops at
+   "no such grant" rather than decrypting first.
+5. **`secret share --policy`** copies the token out and reads no vault. The token
+   has no content key, so there is nothing for the user to unlock - and nothing
+   for her to hand on that would open the value.
+6. **`run` opens the publication** with the agent's own recipient key. The
+   delivery is recorded in *her* chain, because the agent acts for the principal
+   the grant names.
+
+Two refusals keep this delivery honest. `--consume` is refused: there is no
+agent-level copy to delete, and deleting nothing while reporting a deletion would
+be a false claim. And a grant whose publication is missing renders `dangling`
+with the missing path, because a grant that cannot deliver is not a healthy one.
+
+### Workflow 5: Consume a lease
 
 The workflow an agent runs. It has two processes, and that is not an
 accident.
@@ -192,7 +264,7 @@ fails. A copy taken before the delete does not. The exit code distinguishes
 the two cases: `9` means the delete failed and a retry may help, `10` means
 the child failed after a successful removal and a retry cannot help.
 
-### Workflow 5: Arm and run the sweep
+### Workflow 6: Arm and run the sweep
 
 ```mermaid
 sequenceDiagram
@@ -228,7 +300,7 @@ sequenceDiagram
    sweep writes a signed proof. A lease is admitted only against a fresh,
    verified, in-scope proof.
 
-### Workflow 6: Read the audit log
+### Workflow 7: Read the audit log
 
 Two commands, two different questions, over the same log.
 
@@ -282,6 +354,17 @@ flowchart TD
   EnvVar --> Child["The child process"]
 ```
 
+The second delivery shape takes a shorter path, and the difference is the point:
+the value never leaves the admin's side, and what travels is a reference.
+
+```mermaid
+flowchart TD
+  Own["Admin's own record<br/>sealed to the admin vault"] --> Entry["Publication entry<br/>re-sealed to the agent's key"]
+  Entry --> Ref["Token<br/>a reference, no content key"]
+  Ref --> Agent2["Agent process<br/>opens with its own key"]
+  Agent2 --> Value["The value<br/>in memory, then the child"]
+```
+
 Three things this diagram is designed to make visible:
 
 - The **content key** is separated from the **content**. The store holds the
@@ -301,8 +384,12 @@ an unsealed vault. The state lives in four places, all on disk:
 | The sealed vault | `vault.cbor` | `admin user add`, `vault rekey` |
 | Records and versions | The store, under the level hierarchy | `secret set`, `admin put` |
 | Arm records | `store/intents/<identity>` | The mint path |
-| Policy | `policy.cbor` | `admin policy` |
-| Mint history | `issuance.jsonl`, `withdrawals.jsonl` | The mint path |
+| The grant set | `policy.cbor` | `admin policy` |
+| Policy edges | `store/p/<vault>/<admin>/` beside `policy-events.jsonl` | `admin policy create`, `update`; `delete` removes one |
+| Publications | The `granted/` level under the admin | `admin policy create`, `update`; a withdrawal releases that grant's entry beside it |
+| Tokens | The `policies/` level under the admin | `admin policy create` |
+| The principal registry | `store/p/<vault>/principals.cbor` | `admin init`, `admin user add` |
+| Mint history | `issuance.jsonl`, `policy-events.jsonl` | The mint path, and the admin's decisions |
 | The audit chain | `audit/` segments | Every operation |
 | Key material | `admin/`, `agent/` | `admin init`, `agent enroll` |
 

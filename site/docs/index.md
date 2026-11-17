@@ -212,11 +212,14 @@ is the authority on what the system does and why.
 Three zones and nothing else:
 
 1. **Your machine** holds your passphrase, your key pair and the `ksp`
-   command.
+   command. One deployment has an admin account, which signs and publishes, and
+   one or more user accounts, each with its own sealed vault.
 2. **The sealed store** is a directory or a network backend you own. It holds
-   ciphertext, the per-agent copies and the signed audit chain.
-3. **The agent's machine or process** holds the agent's own key pair and runs
-   `ksp run --consume` to turn one leased copy into a real value.
+   ciphertext, the per-agent copies, the publications a grant delivers from and
+   the signed audit chain.
+3. **The agent's machine or process** holds the agent's own key pair and turns a
+   token into a real value - either by consuming one leased copy, or by opening
+   the publication a grant names, which needs no copy at all.
 
 The next document develops this into the C4 context, container and component
 views. See [Architecture Overview](architecture/overview.md).
@@ -228,7 +231,7 @@ views. See [Architecture Overview](architecture/overview.md).
 | Document | What it answers |
 |---|---|
 | [Architecture Overview](architecture/overview.md) | How the zones, containers and crates fit together |
-| [Workflow Overview](workflows/overview.md) | What happens, step by step, in the six core workflows |
+| [Workflow Overview](workflows/overview.md) | What happens, step by step, in the seven core workflows |
 | [Deep Dives](components/ksp-cli.md) | How each crate works, in detail |
 | [Design specification](reference/design-spec.md) | The authoritative design, with its status markers |
 | [Known defects](reference/known-defects.md) | What does not work yet, stated plainly |

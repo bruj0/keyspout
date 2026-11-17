@@ -66,6 +66,12 @@ pub enum Command {
         #[command(subcommand)]
         command: SecretCommand,
     },
+    /// Read the policies that name the calling principal.
+    Policy {
+        /// The policy subcommand.
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
     /// Run a child with a delivered secret.
     Run(RunArgs),
     /// Internal: confine this process and launch the child it is handed.
@@ -201,6 +207,14 @@ pub enum AdminCommand {
     /// other. That is the only way to drop several grants in one step; to drop one
     /// and record the decision, use `admin revoke`.
     Policy {
+        /// Read the policies this deployment holds.
+        ///
+        /// The read verbs live beside the legacy grant flags rather than above
+        /// them: replacing the flags is the integration work package's change, and
+        /// a read surface that arrives by breaking every existing call would be a
+        /// different change than the one this adds.
+        #[command(subcommand)]
+        command: Option<AdminPolicyCommand>,
         /// Grant a delivery to this agent. Repeatable.
         #[arg(long = "agent")]
         agents: Vec<String>,
@@ -226,12 +240,31 @@ pub enum AdminCommand {
     ///
     /// No password: the record is sealed to the user's recorded recipient
     /// public key, which is enough to write and never enough to read.
+    ///
+    /// `--own` writes the same value at the *admin's* principal instead, sealed to
+    /// her own admin vault. That copy is the one `admin policy create` publishes
+    /// from: a record sealed to the user cannot be opened by the admin, so a policy
+    /// whose only source was that record had no plaintext to seal into the
+    /// publication (CF-102).
     Put {
         /// The opaque record identifier.
         id: String,
         /// The record's name, encrypted with its value.
         #[arg(long)]
         name: String,
+        /// Seal to the admin's own vault instead of the user's key.
+        #[arg(long)]
+        own: bool,
+    },
+    /// Create the admin's own sealed vault, which publications are sealed to.
+    ///
+    /// One per deployment, and it cannot be replaced: every publication entry names
+    /// the key it was sealed to, so re-sealing would leave each entry naming a key
+    /// nobody holds. Withdraw and re-publish instead.
+    SealVault {
+        /// Read the vault password from this file.
+        #[arg(long)]
+        passphrase_file: Option<std::path::PathBuf>,
     },
     /// List every record path in this store, across levels.
     List,
@@ -245,6 +278,106 @@ pub enum AdminCommand {
         /// The agent that may no longer receive a `user`-level secret.
         #[arg(long, conflicts_with = "secret")]
         agent: Option<String>,
+    },
+}
+
+/// `ksp admin policy`.
+#[derive(Debug, Subcommand)]
+pub enum AdminPolicyCommand {
+    /// Sign one grant: a policy edge, its publication and its token.
+    ///
+    /// One edge is one (user, secret, version, agent-or-cooperative) grant. The
+    /// admin signs it, seals the publication to the agent, and mints the token the
+    /// user later exports; nothing here needs the user's password, because the value
+    /// comes from the admin's own `--own` record.
+    Create {
+        /// The user principal whose secret this grant delivers.
+        #[arg(long)]
+        user: String,
+        /// The `admin`-level secret to deliver.
+        #[arg(long)]
+        secret: String,
+        /// The version of that secret to deliver.
+        #[arg(long, default_value_t = 1)]
+        version: u32,
+        /// The agent that receives it. Mutually exclusive with `--any`.
+        #[arg(long, conflicts_with = "any")]
+        agent: Option<String>,
+        /// Grant to any enrolled agent instead of one named agent.
+        ///
+        /// A cooperative grant carries no publication entry and no token: the user
+        /// delivers the value herself, and the grant records that she may.
+        #[arg(long)]
+        any: bool,
+        /// The instant the grant stops being valid, in seconds since the epoch.
+        #[arg(long)]
+        expires_at: Option<i64>,
+        /// Read the admin vault password from this file.
+        #[arg(long)]
+        passphrase_file: Option<std::path::PathBuf>,
+    },
+    /// Re-sign one grant at the next revision, re-publishing when the target changes.
+    Update {
+        /// The policy identifier.
+        id: String,
+        /// The agent that now receives it. Mutually exclusive with `--any`.
+        #[arg(long, conflicts_with = "any")]
+        agent: Option<String>,
+        /// Grant to any enrolled agent instead of one named agent.
+        #[arg(long)]
+        any: bool,
+        /// Move the instant the grant stops being valid.
+        #[arg(long)]
+        expires_at: Option<i64>,
+        /// Read the admin vault password from this file.
+        #[arg(long)]
+        passphrase_file: Option<std::path::PathBuf>,
+    },
+    /// Withdraw one grant: re-record it, remove the artifact, release the publication.
+    Delete {
+        /// The policy identifier.
+        id: String,
+    },
+    /// List every policy, filtered, bounded, with the unprinted total reported.
+    ///
+    /// Ordered by user, then secret, then version, then identifier: two runs over
+    /// one tree print the same rows in the same order, so a limit cuts a prefix of
+    /// a fixed order rather than whatever the directory returned.
+    List {
+        /// Only policies naming this user principal.
+        #[arg(long)]
+        user: Option<String>,
+        /// Only policies naming this secret.
+        #[arg(long)]
+        secret: Option<String>,
+        /// Only policies in this state: active, withdrawn, dangling, expired or
+        /// unverified.
+        #[arg(long)]
+        state: Option<String>,
+        /// The most records to print.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Show one policy: the artifact, its verification, its tokens, the agent's
+    /// keys, the publication and the withdrawal.
+    Show {
+        /// The policy identifier.
+        id: String,
+    },
+}
+
+/// `ksp policy`: the user-scoped read surfaces.
+#[derive(Debug, Subcommand)]
+pub enum PolicyCommand {
+    /// Every policy naming the calling principal.
+    List,
+    /// One policy naming the calling principal.
+    ///
+    /// A policy belonging to someone else is reported as absent rather than
+    /// forbidden, so the answer does not confirm that another principal holds one.
+    Show {
+        /// The policy identifier.
+        id: String,
     },
 }
 
@@ -268,6 +401,15 @@ pub enum AdminUserCommand {
         /// single-account layout, where the provisioning account is the user.
         #[arg(long = "unix-user")]
         unix_user: Option<String>,
+        /// Write this principal's vault into the home at this path instead of
+        /// the invoking home.
+        ///
+        /// One deployment has one store and N principals, each with its own home:
+        /// the home is the boundary between accounts, so a user's vault belongs
+        /// in *her* home and not in the admin's. Omit it in the single-account
+        /// layout, where both roles are the same account.
+        #[arg(long)]
+        home: Option<PathBuf>,
         /// Read the vault password from this file.
         ///
         /// The password is never an argument and never an environment variable.
@@ -466,18 +608,35 @@ pub enum SecretCommand {
     /// a fresh content key, a separate agent-level record, and an artifact. One
     /// implementation, two names — "share this with deploy-bot" is what an
     /// operator says, and minting a lease is what the mechanism does.
+    ///
+    /// With `--policy` it delivers through a grant instead of minting a copy: the
+    /// agent is the one the policy names, the artifact was signed when the policy
+    /// was created, and this command only copies it out. It takes no password,
+    /// because the token carries no content key — the publication entry is sealed
+    /// to the agent, and the user could not open it if she tried.
     Share {
         /// The `user`-level secret to share.
         id: String,
         /// The agent that receives the copy.
-        #[arg(long)]
-        agent: String,
+        #[arg(long, required_unless_present = "policy")]
+        agent: Option<String>,
         /// The record's name, encrypted with its value.
+        #[arg(long, required_unless_present = "policy")]
+        name: Option<String>,
+        /// Deliver through this policy: its agent, its signed artifact.
+        ///
+        /// The policy must already exist — `admin policy create` writes it — and it
+        /// must name the secret this command is given. A policy naming a different
+        /// secret is refused rather than quietly exporting the other one's token.
         #[arg(long)]
-        name: String,
-        /// Lease length in seconds.
-        #[arg(long, default_value_t = 1_200)]
-        ttl: u64,
+        policy: Option<String>,
+        /// Lease length in seconds, for a leased copy.
+        ///
+        /// `Option` so that `--policy`, which mints no lease, can refuse the flag by
+        /// name: a default hides whether the operator typed it, and a flag that is
+        /// silently ignored teaches the operator that a bound was set when it was not.
+        #[arg(long)]
+        ttl: Option<u64>,
         /// How many deliveries the copy permits, when the sharer bounds it.
         ///
         /// A second bound beside the TTL: whichever is reached first removes the
@@ -743,6 +902,24 @@ mod tests {
                 "admin init",
                 "admin list",
                 "admin policy",
+                // Feature 014 FR-024/FR-025: the admin's joined read surfaces. They
+                // sit beside the legacy grant flags rather than replacing them; the
+                // write verbs arrive with the integration work package, which is also
+                // the change that retires the flags.
+                "admin policy list",
+                "admin policy show",
+                // Feature 014 FR-029/FR-030: the write verbs, and the withdrawal that
+                // is the only way to drop one grant and record the decision.
+                "admin policy create",
+                "admin policy delete",
+                "admin policy update",
+                // Feature 014 FR-033: the admin's own sealed vault, which is the
+                // recipient every publication entry is sealed to. It had no verb
+                // before this work package, so no operator could create one.
+                "admin seal-vault",
+                // Feature 014 FR-026: the same join, scoped to the calling principal.
+                "policy list",
+                "policy show",
                 "admin put",
                 "admin revoke",
                 "admin user add",

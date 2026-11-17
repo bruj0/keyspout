@@ -80,6 +80,7 @@ CONTEXTS: dict[str, str] = {
     "crates/ksp-posture/CONTEXT.md": "context-ksp-posture.md",
     "crates/ksp-deletion/CONTEXT.md": "context-ksp-deletion.md",
     "crates/ksp-key-lifecycle/CONTEXT.md": "context-ksp-key-lifecycle.md",
+    "scripts/CONTEXT.md": "context-scripts.md",
 }
 
 # A link target that resolves to a published page, keyed by the path it is

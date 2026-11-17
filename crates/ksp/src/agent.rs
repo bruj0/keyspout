@@ -151,6 +151,7 @@ pub fn enroll(display_name: &str, layout: &Layout) -> Result<EnrolledKeys, Agent
         fingerprint: *unsigned.fingerprint(),
     };
     stored.save(&layout.enrolment_file(&agent.to_string()))?;
+    publish_identity(layout, &stored)?;
 
     Ok(EnrolledKeys {
         key_file: enrolled.path,
@@ -195,12 +196,35 @@ pub fn rotate(
         fingerprint: *bundle.fingerprint(),
     };
     repinned.save(&layout.enrolment_file(&agent.to_string()))?;
+    publish_identity(layout, &repinned)?;
 
     let _ = rotation;
     Ok(EnrolledKeys {
         key_file: rotation.current,
         enrolment: repinned,
     })
+}
+
+/// Publish the public half the admin needs, beside the home-local pin.
+///
+/// The pin is what a reload verifies against and it belongs to the owner; the index
+/// is what makes the agent resolvable by the principal that signs an edge, which is
+/// the admin in another home (CF-011). A failure here is reported rather than
+/// swallowed: an enrolment the admin cannot see is an agent no policy can name.
+fn publish_identity(layout: &Layout, stored: &StoredEnrolment) -> Result<(), AgentError> {
+    let (deployment, _) = match crate::deployment::require(layout) {
+        Ok(required) => required,
+        // A home with no deployment has no vault to publish into, and the pin is the
+        // only record an enrolment has until one exists. Skipping is not swallowing a
+        // failure: publishing is a *cross-principal* statement, so there is no
+        // principal to read it yet. The first `admin init` is what makes the index
+        // meaningful, and a deployment that exists but cannot be read is still an
+        // error below.
+        Err(PinError::Absent) => return Ok(()),
+        Err(error) => return Err(AgentError::Pin(error)),
+    };
+    crate::agent_index::publish(layout, &deployment.vault, deployment.user, stored)?;
+    Ok(())
 }
 
 /// What `enroll` produced.

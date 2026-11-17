@@ -36,3 +36,6 @@ target-root/
 site/build/
 site/docs/reference/
 site/docs/assets/
+.worktrees/014-policy-scoped-sharing-WP05/
+.worktrees/014-policy-scoped-sharing-WP06/
+.worktrees/014-policy-scoped-sharing-WP07/

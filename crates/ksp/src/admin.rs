@@ -20,6 +20,7 @@ use ksp_identity::{
     AdminKeyBundle, KeyId, Policy, PolicyBody, PolicyRefusal, TrustedEnrolmentKeys, Withdrawal,
 };
 use ksp_key_lifecycle::{KeyError, KeyRoot, KeyStore};
+use ksp_record::RecordEnvelope;
 use ksp_types::{AgentId, OpaqueSecretId, PrincipalId, VaultId};
 
 use crate::config::Layout;
@@ -106,6 +107,27 @@ pub enum AdminError {
     /// nothing to seal a record to.
     #[error("the user's recipient public key was never recorded on this host")]
     NoRecipientKey,
+    /// This host holds no admin vault, so there is no key an admin-owned record
+    /// could be sealed to.
+    ///
+    /// The sentence names the command that creates one: a caller who has never
+    /// run `admin seal-vault` cannot derive that verb from "no recipient key",
+    /// and it is a one-step fix rather than a broken host.
+    #[error(
+        "this host holds no admin vault, so there is nothing to seal an admin-owned record to: \
+         run `ksp admin seal-vault` first"
+    )]
+    NoAdminVault,
+    /// The admin's own copy of a secret is not on this host at the version named.
+    ///
+    /// Its own variant because the fix is a different command: `admin put --own`
+    /// writes it, and a policy publication that reported only "a record could not
+    /// be read" sent the operator looking for a corrupt store.
+    #[error(
+        "the admin's own record for {0} is not on this host: write it with \
+         `ksp admin put {0} --name <name> --own`, then re-run this command"
+    )]
+    NoOwnRecord(String),
     /// The record could not be sealed or written.
     #[error(transparent)]
     Secret(#[from] crate::secret::SecretError),
@@ -331,12 +353,24 @@ pub enum AdminError {
     /// nothing.
     #[error("no administrative write will touch a drifted layout: {0}")]
     Layout(#[from] crate::layout::LayoutRefusal),
+    /// The principal registry could not be read or written.
+    #[error(transparent)]
+    Registry(#[from] crate::registry::RegistryError),
     /// This deployment already has a principal, and a UUID is never reissued.
     #[error(
         "this deployment is already initialised for principal {principal}; a principal UUID is issued once and never reissued"
     )]
     AlreadyInitialised {
         /// The UUID the existing principal keeps.
+        principal: PrincipalId,
+    },
+    /// The admin already has a vault, and re-sealing would orphan every entry
+    /// sealed to the old key.
+    #[error(
+        "the admin {principal} already has a vault: every publication entry is sealed to the key it holds, so re-sealing would leave each one naming a key nobody has — withdraw and re-publish instead"
+    )]
+    AdminVaultExists {
+        /// The admin principal.
         principal: PrincipalId,
     },
 }
@@ -358,7 +392,8 @@ impl AdminError {
             | Self::Pin(_)
             | Self::Write
             | Self::PolicyWrite
-            | Self::AlreadyInitialised { .. } => exit::INTERNAL,
+            | Self::AlreadyInitialised { .. }
+            | Self::AdminVaultExists { .. } => exit::INTERNAL,
             Self::Vault(error) => error.exit_code(),
             // A password that could not be read is missing usable key material,
             // not a policy decision. `secret set` has always reported `13` for
@@ -372,6 +407,10 @@ impl AdminError {
             // cannot show the decision a local client must see.
             Self::Ledger(_) => exit::INTERNAL,
             Self::NoRecipientKey => exit::MISSING_KEY,
+            // A vault this host has not sealed yet, and a record it has not
+            // written yet: both are missing key material with a one-command fix,
+            // not a policy decision.
+            Self::NoAdminVault | Self::NoOwnRecord(_) => exit::MISSING_KEY,
             // An operator error about a name, not a missing key: the account the
             // operator asked for is not there, and re-running will not find it.
             // A binding this host could not make is the same class: the operation
@@ -394,6 +433,10 @@ impl AdminError {
             // FR-014: a drifted protected root refuses the operation with the
             // capability-refusal code, the same code a lease request carries.
             Self::Layout(_) => exit::CAPABILITY_REFUSAL,
+            // A registry that cannot be read is this host's problem, not the
+            // caller's: the fix is on the deployment, and re-running the same
+            // invocation unchanged will report it again.
+            Self::Registry(_) => exit::INTERNAL,
             Self::Secret(error) => error.exit_code(),
         }
     }
@@ -436,8 +479,11 @@ pub fn init(
         // Reissuing a UUID would silently rebind every record path, grant and
         // report to a new principal. Report the one that already exists.
         let existing = Deployment::load(layout)?;
+        // The admin principal, not the user one: a second `init` would mint a
+        // second *admin*, and naming the user told an operator to look for a
+        // principal that is not the one holding the signing key.
         return Err(AdminError::AlreadyInitialised {
-            principal: existing.user,
+            principal: existing.admin,
         });
     }
 
@@ -451,6 +497,7 @@ pub fn init(
     // naming the user would attribute the admin's action to her.
     let collector = PrincipalId::generate();
     let user = PrincipalId::generate();
+    let vault_clone = vault.clone();
     let admin = ksp_identity::AdminSigningKey::generate();
     let bundle = AdminKeyBundle::from_key(&admin, key_id.clone());
     let store = KeyStore::new(KeyRoot::open(layout.admin_key_root())?);
@@ -461,19 +508,42 @@ pub fn init(
         key: admin.verifying_public(),
     };
     anchor.save(&layout.admin_anchor_file())?;
-    Deployment {
+    let record = Deployment {
         vault,
         user_name: Some(user_name),
         user_account: None,
         admin: collector,
         user,
-        admin_key_id: key_id,
+        admin_key_id: key_id.clone(),
+        // The admin's own vault is sealed separately, because provisioning needs
+        // no password and publication does (CF-018).
+        admin_vault_signing_key_id: None,
+        admin_vault_recipient_key_id: None,
+        admin_vault_recipient_key: None,
         user_signing_key_id: None,
         user_signing_key: None,
         user_recipient_key_id: None,
         user_recipient_key: None,
-    }
-    .save(layout)?;
+    };
+    record.save(layout)?;
+    // The registry is written before anything else can name a principal: a
+    // deployment whose record exists and whose registry does not is a layout the
+    // gate reports as incomplete, and a policy that named a user the registry had
+    // never heard of would verify while naming nobody.
+    let registry = crate::registry::PrincipalRegistry::new(
+        vault_clone,
+        crate::registry::RegistryEntry {
+            principal: collector,
+            role: crate::registry::RegistryRole::Admin,
+            name: None,
+            account: None,
+            signing_key_id: key_id.clone(),
+            signing_key: admin.verifying_public(),
+            recipient_key_id: None,
+            recipient_key: None,
+        },
+    )?;
+    registry.save(layout)?;
     // Both files exist now; their owners are recorded so a later replacement by
     // another account is reported instead of assumed.
     record_public_files(layout)?;
@@ -500,8 +570,8 @@ pub fn init(
         use std::os::unix::fs::MetadataExt;
         let me = std::fs::metadata(layout.root()).map_err(|_| AdminError::Write)?;
         let owner = (me.uid(), me.gid());
-        crate::layout::ensure_ledger_file(layout.root(), &layout.issuance_ledger(), owner)?;
-        crate::layout::ensure_ledger_file(layout.root(), &layout.withdrawals_ledger(), owner)?;
+        crate::ledgers::LedgerPaths::for_principals(layout, &record.vault, user, collector)
+            .prepare(layout, &record.vault, user, owner, collector, owner)?;
     }
 
     Ok(Initialised {
@@ -510,6 +580,70 @@ pub fn init(
         admin: collector,
         user,
     })
+}
+
+/// Seal the admin principal's own vault, which publication needs to open her own
+/// records.
+///
+/// # Why this is not `admin init`
+///
+/// Provisioning needs no password; publication does. Sealing here keeps `admin
+/// init` non-interactive for the callers that already run it, and makes the one
+/// command that needs the admin's vault name itself (CF-018).
+///
+/// # Why a second seal is refused
+///
+/// Every publication entry is sealed to the vault's X25519 key, and the key IDs are
+/// the binding its associated data is checked against. Re-sealing mints a new pair,
+/// so every entry already written would name a key nobody holds — a publication
+/// that verifies and opens for no one. The refusal names the sequence rather than
+/// the vault.
+pub fn seal_vault(layout: &Layout, password: &[u8]) -> Result<SealedAdminVault, AdminError> {
+    let recorded = Deployment::load(layout)?;
+    if recorded.admin_vault_recipient_key_id.is_some() {
+        return Err(AdminError::AdminVaultExists {
+            principal: recorded.admin,
+        });
+    }
+
+    // The IDs are derived from the principal rather than minted, so a later reader
+    // can rebuild the binding it must present: the binding is the vault's
+    // associated data, and a vault whose binding cannot be reconstructed is a vault
+    // nobody can open.
+    let signing_key_id = format!("admin-vault-signing-{}", recorded.admin);
+    let recipient_key_id = format!("admin-vault-recipient-{}", recorded.admin);
+    let home = crate::vault::VaultHome::named(layout.root(), crate::vault::ADMIN_VAULT_FILE);
+    let (binding, vault) = crate::vault::init(
+        &home,
+        ksp_types::ActorId::Admin(recorded.admin),
+        &signing_key_id,
+        &recipient_key_id,
+        password,
+    )?;
+
+    let mut updated = recorded.clone();
+    updated.admin_vault_signing_key_id = Some(binding.signing_key_id.clone());
+    updated.admin_vault_recipient_key_id = Some(binding.recipient_key_id.clone());
+    // Recorded after the vault exists: a recipient key with no vault behind it
+    // would let a publication seal to a key no one can use.
+    updated.admin_vault_recipient_key = Some(vault.recipient_public());
+    updated.save(layout)?;
+
+    Ok(SealedAdminVault {
+        principal: recorded.admin,
+        signing_key_id: binding.signing_key_id,
+        recipient_key_id: binding.recipient_key_id,
+    })
+}
+
+/// What `admin seal-vault` recorded.
+pub struct SealedAdminVault {
+    /// The admin principal the vault belongs to.
+    pub principal: PrincipalId,
+    /// The ID its Ed25519 key was enrolled under.
+    pub signing_key_id: KeyId,
+    /// The ID its X25519 key was enrolled under.
+    pub recipient_key_id: KeyId,
 }
 
 /// Enrol the user: create her vault and sign a policy that names her keys.
@@ -523,37 +657,64 @@ pub fn user_add(
     signing_key_id: KeyId,
     recipient_key_id: KeyId,
     account: Option<&str>,
+    target_home: Option<&std::path::Path>,
 ) -> Result<PrincipalId, AdminError> {
     let (deployment, anchor) = crate::deployment::require(layout)?;
     let admin = load_admin(layout, &anchor)?;
-
+    // One deployment has one store and N principals, each with its own home. The
+    // invoking home is the admin's; when a target is named, the user's vault,
+    // record and roots are written there instead, so the home boundary stays the
+    // boundary between accounts.
+    let target = match target_home {
+        Some(path) => Layout::with_store(path, layout.configured_store().map(|s| s.to_path_buf())),
+        None => layout.clone(),
+    };
     // Refuse before the vault is touched: `vault::init` writes the file, and a
     // new password over an existing vault locks its principal out of everything
-    // already sealed to her. Checked here rather than inside S6 so the message
-    // can name the principal and the command that *is* meant to replace a vault.
-    if layout.vault_file().exists() {
+    // already sealed to her. Checked here — and before a principal is minted —
+    // rather than inside S6, so the message can name the principal that *is* there
+    // instead of one this attempt invented.
+    if target.vault_file().exists() {
+        // The target home's own record is the only honest source for which
+        // principal lives there; the admin's record names a different one.
+        let recorded_principal = Deployment::load(&target)
+            .map(|held| held.user)
+            .unwrap_or(deployment.user);
         // Two different states, two different answers. Keys recorded means the
         // enrolment completed and replacing the file would lock her out. No keys
         // recorded means it stopped halfway, and the leftover is safe to remove
         // because nothing was ever sealed to it.
-        return Err(if deployment.user_signing_key_id.is_some() {
+        let keys_recorded = Deployment::load(&target)
+            .map(|held| held.user_signing_key_id.is_some())
+            .unwrap_or_else(|_| deployment.user_signing_key_id.is_some());
+        return Err(if keys_recorded {
             AdminError::AlreadyEnrolled {
-                principal: deployment.user,
+                principal: recorded_principal,
             }
         } else {
             AdminError::Interrupted {
-                principal: deployment.user,
-                path: layout.vault_file().display().to_string(),
+                principal: recorded_principal,
+                path: target.vault_file().display().to_string(),
             }
         });
     }
 
+    // A named target home is a *new* principal, not the one the admin's record
+    // already names: one record names the first user, and every later enrolment
+    // mints its own UUID. Without this, two users would share one principal id and
+    // every record path, grant and report would name both of them.
+    let mut principal_of_this_enrolment = deployment.user;
+    if target_home.is_some() {
+        principal_of_this_enrolment = PrincipalId::generate();
+        crate::layout::ensure(target.root()).map_err(|_| AdminError::Write)?;
+    }
+
     // S2's vault constructor owns the sealing; this module only chooses the path
     // and the binding.
-    let home = VaultHome::new(layout.root().to_path_buf());
+    let home = VaultHome::new(target.root().to_path_buf());
     let (binding, vault) = crate::vault::init(
         &home,
-        ksp_types::ActorId::User(deployment.user),
+        ksp_types::ActorId::User(principal_of_this_enrolment),
         signing_key_id.as_str(),
         recipient_key_id.as_str(),
         password,
@@ -570,6 +731,7 @@ pub fn user_add(
     // process that sealed it: a later `admin policy` cannot re-derive it, and a
     // guessed binding would simply fail to open the vault.
     let mut recorded = deployment.clone();
+    recorded.user = principal_of_this_enrolment;
     recorded.user_signing_key_id = Some(binding.signing_key_id.clone());
     recorded.user_signing_key = Some(vault.signing_public());
     recorded.user_recipient_key_id = Some(binding.recipient_key_id.clone());
@@ -581,24 +743,69 @@ pub fn user_add(
     // give it to her is to say which account she is (FR-037's binding).
     if let Some(account) = account {
         let owner = unix_account(account)?;
-        bind_vault(layout, owner, account)?;
-        bind_principal_roots(layout, &deployment, owner, account)?;
+        bind_vault(&target, owner, account)?;
+        bind_principal_roots(&target, &recorded, owner, account)?;
         recorded.user_account = Some(account.to_string());
     }
     // Written after the vault is bound, so the deployment that names the account
     // never exists before the account's ownership of the vault does.
-    recorded.save(layout)?;
+    recorded.save(&target)?;
+    // The user's home needs the admin's *public* anchor to verify anything, and it
+    // is public material: `0644`, the same key the admin pinned in its own home. A
+    // home without it reports "the deployment is not readable" for a record that
+    // is perfectly readable, which names the wrong problem.
+    if target_home.is_some() {
+        Deployment::anchor(layout)?.save(&target.admin_anchor_file())?;
+    }
+    // The admin's record names exactly **one** user — the first enrolled one — and
+    // it is adopted here only when it has no keys yet. Updating it on every
+    // enrolment would make `admin put` seal to whoever enrolled last and forget the
+    // user before her. Everyone after the first lives in the registry, which is the
+    // canonical list; a record that is one field wide cannot hold a list.
+    if target_home.is_some() && deployment.user_signing_key_id.is_none() {
+        recorded.save(layout)?;
+    }
+    // Recorded after the vault exists and is bound to its account: an entry that
+    // arrived first would name a principal whose vault nobody can open, and the
+    // registry is the list every later command trusts.
+    let mut registry = crate::registry::PrincipalRegistry::load(layout)?;
+    registry.append(crate::registry::RegistryEntry {
+        principal: principal_of_this_enrolment,
+        role: crate::registry::RegistryRole::User,
+        name: recorded.user_name.clone(),
+        account: recorded.user_account.clone(),
+        signing_key_id: binding.signing_key_id.clone(),
+        signing_key: vault.signing_public(),
+        recipient_key_id: Some(binding.recipient_key_id.clone()),
+        recipient_key: Some(vault.recipient_public()),
+    })?;
+    registry.save(layout)?;
     record_public_files(layout)?;
 
+    // The policy is public material signed by the admin. A named target home gets
+    // its own copy so the principal can read her own grants offline; the two
+    // copies are the same bytes and the same revision, and WP02 replaces them with
+    // per-edge artifacts in the store.
     write_policy(
-        layout,
+        &target,
         &admin,
         &recorded,
-        trusted,
+        trusted.clone(),
         1,
         Vec::new(),
         Vec::new(),
     )?;
+    if target_home.is_some() {
+        write_policy(
+            layout,
+            &admin,
+            &recorded,
+            trusted,
+            1,
+            Vec::new(),
+            Vec::new(),
+        )?;
+    }
 
     // A handover run as root must not leave the admin's own files owned by root:
     // `policy.cbor` is created by this step, and the admin is the account that
@@ -609,9 +816,10 @@ pub fn user_add(
         record_public_files(layout)?;
     }
 
-    // `admin user add` never mints: the UUID was issued by `admin init` and is
-    // reported here so the operator sees which principal her keys belong to.
-    Ok(deployment.user)
+    // Reported so the operator sees which principal her keys belong to. In the
+    // single-home layout this is the UUID `admin init` issued; a named target home
+    // mints its own, because it is a second principal and not the same one.
+    Ok(principal_of_this_enrolment)
 }
 
 /// The uid and gid a named UNIX account has, or a refusal naming it.
@@ -768,12 +976,20 @@ fn bind_principal_roots(
     // a revocation is how a token stops working, and removing one is how it starts
     // again. `0640` gives each account read of the other's file — which `run` and
     // `audit verify` both need — and write of only its own.
-    crate::layout::ensure_ledger_file(layout.root(), &layout.issuance_ledger(), owner)?;
-    // The admin's own uid, taken from the key root it already owns: that directory
-    // is `0700`, it exists before this step, and it is the one place on this host
-    // that is unambiguously the admin's.
-    let admin_owner = admin_root_owner(layout)?;
-    crate::layout::ensure_ledger_file(layout.root(), &layout.withdrawals_ledger(), admin_owner)?;
+    let ledger_paths = crate::ledgers::LedgerPaths::for_deployment(layout, deployment);
+    let admin_owner = admin_root_owner(layout).unwrap_or(owner);
+    ledger_paths.prepare(
+        layout,
+        &deployment.vault,
+        deployment.user,
+        owner,
+        deployment.admin,
+        admin_owner,
+    )?;
+    // The withdrawals ledger is the *admin's*, and it lives in the admin's home: a
+    // user's home has no admin key root, so asking for its owner there failed the
+    // whole handover with a generic write error. Its absence is the signal, and a
+    // second ledger in the user's home would have no writer anyway.
     Ok(())
 }
 
@@ -1108,10 +1324,10 @@ pub fn read_policy(layout: &Layout) -> Result<Policy, AdminError> {
 /// a reader needs to see what it says to know why it is refused. The grants are
 /// not otherwise validated — that is the mint's job, and a read-back that
 /// second-guessed it would be a second answer to the same question.
-pub fn show_policy(layout: &Layout) -> Result<crate::output::PolicyView, AdminError> {
+pub fn show_policy(layout: &Layout) -> Result<crate::output::HeldPolicyView, AdminError> {
     let policy = read_policy(layout)?;
     let anchor = crate::keys::Anchor::load(&layout.admin_anchor_file())?;
-    Ok(crate::output::PolicyView {
+    Ok(crate::output::HeldPolicyView {
         revision: policy.revision(),
         vault: policy.vault().to_string(),
         user: policy.user().to_string(),
@@ -1161,7 +1377,8 @@ pub fn revoke(
     if !policy.verify_issuer(&anchor.key) {
         return Err(AdminError::PolicyIssuer);
     }
-    let ledger = ksp_identity::IssuanceLedger::at(layout.issuance_ledger());
+    let (recorded, _anchor) = crate::deployment::require(layout)?;
+    let ledger = crate::ledgers::LedgerPaths::for_deployment(layout, &recorded).as_ledger();
     let revocation =
         ksp_identity::admin_revoke(&ledger, &admin, &policy, withdrawal, at).map_err(|error| {
             match error {
@@ -1220,6 +1437,124 @@ pub fn put(
         value,
         recipient,
     )?)
+}
+
+/// Put one version of an `admin`-level secret at the **admin's own** principal.
+///
+/// `put` seals its record to the *user's* recipient key, which is what makes it a
+/// transfer: the admin can write the value and never read it. A policy publication
+/// needs the opposite — a copy the writer can open, so `admin policy create` has
+/// plaintext to seal into the publication entry. This is that copy: sealed to
+/// `admin_vault_recipient_key`, written at the admin principal, and readable only
+/// with the admin's password (WP07, CF-102).
+///
+/// The record is still `admin`-level, because level is provenance and not owner:
+/// the admin wrote this value either way, and a delivery of it still requires a
+/// policy.
+pub fn put_own(
+    layout: &Layout,
+    secret: &OpaqueSecretId,
+    name: &[u8],
+    value: &[u8],
+) -> Result<u32, AdminError> {
+    if let Some(refusal) = crate::layout::refusal(layout.root()) {
+        return Err(AdminError::Layout(refusal));
+    }
+    let (recorded, _anchor) = crate::deployment::require(layout)?;
+    let recipient = recorded
+        .admin_vault_recipient_key
+        .ok_or(AdminError::NoAdminVault)?
+        .to_bytes();
+    crate::layout::ensure_level(
+        layout.root(),
+        &recorded.vault,
+        recorded.admin,
+        &ksp_types::Level::Admin,
+    )
+    .map_err(|_| AdminError::Write)?;
+    let store = crate::config::open_file_store(layout).map_err(|_| AdminError::Write)?;
+    Ok(crate::secret::seal_record_by(
+        &store,
+        &recorded,
+        recorded.admin,
+        ksp_types::Level::Admin,
+        secret,
+        name,
+        value,
+        recipient,
+    )?)
+}
+
+/// Open the admin's own `admin`-level record with her vault password.
+///
+/// The only reader of [`put_own`]'s output. Returns the name and value together
+/// because the name is encrypted with the value: a caller that wanted one without
+/// the other has no route to it.
+pub fn open_own(
+    layout: &Layout,
+    password: &[u8],
+    secret: &OpaqueSecretId,
+    version: u32,
+) -> Result<(Vec<u8>, Vec<u8>), AdminError> {
+    let vault = open_admin_vault(layout, password)?;
+    open_own_with(layout, &vault, secret, version)
+}
+
+/// Open the admin's own record with a vault that is already open.
+///
+/// The vault is lent rather than re-opened because a policy create uses it twice —
+/// once to read the plaintext, once to recover the publication's content key — and
+/// unsealing twice would run the memory barrier, and the KDF, for one answer.
+pub fn open_own_with(
+    layout: &Layout,
+    vault: &ksp_identity::UserVault,
+    secret: &OpaqueSecretId,
+    version: u32,
+) -> Result<(Vec<u8>, Vec<u8>), AdminError> {
+    let (recorded, _anchor) = crate::deployment::require(layout)?;
+    let metadata = crate::secret::metadata_for(
+        &recorded,
+        recorded.admin,
+        ksp_types::Level::Admin,
+        secret,
+        version,
+    );
+    let store = crate::config::open_file_store(layout).map_err(|_| AdminError::Write)?;
+    let missing = || AdminError::NoOwnRecord(secret.to_string());
+    let path = ksp_record::RecordPath::of(&metadata);
+    let bytes = ksp_record::version::BlobStore::get(&store, path.as_str())
+        .map_err(|_| missing())?
+        .ok_or_else(missing)?;
+    let record = ksp_record::decode_record(&bytes).map_err(|_| missing())?;
+    // Lent to one call and never owned, as `secret::get_at` does it: the closure
+    // returns the content key, not the private half.
+    let content_key = vault
+        .with_recipient_secret(|sk| RecordEnvelope::open(&record.envelope, sk, &metadata))
+        .map_err(|_| missing())?;
+    let aad = metadata.bound_aad().map_err(|_| missing())?;
+    record.blob.open(&content_key, &aad).map_err(|_| missing())
+}
+
+/// Open the admin's vault, rebuilding the binding its associated data names.
+pub fn open_admin_vault(
+    layout: &Layout,
+    password: &[u8],
+) -> Result<ksp_identity::UserVault, AdminError> {
+    let (recorded, _anchor) = crate::deployment::require(layout)?;
+    let recorded = &recorded;
+    let binding = ksp_identity::VaultBinding {
+        identity: ksp_types::ActorId::Admin(recorded.admin),
+        signing_key_id: recorded
+            .admin_vault_signing_key_id
+            .clone()
+            .ok_or(AdminError::NoAdminVault)?,
+        recipient_key_id: recorded
+            .admin_vault_recipient_key_id
+            .clone()
+            .ok_or(AdminError::NoAdminVault)?,
+    };
+    let home = VaultHome::named(layout.root(), crate::vault::ADMIN_VAULT_FILE);
+    crate::vault::unseal(&home, &binding, password).map_err(AdminError::Vault)
 }
 
 /// Every record path this store holds, across every level.
@@ -1652,12 +1987,12 @@ mod tests {
             KeyId::new("admin-2026"),
         ) {
             Err(AdminError::AlreadyInitialised { principal }) => {
-                assert_eq!(principal, existing.user);
+                assert_eq!(principal, existing.admin);
                 assert!(
                     AdminError::AlreadyInitialised { principal }
                         .to_string()
-                        .contains(&existing.user.to_string()),
-                    "the refusal must name the existing UUID"
+                        .contains(&existing.admin.to_string()),
+                    "the refusal must name the existing admin UUID"
                 );
             }
             other => panic!("expected an AlreadyInitialised refusal, got {other:?}"),
@@ -1724,6 +2059,7 @@ mod tests {
             KeyId::new("alice-ed25519-1"),
             KeyId::new("alice-x25519-1"),
             None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1744,6 +2080,7 @@ mod tests {
             KeyId::new("alice-ed25519-1"),
             KeyId::new("alice-x25519-1"),
             None,
+            None,
         )
         .unwrap();
         let refused = user_add(
@@ -1751,6 +2088,7 @@ mod tests {
             b"another long enough password",
             KeyId::new("alice-ed25519-9"),
             KeyId::new("alice-x25519-9"),
+            None,
             None,
         )
         .unwrap_err();
@@ -1773,6 +2111,7 @@ mod tests {
             b"a long enough password",
             KeyId::new("alice-ed25519-1"),
             KeyId::new("alice-x25519-1"),
+            None,
             None,
         )
         .unwrap();

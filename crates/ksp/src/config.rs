@@ -11,6 +11,7 @@
 //! name its own backend could point the reader at a store the attacker controls.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use ksp_backend::admission::Classification;
 use ksp_backend::file::FileStore;
@@ -71,21 +72,70 @@ impl BackendSelection {
     }
 }
 
+/// The variable that names a store root shared by several principals.
+///
+/// A deployment with an admin and N users has N homes and one store. The home
+/// stays per-account — that is the boundary between accounts — so the store is
+/// the thing that has to be named.
+pub const STORE_ENV: &str = "KSP_STORE";
+
+/// The configured store root, resolved once for the process.
+///
+/// Resolved once because the alternative is a second answer: a value re-read
+/// from its source at each construction can disagree with the one a path was
+/// already derived from, and the disagreement is invisible until a record is
+/// written where nothing reads it.
+fn configured_store() -> Option<PathBuf> {
+    static OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    OVERRIDE
+        .get_or_init(|| {
+            std::env::var_os(STORE_ENV)
+                .map(PathBuf::from)
+                .filter(|path| !path.as_os_str().is_empty())
+        })
+        .clone()
+}
+
 /// The directories and files one host uses.
 #[derive(Debug, Clone)]
 pub struct Layout {
     root: PathBuf,
+    /// A store root named by configuration rather than derived from the home.
+    store: Option<PathBuf>,
 }
 
 impl Layout {
-    /// The layout rooted at `root`.
+    /// The layout rooted at `root`, with the configured store root if one is set.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            store: configured_store(),
+        }
+    }
+
+    /// The layout rooted at `root` with an explicit store root.
+    ///
+    /// `Some` names a shared store; `None` derives `<root>/store`, which is what
+    /// a single-account host uses.
+    pub fn with_store(root: impl Into<PathBuf>, store: Option<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            store,
+        }
     }
 
     /// The root itself.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The configured store root, when one is set.
+    ///
+    /// A configured root is never created on the caller's behalf: creating it
+    /// would turn a mistyped or unmounted path into a fresh empty store, and the
+    /// deployment would then read "no records" instead of "no store".
+    pub fn configured_store(&self) -> Option<&Path> {
+        self.store.as_deref()
     }
 
     /// The sealed user vault.
@@ -137,25 +187,30 @@ impl Layout {
     /// Beside the deployment because it is this host's own record, never a
     /// registry: no command publishes it and nothing listens for it.
     ///
-    /// This is the principal's file. The admin's withdrawals live beside it, in
-    /// [`Self::withdrawals_ledger`], so each file has exactly one writer.
+    /// The home-local issuance file: **fixtures only**.
+    ///
+    /// Production resolves both ledgers through [`crate::ledgers::LedgerPaths`], which
+    /// names the principal that writes each one. This method is the path a suite uses
+    /// when it wants a ledger of its own in a temporary home, and it is deliberately
+    /// not what any command reads — a second answer to "where is the ledger" is how a
+    /// revocation gets recorded in one file and looked for in another.
     pub fn issuance_ledger(&self) -> PathBuf {
         self.root.join("issuance.jsonl")
     }
 
-    /// The withdrawals the admin recorded, beside the issuance ledger.
-    ///
-    /// A separate file because the two writers are different accounts: the
-    /// principal appends issuances and token marks, the admin appends grant
-    /// withdrawals. Sharing one file would need it group-writable, and a mint
-    /// history any group member can rewrite is one that member can forge.
-    pub fn withdrawals_ledger(&self) -> PathBuf {
-        self.root.join("withdrawals.jsonl")
+    /// The home-local admin file, beside [`Self::issuance_ledger`]: **fixtures only**.
+    pub fn policy_events_ledger(&self) -> PathBuf {
+        self.root.join("policy-events.jsonl")
     }
 
     /// The blob store root.
+    ///
+    /// The configured root when one is set, otherwise `<home>/store`.
     pub fn store_root(&self) -> PathBuf {
-        self.root.join("store")
+        match self.store.as_deref() {
+            Some(store) => store.to_path_buf(),
+            None => self.root.join("store"),
+        }
     }
 
     /// The journal of deletion acknowledgements.
@@ -272,6 +327,16 @@ pub enum ConfigError {
     /// The selected backend could not be opened.
     #[error("the selected backend could not be opened")]
     StoreUnavailable,
+    /// A configured store root is absent, or is not a directory.
+    #[error(
+        "the configured store root at {path} is not a directory this host can read: create it, mount it, or unset {env} to use this home's own store"
+    )]
+    StoreRootAbsent {
+        /// The configured path.
+        path: String,
+        /// The variable that named it.
+        env: &'static str,
+    },
     /// The local store directory could not be created.
     #[error("the local store directory could not be created")]
     StoreUnwritable,
@@ -283,6 +348,22 @@ pub enum ConfigError {
 /// opened by the caller that has one; conflating the two would make one failure
 /// ambiguous between "no directory" and "no server".
 pub fn open_file_store(layout: &Layout) -> Result<FileStore, ConfigError> {
+    // A configured root is opened, never created. `ensure_row` would build a new
+    // empty directory at a path the operator named because they believed a store
+    // was already there, and every later read would report an empty deployment
+    // instead of a missing mount.
+    if let Some(store) = layout.configured_store() {
+        match std::fs::metadata(store) {
+            Ok(metadata) if metadata.is_dir() => {}
+            _ => {
+                return Err(ConfigError::StoreRootAbsent {
+                    path: store.display().to_string(),
+                    env: STORE_ENV,
+                });
+            }
+        }
+        return FileStore::new(layout.store_root()).map_err(|_| ConfigError::StoreUnavailable);
+    }
     // The store row of the layout table, not `create_dir_all`: the latter takes
     // whatever `umask` the caller happens to have, which is how the store ended
     // up `0775` while the design said `0755` (misfit B).

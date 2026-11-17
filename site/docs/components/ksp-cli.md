@@ -57,6 +57,15 @@ graph TB
     AUDITV2["audit_verify.rs"]
   end
 
+  subgraph Grantpath["The grant path"]
+      direction TB
+    GRANT["grant.rs<br/>create, update, withdraw"]
+    EDGESTORE["edges.rs<br/>the signed grant store"]
+    PUBLICATION["publication.rs<br/>the fourth level"]
+    POLICYVIEW["policy_view.rs<br/>the join every read prints"]
+    LEDGERS["ledgers.rs<br/>issuance and policy events"]
+  end
+
   subgraph Runpath["The run path"]
       direction TB
     RUN["run.rs<br/>load, verify, sign the proof"]
@@ -84,19 +93,27 @@ graph TB
   COMMANDS --> APP
   APP --> EXIT
   APP --> OUTPUT
+  APP --> GRANT
   APP ~~~ Feature
   APP ~~~ Runpath
   APP ~~~ Host
   RUN --> GATE
   GATE --> PROCESS
   CONSUME --> DELIVER
+  GRANT --> EDGESTORE
+  GRANT --> PUBLICATION
+  GRANT --> LEDGERS
+  POLICYVIEW --> EDGESTORE
+  POLICYVIEW --> PUBLICATION
   Feature ~~~ Runpath
   Runpath ~~~ Host
+  Runpath ~~~ Grantpath
+  Feature ~~~ Grantpath
 ```
 
 ## The Command Surface
 
-Forty public paths, plus one hidden internal command. The complete list is
+Forty-four public paths, plus one hidden internal command. The complete list is
 pinned by `the_command_surface_matches_the_design_specification`.
 
 ### Setup and status
@@ -115,7 +132,13 @@ pinned by `the_command_surface_matches_the_design_specification`.
 | `ksp admin init --vault <id> --user <name>` | Create the deployment, the admin key and the layout |
 | `ksp admin user add [--signing-key-id] [--recipient-key-id] [--unix-user] [--passphrase-file]` | Enrol the user, seal her vault, optionally bind a UNIX account |
 | `ksp admin policy [--agent <id>] [--secret <id>] [--replace] [--show]` | Merge, replace or read back the grant set |
-| `ksp admin put <id> --name <name>` | Write a secret at the `admin` level; the value on stdin |
+| `ksp admin policy create --user <uuid> --secret <id> [--version N] (--agent <id> \| --any)` | Sign one grant as its own edge: the decision, the publication entry and the token |
+| `ksp admin policy update <id> [--agent <id> \| --any] [--expires-at <secs>]` | Re-sign one grant at the next revision; a target change re-publishes, a window move does not |
+| `ksp admin policy delete <id>` | Withdraw one grant: record the decision, remove the artifact, release the entry |
+| `ksp admin policy list [--user] [--secret] [--state] [--limit]` | Every policy, filtered and bounded, with the unprinted total |
+| `ksp admin policy show <id>` | One policy joined with its verification, tokens, agent keys, publication and withdrawal |
+| `ksp admin seal-vault` | Create the admin's own sealed vault, which every publication entry's content key is sealed to |
+| `ksp admin put <id> --name <name> [--own]` | Write a secret at the `admin` level; the value on stdin. `--own` seals to the admin vault, otherwise to the user's key |
 | `ksp admin list` | List the records this deployment holds |
 | `ksp admin audit` | Report the deletion acknowledgement journal - a different store from `ksp audit` |
 | `ksp admin revoke [--secret <id> \| --agent <id>]` | Withdraw a grant |
@@ -141,8 +164,16 @@ pinned by `the_command_surface_matches_the_design_specification`.
 | `ksp secret rm <id> [--version N]` | Remove a version |
 | `ksp secret ls` | List the secrets at this level |
 | `ksp secret share <id> --agent <name> --name <name> [--ttl] [--uses N] --out <path>` | Mint a lease for an agent |
+| `ksp secret share <id> --policy <id> --out <path>` | Export the token a grant authorised: no password, because the token carries no content key |
 | `ksp secret purge-expired [--limit N]` | The admin-signed sweep |
 | `ksp secret gc [--user-arming] [--passphrase-file]` | The user-signed sweep |
+
+### The scoped grant read
+
+| Command | What it does |
+|---|---|
+| `ksp policy list` | The same join as `admin policy list`, scoped to the calling principal |
+| `ksp policy show <id>` | The same join for one grant, as the caller may see it |
 
 ### Tokens and runs
 
@@ -347,8 +378,12 @@ process cannot change what the next run will enforce.
 | `config.rs` | The `Layout` struct and the backend selection |
 | `establish.rs` | Adapter selection and the capability disclosures |
 | `probe.rs` | The host probe, the write policy, the configuration writer |
+| `grant.rs` | One grant's lifecycle: the decision, the artifact, the publication, the token |
+| `edges.rs` | The signed grant store: load, write, withdraw, never re-derive a decision |
+| `publication.rs` | The `granted` level: one artifact per (admin, secret, version), sealed per grant |
+| `policy_view.rs` | The join every read surface prints, so a read cannot disagree with the write |
+| `ledgers.rs` | `issuance.jsonl` and `policy-events.jsonl`, the two append-only decisions |
 | `run.rs` | Loading a lease, verifying it, signing the proof of possession |
-| `run_gate.rs` | The decision half: verify, confine, launch |
 | `consume.rs` | Authorising the intent, spending a use, the delete, the journal |
 | `deliver.rs` | The hidden delivery process |
 | `process.rs` | The real `std::process::Command` launcher |

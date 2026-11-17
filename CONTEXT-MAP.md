@@ -3,7 +3,7 @@ version: "1"
 project_name: "Keyspout"
 created: "2026-10-21T16:50:00+00:00"
 updated: "2026-10-25T00:30:00+02:00"
-contexts_count: 8
+contexts_count: 9
 ---
 
 # Context Map
@@ -23,6 +23,7 @@ byte for byte.
 - [Host Confinement and Key Material Posture](crates/ksp-posture/CONTEXT.md) — what the host can actually enforce, stated honestly before a run.
 - [Durable Key Lifecycle](crates/ksp-key-lifecycle/CONTEXT.md) — owner-only key files, crash-safe replacement and verified identity reload across invocations.
 - [Keyspout Command-Line Interface](crates/ksp/CONTEXT.md) — the foreground entry point, its exit codes, and the rules about what may be printed.
+- [Developer Test Environment](scripts/CONTEXT.md) — the Linux VM the gate needs, the guard that refuses to run its targets elsewhere, and what a status report may claim.
 
 ## Inter-Context Relationships
 

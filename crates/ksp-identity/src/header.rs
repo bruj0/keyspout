@@ -30,6 +30,8 @@
 use ksp_types::{
     AgentId, BoundMetadata, Level, OpaqueSecretId, PrincipalId, RecordVersion, VaultId, cbor,
 };
+
+use crate::policy_edge::PolicyId;
 use serde::{Deserialize, Serialize};
 
 use crate::enrolment::{RecipientPublicKey, VerifyingPublicKey};
@@ -38,11 +40,12 @@ use crate::fingerprint::KeyId;
 /// The wire format version of a delivery header.
 /// The header format this build writes.
 ///
-/// Bumped to 2 when `source_level` was added. A token from an older build is
-/// refused by `delivery::verify` with `UnsupportedVersion`, which is the
-/// intended path: the source level cannot be inferred, and a token that does not
-/// say where its value came from cannot be checked against a policy.
-pub const HEADER_VERSION: u16 = 2;
+/// Bumped to 2 when `source_level` was added, and to 3 when a selected record
+/// gained an optional policy id. A token from an older build is refused by
+/// `delivery::verify` with `UnsupportedVersion`, which is the intended path: the
+/// source level cannot be inferred, and a token that does not say which policy
+/// authorises its record cannot be checked against one.
+pub const HEADER_VERSION: u16 = 3;
 
 /// One record version a delivery names.
 ///
@@ -58,6 +61,20 @@ pub struct SelectedRecord {
     pub secret: OpaqueSecretId,
     /// The exact version.
     pub version: RecordVersion,
+    /// The policy that authorises this record, when it is policy-bound.
+    ///
+    /// `None` means the record was copied into the agent's own level, which is what
+    /// sharing your own secret without a policy does (FR-023). `Some` means the
+    /// value stays where the admin published it and the token only names the grant,
+    /// so withdrawing the policy is what ends access (FR-019, FR-020).
+    pub policy: Option<PolicyId>,
+}
+
+impl SelectedRecord {
+    /// Whether this record is served from a publication under a policy.
+    pub fn is_policy_bound(&self) -> bool {
+        self.policy.is_some()
+    }
 }
 
 /// Everything one delivery binds.
@@ -342,6 +359,7 @@ mod tests {
             vec![SelectedRecord {
                 secret: OpaqueSecretId::new("s-1"),
                 version: RecordVersion(3),
+                policy: None,
             }],
             500,
             "jti-1".to_string(),

@@ -82,16 +82,17 @@ which user-level secrets may be shared and with whom, a maximum TTL per level,
 a monotonic revision and a validity period.
 _Avoid_: ACL, permissions, grant, ruleset
 _Subsystems_: Identity Sealed Delivery and Policy Verification
-_Files_: crates/ksp-identity/src/policy.rs
-_Relates to_: Enrollment Record (trusts), Trusted Checkpoint (is versioned against), Level (bounds)
+_Files_: crates/ksp-identity/src/policy.rs, crates/ksp-identity/src/policy_edge.rs
+_Relates to_: Enrollment Record (trusts), Trusted Checkpoint (is versioned against), Level (bounds), Publication (names the entry it authorises)
 _History_:
 - 2026-10-21 (001-keyspout-mvp): Term introduced.
-- 2026-11-16 (014-policy-scoped-sharing): Redefined in specification as one
-  signed access edge naming exactly one user, one secret version and one target
-  (one agent UUID or `AnyEnrolled`). The current product-of-lists definition
-  above still describes the merged tree; the redefinition is specified and not
-  implemented. Prior definition: product of `shareable_secrets` and
-  `shareable_agents`. Spec: `the feature 014 specification, which is not implemented`.
+- 2026-11-16 (014-policy-scoped-sharing): Redefined as one signed access edge
+  naming exactly one user, one secret version and one target (one agent UUID or
+  `AnyEnrolled`). **Implemented**: `PolicyEdge` in
+  `crates/ksp-identity/src/policy_edge.rs`, recorded and published by
+  `crates/ksp/src/edges.rs`. The product-of-lists form survives only as the
+  legacy `admin policy --show` read-back; no new grant is written into it.
+  Prior definition: product of `shareable_secrets` and `shareable_agents`.
 
 **Publication**:
 A sealed record the admin writes at `p/<vault>/<admin>/granted/<secret-id>/<version>`
@@ -99,10 +100,14 @@ so that a policy-bound delivery can be read by any principal and opened only by
 the agent the policy names.
 _Avoid_: granted copy, shared blob, export
 _Subsystems_: Identity Sealed Delivery and Policy Verification
-_Files_: the feature 014 specification, which is not implemented
+_Files_: crates/ksp/src/publication.rs
 _Relates to_: Policy (is published for), Level (sits at), Delivery Artifact (is read in place by)
 _History_:
-- 2026-11-16 (014-policy-scoped-sharing): Term introduced by specification; not implemented.
+- 2026-11-16 (014-policy-scoped-sharing): Term introduced by specification.
+- 2026-11-17 (014-policy-scoped-sharing): **Implemented** — the `granted` level,
+  the derived path, the `0750`/`0740` permission class, an entry sealed to the one
+  agent a grant names, and the content key sealed to the admin vault so a later
+  entry can recover it. Test `crates/ksp/tests/publication.rs`.
 
 **Cooperative Target**:
 The `AnyEnrolled` policy target, under which the record is sealed to the user
@@ -110,10 +115,14 @@ rather than to an agent, so the agent binding is a checked statement and not a
 cryptographic restriction.
 _Avoid_: any-agent policy, wildcard grant
 _Subsystems_: Identity Sealed Delivery and Policy Verification
-_Files_: the feature 014 specification, which is not implemented
+_Files_: crates/ksp-identity/src/policy_edge.rs, crates/ksp/src/token.rs
 _Relates to_: Policy (is a target of), Publication (is not used by), Downstream Copy (reuses)
 _History_:
-- 2026-11-16 (014-policy-scoped-sharing): Term introduced by specification; not implemented.
+- 2026-11-16 (014-policy-scoped-sharing): Term introduced by specification.
+- 2026-11-17 (014-policy-scoped-sharing): **Implemented** — `PolicyTarget::AnyEnrolled`,
+  labelled `cooperative` on every read surface, carrying no publication and issuing
+  no token (`TokenError::Cooperative`). Its delivery is the agent-level copy the
+  user makes herself.
 
 **Trusted Checkpoint**:
 The highest policy revision a host has already accepted. Without one, freshness

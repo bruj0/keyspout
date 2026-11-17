@@ -202,6 +202,19 @@ impl AdminSigningKey {
         seed.zeroize_now();
         f(&lent)
     }
+
+    /// Run a closure with the admin's signing key, borrowed for one call.
+    ///
+    /// The counterpart of [`UserVault::with_signing_key`]: the admin signs the
+    /// material that carries her authority — a policy edge, and the delivery token
+    /// that edge authorises (CF-020). Handing out the seed would let a caller keep a
+    /// copy, so the key exists only for the length of the call.
+    pub fn with_signing_key<R>(&self, f: impl FnOnce(&SigningSecretKey) -> R) -> R {
+        self.with_secret(|seed| {
+            let key = SigningSecretKey::from_secret_bytes(seed);
+            f(&key)
+        })
+    }
 }
 
 /// An Ed25519 public key.

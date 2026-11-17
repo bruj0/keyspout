@@ -139,6 +139,7 @@ nav:
       - reference/context-ksp-posture.md
       - reference/context-ksp-deletion.md
       - reference/context-ksp-key-lifecycle.md
+      - reference/context-scripts.md
 
 # The reference section is prepared from the public tree by
 # `scripts/site/prepare-docs.py` at build time, not committed as source in the

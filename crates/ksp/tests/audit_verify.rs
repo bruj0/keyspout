@@ -474,6 +474,11 @@ fn verification_needs_only_public_material() {
     for directory in ["enrolments", "audit"] {
         copy_tree(&home.path().join(directory), &public.path().join(directory));
     }
+    // The principal registry is public material too: a current deployment's
+    // verifier reads it from the store, and a home without one is the pre-014
+    // layout the gate refuses. Copying it keeps this test about what verification
+    // needs, not about which layout the fixture happened to build.
+    copy_tree(&home.path().join("store"), &public.path().join("store"));
     assert!(
         !public.path().join("vault.cbor").exists(),
         "the third-party home must hold no vault"
@@ -632,6 +637,19 @@ fn a_missing_policy_is_disclosed_when_the_users_key_cannot_be_pinned() {
     );
 }
 
+/// The issuance ledger `audit verify` actually reads: the store path.
+///
+/// Resolved through `LedgerPaths` rather than assembled by hand, because the point of
+/// the test is the file the verifier opens, and a fixture that built its own path would
+/// pass while the verifier read somewhere else.
+fn deployment_ledger(home: &std::path::Path) -> std::path::PathBuf {
+    let layout = layout(home);
+    let deployment = ksp::deployment::Deployment::load(&layout).expect("a deployment record");
+    ksp::ledgers::LedgerPaths::for_deployment(&layout, &deployment)
+        .issuance()
+        .to_path_buf()
+}
+
 /// A ledger this run cannot parse must not make every agent look current: the
 /// verifier refuses rather than claiming a status it cannot establish.
 #[test]
@@ -639,11 +657,7 @@ fn an_unreadable_ledger_refuses_rather_than_calling_agents_current() {
     let home = tempfile::tempdir().unwrap();
     provision(home.path());
     set_secret(home.path(), "secret-id-1");
-    std::fs::write(
-        layout(home.path()).issuance_ledger(),
-        b"this is not a ledger",
-    )
-    .unwrap();
+    std::fs::write(deployment_ledger(home.path()), b"this is not a ledger").unwrap();
 
     let (code, output) = ksp_in(home.path(), &["audit", "verify"], None);
     assert_eq!(

@@ -139,21 +139,44 @@ impl VaultError {
     }
 }
 
-/// Where this host keeps its vault.
+/// The file the admin principal's own vault lives in.
+///
+/// Beside `vault.cbor` rather than inside a nested home: a nested root would run
+/// the layout's home rows on a subdirectory, and the layout is a deployment's
+/// table, not a directory's.
+pub const ADMIN_VAULT_FILE: &str = "admin-vault.cbor";
+
+/// Where this host keeps a vault.
 #[derive(Debug, Clone)]
 pub struct VaultHome {
     root: PathBuf,
+    file: &'static str,
 }
 
 impl VaultHome {
-    /// A vault home under `root`.
+    /// The principal's vault, under `root`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            file: "vault.cbor",
+        }
+    }
+
+    /// A second vault in the same home, under its own file name.
+    ///
+    /// The admin has a vault of her own and the user has hers; both live in their
+    /// own homes, and only a deployment with both roles in one home needs the
+    /// second name (CF-003, CF-018).
+    pub fn named(root: impl Into<PathBuf>, file: &'static str) -> Self {
+        Self {
+            root: root.into(),
+            file,
+        }
     }
 
     /// The vault file.
     pub fn vault_file(&self) -> PathBuf {
-        self.root.join("vault.cbor")
+        self.root.join(self.file)
     }
 
     /// The home this vault lives under.

@@ -473,7 +473,20 @@ pub fn run(
     };
 
     let decryptor = RecordDecryptor {
-        content_key: &loaded.content_key,
+        // A policy-bound delivery never reaches here: `load` refuses its consume
+        // before this runs (FR-019) and it holds no content key to decrypt with. The
+        // arm states that rather than unwrapping, so a future caller that skipped the
+        // refusal fails here instead of panicking in a delivery path.
+        content_key: match loaded.content_key.as_ref() {
+            Some(content_key) => content_key,
+            None => {
+                let _ = crate::output::Emitter::new(false, std::io::stderr()).refusal(
+                    "this delivery is governed by a policy and holds no content key, so there \
+                     is nothing to consume: withdraw the policy instead",
+                );
+                return Outcome::Failed(exit::POLICY_DENIAL);
+            }
+        },
         vault_id: intent.vault_id.clone(),
         user_id: intent.user_id,
     };

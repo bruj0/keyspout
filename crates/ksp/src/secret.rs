@@ -163,9 +163,26 @@ pub fn metadata_at(
     secret: &OpaqueSecretId,
     version: u32,
 ) -> BoundMetadata {
+    metadata_for(deployment, deployment.user, level, secret, version)
+}
+
+/// The metadata a record at `principal`, `level` and `version` carries.
+///
+/// The principal is the record's owner, and it is not always the user: the admin
+/// writes one `admin`-level record at her own principal so that `admin policy`
+/// has a plaintext source it can open (WP07, CF-102). Everything else about the
+/// metadata is identical, so both writers go through one constructor and cannot
+/// describe different records.
+pub fn metadata_for(
+    deployment: &Deployment,
+    principal: ksp_types::PrincipalId,
+    level: Level,
+    secret: &OpaqueSecretId,
+    version: u32,
+) -> BoundMetadata {
     BoundMetadata {
         vault_id: deployment.vault.clone(),
-        user_id: deployment.user,
+        user_id: principal,
         level,
         secret_id: secret.clone(),
         version,
@@ -261,14 +278,38 @@ pub fn seal_record_at(
     value: &[u8],
     recipient: [u8; 32],
 ) -> Result<u32, SecretError> {
-    let version = next_version_at(
+    seal_record_by(
         store,
-        &recorded.vault,
-        &recorded.user,
-        level.clone(),
+        recorded,
+        recorded.user,
+        level,
         secret,
-    )?;
-    let metadata = metadata_at(recorded, level, secret, version);
+        name,
+        value,
+        recipient,
+    )
+}
+
+/// Store `value` as a new version of `secret` at `level`, owned by `principal`.
+///
+/// The owner is a parameter because one record is not the user's: the admin's
+/// own `admin`-level copy of a shared value lives at *her* principal, so that the
+/// writer and the reader of that copy are the same person. Passing the owner here
+/// rather than rewriting the metadata afterwards keeps one constructor for the
+/// bound metadata, so the path, the AAD and the envelope cannot disagree.
+#[allow(clippy::too_many_arguments)]
+pub fn seal_record_by(
+    store: &dyn ksp_record::version::BlobStore,
+    recorded: &Deployment,
+    principal: ksp_types::PrincipalId,
+    level: Level,
+    secret: &OpaqueSecretId,
+    name: &[u8],
+    value: &[u8],
+    recipient: [u8; 32],
+) -> Result<u32, SecretError> {
+    let version = next_version_at(store, &recorded.vault, &principal, level.clone(), secret)?;
+    let metadata = metadata_for(recorded, principal, level, secret, version);
     let aad = metadata.bound_aad().map_err(|_| SecretError::Record)?;
 
     let content_key = ksp_types::ContentKey::generate();
@@ -617,7 +658,9 @@ pub fn check_ledger_account(
 
     // (2) The ledger's owner. A ledger that is absent is not a refusal: the
     // append this command is about to make is what creates it.
-    let Ok(metadata) = std::fs::metadata(layout.issuance_ledger()) else {
+    let Ok(metadata) = std::fs::metadata(
+        crate::ledgers::LedgerPaths::for_deployment(layout, deployment).issuance(),
+    ) else {
         return Ok(());
     };
     let owner_uid = std::os::unix::fs::MetadataExt::uid(&metadata);
@@ -710,6 +753,7 @@ mod tests {
             KeyId::new("alice-ed25519-1"),
             KeyId::new("alice-x25519-1"),
             None,
+            None,
         )
         .unwrap();
         configure(&layout);
@@ -740,7 +784,8 @@ mod tests {
         let me = ksp_posture::permissions::effective_uid();
         recorded.user_account = Some(account_name(me).unwrap_or_else(|| me.to_string()));
         // The ledger must exist for the owner comparison to run at all.
-        std::fs::write(layout.issuance_ledger(), b"").unwrap();
+        let ledger = crate::ledgers::LedgerPaths::for_deployment(&layout, &recorded);
+        std::fs::write(ledger.issuance(), b"").unwrap();
         assert!(check_ledger_account(&layout, &recorded).is_ok());
     }
 
@@ -813,7 +858,8 @@ mod tests {
         let (_dir, layout) = deployment();
         let mut recorded = crate::deployment::Deployment::load(&layout).unwrap();
         recorded.user_account = Some("ksp-someone-else".to_string());
-        let _ = std::fs::remove_file(layout.issuance_ledger());
+        let ledger = crate::ledgers::LedgerPaths::for_deployment(&layout, &recorded);
+        let _ = std::fs::remove_file(ledger.issuance());
         assert!(check_ledger_account(&layout, &recorded).is_ok());
     }
 

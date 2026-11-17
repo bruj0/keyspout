@@ -299,6 +299,37 @@ Two things make this flow refuse rather than silently weaken:
 
 Both refusals name what would change the answer. Nothing is downgraded quietly.
 
+### Delivering with no copy
+
+The flow above makes a copy: an agent-level record sealed to that agent's key, with
+a TTL and a use count. When the secret belongs to the **admin** and an agent needs
+it, there is a second shape with no copy at all — one publication, one grant, one
+token that carries a reference instead of a key.
+
+```bash
+# Once per deployment: the vault every publication entry is sealed to.
+ksp admin seal-vault --passphrase-file admin.pw
+
+# The admin's own copy of the secret — the plaintext a publication is made from.
+printf 'value' | ksp admin put published --name published --own
+
+# One grant: the edge, the publication entry sealed to the agent, and the token.
+ksp admin policy create --user "$USER_ID" --secret published --version 1 \
+    --agent "$AGENT" --passphrase-file admin.pw
+
+# The user exports it. No password: the token has no content key to unlock.
+ksp secret share published --policy "$POLICY" --out pub.token
+
+# The agent opens the publication with its own key.
+ksp run --token pub.token --env KSP_POLICY_VALUE -- ./deploy.sh
+```
+
+The difference is what the token can do. A leased token carries a content key, so
+the agent's copy is real and `--consume` deletes it. A policy token carries a
+publication reference, so `--consume` is refused: there is nothing to delete, and
+withdrawing the grant stops the next run without recalling a value the agent
+already read.
+
 The diagram below shows the same flow with the actors separated.
 
 ```mermaid
@@ -381,6 +412,8 @@ the entry says which part.
 - `ksp agent rotate` — rotate both keys, retaining the previous bundle.
 - `ksp secret share` / `ksp token mint` — a sealed agent-level copy with a TTL
   and an optional use count.
+- `ksp secret share --policy` — the same export with no copy: the agent opens the
+  admin's publication entry with its own key, and there is nothing to consume.
 - `ksp token inspect` — scope, issuer and expiry. Never a key, never a value.
 - `ksp token list` / `ksp token revoke` — the tokens this host minted.
 - `ksp run --token … --consume` — deliver, delete, report, in one foreground
@@ -398,8 +431,29 @@ the entry says which part.
 
 ### Policy
 
-- `ksp admin policy` — re-sign the policy with the grants you name.
+- `ksp admin policy` — re-sign the policy with the grants you name. A write
+  **merges**: grants you do not name are kept. `--replace` writes the whole set
+  and withdraws the rest, and its report lists what it withdrew.
 - `ksp admin revoke` — withdraw one grant and record the decision.
+- `ksp admin policy create` — sign one grant as its own edge: a publication, a
+  sealed entry for the agent, and the token the user later exports. No copy of the
+  secret is made.
+- `ksp admin policy update` — re-sign one grant at the next revision, moving the
+  window without a password because the entry is already sealed; a target change
+  re-publishes.
+- `ksp admin policy delete` — withdraw one grant: record the decision, remove the
+  artifact, release the publication entry.
+- `ksp admin policy list` / `show` — every policy, and one policy joined with its
+  artifact, its verification, its tokens, the agent's keys, the publication and the
+  withdrawal. A grant whose publication is missing reads `dangling`, not `active`.
+- `ksp admin seal-vault` — the admin's own vault, which every publication entry's
+  content key is sealed to. One per deployment.
+- `ksp admin put --own` — write the admin's own copy of a secret, sealed to that
+  vault: the plaintext a publication is made from. Without `--own` it is the
+  transfer to the user, which the admin cannot read.
+- `ksp secret share --policy` — export the token a grant already authorised. No
+  password, no key, and the token carries a publication reference instead of a
+  content key.
 - Grants are admin-signed, so an agent can verify what it was allowed to do
   without trusting the store.
 
