@@ -29,8 +29,8 @@ pub use content_key::{CONTENT_KEY_LEN, ContentKey};
 pub use content_key::{Erasure, last_erasure, take_erasure};
 pub use domains::{
     DOMAIN_ABSENCE_OBSERVATION, DOMAIN_DELETE_INTENT, DOMAIN_DELETE_REPORT, DOMAIN_ENROLMENT,
-    DOMAIN_POLICY, DOMAIN_POP, DOMAIN_TOKEN, DOMAIN_VAULT_AAD, HPKE_INFO_DELIVERY,
-    HPKE_INFO_RECORD,
+    DOMAIN_POLICY, DOMAIN_POLICY_EDGE, DOMAIN_POP, DOMAIN_TOKEN, DOMAIN_VAULT_AAD,
+    HPKE_INFO_DELIVERY, HPKE_INFO_RECORD,
 };
 pub use evidence::{AbsenceObservation, DeletionIntent, DeletionReport, Outcome};
 pub use metadata::{

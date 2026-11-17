@@ -21,7 +21,6 @@ use std::io::Write;
 use std::path::Path;
 
 use ksp_deletion::{AuditChain, PinRole, PinStatus, PinnedKey, Pins, VerifyReport, verify_segment};
-use ksp_identity::IssuanceLedger;
 use ksp_types::PrincipalId;
 
 use crate::config::Layout;
@@ -230,7 +229,12 @@ fn pins(layout: &Layout) -> Result<(Pins, bool), VerifyError> {
     // A ledger that cannot be read cannot rule a withdrawal out. Reporting every
     // agent as current on the strength of a file this run could not parse would be
     // the one claim verification must never make, so the run refuses instead.
-    let withdrawals = IssuanceLedger::at(layout.issuance_ledger())
+    // From the deployment record, which this run already holds: the record names both
+    // principals, so there is nothing to discover and nothing to fail on before the
+    // ledger read itself. A missing policy is then reported as a missing policy rather
+    // than as a registry this command never needed.
+    let withdrawals = crate::ledgers::LedgerPaths::for_deployment(layout, &deployment)
+        .as_ledger()
         .withdrawals()
         .map_err(|error| {
             VerifyError::Pins(format!(

@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use crate::enrolment::{EnrollmentRecord, SigningSecretKey, UnsignedEnrolment, VerifyingPublicKey};
 use crate::fingerprint::EnrolmentFingerprint;
 use crate::header::{DeliveryHeader, HEADER_VERSION, HeaderError, SelectedRecord};
+use crate::policy_edge::{PolicyId, PolicyRecordRef};
 use crate::token::{self, DeliveryEnvelope, TokenError, TokenSignature};
 
 /// An X25519 recipient key that has been checked against a confirmed fingerprint.
@@ -122,7 +123,43 @@ impl VerifiedRecipientKey {
 /// same version number, and keying on the number alone would deliver one
 /// secret's key under the other's path.
 pub struct SelectedContentKeys {
-    keys: Vec<(SelectedRecord, ContentKey)>,
+    keys: Vec<(SelectedRecord, DeliveredKey)>,
+}
+
+/// What one selected record's entry carries.
+///
+/// A plain record carries the content key its agent-level copy was sealed under.
+/// A policy-bound record carries a **reference** instead: the user who minted the
+/// token cannot open the publication, so a key in her token would be a key she
+/// obtained without authority (FR-018). The agent resolves the reference with its
+/// own recipient key, after checking the policy is still live.
+///
+/// No `PartialEq`: `ContentKey` deliberately does not implement it, so comparing
+/// two keys can never become the check that a key is the right one.
+#[derive(Debug, Clone)]
+pub enum DeliveredKey {
+    /// The content key of an agent-level copy.
+    Content(ContentKey),
+    /// The publication and the policy that authorises opening it.
+    Policy(PolicyRecordRef),
+}
+
+impl DeliveredKey {
+    /// The content key, when this entry carries one.
+    pub fn content(&self) -> Option<&ContentKey> {
+        match self {
+            Self::Content(key) => Some(key),
+            Self::Policy(_) => None,
+        }
+    }
+
+    /// The policy reference, when this entry carries one.
+    pub fn policy(&self) -> Option<&PolicyRecordRef> {
+        match self {
+            Self::Content(_) => None,
+            Self::Policy(reference) => Some(reference),
+        }
+    }
 }
 
 impl SelectedContentKeys {
@@ -134,9 +171,38 @@ impl SelectedContentKeys {
     /// be a key delivered without authority.
     pub fn new(
         header: &DeliveryHeader,
-        supplied: Vec<(SelectedRecord, ContentKey)>,
+        supplied: Vec<(SelectedRecord, DeliveredKey)>,
     ) -> Result<Self, DeliveryError> {
         let selected = header.records();
+
+        // A record that names a policy must carry a reference, and one that does not
+        // must carry a key. Either mismatch would defeat a control: a policy-bound
+        // record holding a key survives withdrawal, and a plain record holding a
+        // reference makes `run` look for a grant the token never had.
+        for (record, delivered) in &supplied {
+            let named = record.policy.is_some();
+            let carried = delivered.policy().is_some();
+            if named != carried {
+                return Err(DeliveryError::PolicyKeyMismatch {
+                    secret: record.secret.as_str().to_string(),
+                    version: record.version.get(),
+                    cause: if named {
+                        "the record names a policy but its entry carries a content key"
+                    } else {
+                        "the record names no policy but its entry carries a policy reference"
+                    },
+                });
+            }
+            if let (Some(record_id), Some(reference)) = (&record.policy, delivered.policy())
+                && record_id != &reference.policy_id
+            {
+                return Err(DeliveryError::PolicyKeyMismatch {
+                    secret: record.secret.as_str().to_string(),
+                    version: record.version.get(),
+                    cause: "the record's policy id is not the one its entry references",
+                });
+            }
+        }
 
         for record in selected {
             if !supplied.iter().any(|(s, _)| s == record) {
@@ -158,7 +224,7 @@ impl SelectedContentKeys {
         // Header order, so the plaintext is a function of the header alone.
         let mut keys = Vec::with_capacity(selected.len());
         for record in selected {
-            let matching: Vec<&(SelectedRecord, ContentKey)> =
+            let matching: Vec<&(SelectedRecord, DeliveredKey)> =
                 supplied.iter().filter(|(s, _)| s == record).collect();
             if matching.len() > 1 {
                 return Err(DeliveryError::DuplicateContentKey {
@@ -186,12 +252,26 @@ impl SelectedContentKeys {
         self.keys.iter().map(|(record, _)| record.clone()).collect()
     }
 
-    /// The key for one selected record.
-    pub fn get(&self, secret: &OpaqueSecretId, version: RecordVersion) -> Option<&ContentKey> {
+    /// What one selected record's entry carries.
+    pub fn delivered(
+        &self,
+        secret: &OpaqueSecretId,
+        version: RecordVersion,
+    ) -> Option<&DeliveredKey> {
         self.keys
             .iter()
             .find(|(record, _)| record.secret == *secret && record.version == version)
-            .map(|(_, key)| key)
+            .map(|(_, delivered)| delivered)
+    }
+
+    /// The content key for one selected record, when it carries one.
+    pub fn content_key(
+        &self,
+        secret: &OpaqueSecretId,
+        version: RecordVersion,
+    ) -> Option<&ContentKey> {
+        self.delivered(secret, version)
+            .and_then(DeliveredKey::content)
     }
 
     /// The plaintext that goes inside the envelope.
@@ -205,16 +285,27 @@ impl SelectedContentKeys {
         struct Entry<'a> {
             secret: &'a str,
             version: RecordVersion,
-            key: &'a [u8],
+            key: Option<&'a [u8]>,
+            policy: Option<PolicyRefWire<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct PolicyRefWire<'a> {
+            policy_id: &'a str,
+            publication: &'a str,
         }
 
         let entries: Vec<Entry<'_>> = self
             .keys
             .iter()
-            .map(|(record, key)| Entry {
+            .map(|(record, delivered)| Entry {
                 secret: record.secret.as_str(),
                 version: record.version,
-                key: key.as_bytes().as_slice(),
+                key: delivered.content().map(|key| key.as_bytes().as_slice()),
+                policy: delivered.policy().map(|reference| PolicyRefWire {
+                    policy_id: reference.policy_id.as_str(),
+                    publication: reference.publication.as_str(),
+                }),
             })
             .collect();
         cbor::encode(&entries).map_err(|err| DeliveryError::Encoding {
@@ -448,7 +539,14 @@ pub fn open(
     struct Entry {
         secret: String,
         version: RecordVersion,
-        key: Vec<u8>,
+        key: Option<Vec<u8>>,
+        policy: Option<PolicyRefWire>,
+    }
+
+    #[derive(Deserialize)]
+    struct PolicyRefWire {
+        policy_id: String,
+        publication: String,
     }
 
     let entries: Vec<Entry> = cbor::decode(&plaintext).map_err(|err| DeliveryError::Malformed {
@@ -457,20 +555,56 @@ pub fn open(
 
     let mut supplied = Vec::with_capacity(entries.len());
     for entry in entries {
-        let bytes: [u8; 32] =
-            entry
-                .key
-                .as_slice()
-                .try_into()
-                .map_err(|_| DeliveryError::Malformed {
-                    cause: "a content key was not 32 bytes".to_string(),
-                })?;
+        let policy_id = match &entry.policy {
+            Some(reference) => Some(PolicyId::parse(&reference.policy_id).map_err(|cause| {
+                DeliveryError::Malformed {
+                    cause: cause.to_string(),
+                }
+            })?),
+            None => None,
+        };
+        let delivered = match (&entry.policy, entry.key) {
+            (Some(reference), None) => {
+                // The id was parsed above from this same reference, so its absence
+                // here is a contradiction rather than a case to expect.
+                let Some(id) = policy_id.clone() else {
+                    return Err(DeliveryError::Malformed {
+                        cause: "a policy reference carried no id".to_string(),
+                    });
+                };
+                DeliveredKey::Policy(PolicyRecordRef {
+                    policy_id: id,
+                    publication: reference.publication.clone(),
+                })
+            }
+            (None, Some(key)) => {
+                let bytes: [u8; 32] =
+                    key.as_slice()
+                        .try_into()
+                        .map_err(|_| DeliveryError::Malformed {
+                            cause: "a content key was not 32 bytes".to_string(),
+                        })?;
+                DeliveredKey::Content(ContentKey::from_bytes(bytes))
+            }
+            (Some(_), Some(_)) => {
+                return Err(DeliveryError::Malformed {
+                    cause: "an entry carried both a policy reference and a content key".to_string(),
+                });
+            }
+            (None, None) => {
+                return Err(DeliveryError::Malformed {
+                    cause: "an entry carried neither a policy reference nor a content key"
+                        .to_string(),
+                });
+            }
+        };
         supplied.push((
             SelectedRecord {
                 secret: OpaqueSecretId::new(entry.secret),
                 version: entry.version,
+                policy: policy_id,
             },
-            ContentKey::from_bytes(bytes),
+            delivered,
         ));
     }
 
@@ -581,6 +715,16 @@ pub enum DeliveryError {
     /// The recipient key is not the key this header names.
     #[error("the recipient key is not the key this header names")]
     RecipientMismatch,
+    /// A record's policy and the key its entry carries disagree.
+    #[error("the entry for {secret} at version {version} does not agree with its policy: {cause}")]
+    PolicyKeyMismatch {
+        /// The secret the record names.
+        secret: String,
+        /// The version the record names.
+        version: u32,
+        /// Which of the two mismatches this is.
+        cause: &'static str,
+    },
     /// A selected record had no content key.
     #[error("no content key was supplied for {secret} at version {version}")]
     MissingContentKey {

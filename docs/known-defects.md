@@ -59,8 +59,10 @@ The ledger has three writers and they are not one account:
 `run` reads the file to decide whether a token may still be used. A
 group-*writable* ledger would let any group member append a revocation or remove
 one, which is a mint history that member can forge. `1e13c47` split the file in
-two — `issuance.jsonl` for the principal, `withdrawals.jsonl` for the admin — so
-each has one writer and `0640` is enough.
+two — `issuance.jsonl` for the principal, `policy-events.jsonl` for the admin — so
+each has one writer and `0640` is enough. (The admin's file was `withdrawals.jsonl`
+when this was written; feature `014-policy-scoped-sharing` renamed it when grant
+creations joined the withdrawals in it.)
 
 ### What a fix has to satisfy
 
@@ -823,6 +825,89 @@ halves — the redacted document must not carry the value, and the revealed one 
 
 While writing `keyspout-secrets`, which tells an agent to read a secret back and
 parse the result. The first draft used `--json` and got a tab-separated line.
+
+---
+
+## D13 — `audit verify` reports another principal's chain as a verification failure
+
+**Severity:** functional in a two-account deployment. A caller cannot tell "run
+this as the other account" from "your log is damaged".
+**Status:** open. Documented in `QUICKSTART.md`; the exit code is unchanged.
+
+### What happens
+
+Each principal's audit chain lives in `audit/<principal>/`, `0700` and owned by
+that principal. On a two-account host, `ksp audit verify` run by the admin cannot
+read the user's directory, so it counts the chain `unreadable`, says "1 entr(ies)
+could not be read", and exits `12` — the code whose meaning is *the audit log did
+not verify*:
+
+```
+$ asadmin audit verify
+audit verify: segments=1  records=2  valid=2  revoked=0  unpinned=0  mismatch=0  invalid=0  unreadable=1  chain=unbroken
+note: could not read audit/<user-principal>: the audit segment could not be read: …/audit/<user-principal>
+note: 1 entr(ies) could not be read, so this run did not check every record
+ksp: refused (exit 12: the audit log did not verify; the report names the finding)
+```
+
+Every record it *could* read verified (`valid=2  invalid=0  chain=unbroken`), and
+the run still reports a verification failure. A monitoring script that treats a
+non-zero `verify` as an alarm fires on every healthy two-account deployment.
+
+### What a fix has to satisfy
+
+Separate *not mine to read* from *mine and unreadable*. The report already knows
+which principal owns the directory it could not open, so the distinction is
+available at the point the count is made. Two shapes are honest:
+
+1. count a chain this principal does not own as **withheld**, not unreadable, and
+   keep exit `12` for a file it should have been able to read; or
+2. keep the count and let the caller bound the scope — `audit verify --principal
+   <uuid>` — so an exit code describes the scope it was asked about.
+
+Either way the sentence must say which, and a test has to pin a two-account host:
+the single-account suite cannot see this, because there both chains are readable.
+
+### How it was found
+
+Replaying `QUICKSTART.md` on the Linux gate VM with two accounts, which is the
+first time the guide's own steps were run as two accounts rather than one.
+
+---
+
+## D14 — `admin put` refuses with a sentence about a flag it does not accept
+
+**Severity:** minor. The refusal names the wrong cause and a nonexistent option.
+**Status:** open.
+
+### What happens
+
+`admin put` reads its **value** on stdin and needs no password (`--own` seals to
+the admin's public recipient key). When stdin is not a pipe — a terminal, or a
+script whose stdin is already spent — the shared value reader refuses:
+
+```
+ksp: the value could not be read from the input: the value comes from stdin, and the password comes from --passphrase-file when stdin carries a value
+ksp: refused (exit 13: the invocation was malformed; the message names the accepted form)
+```
+
+`admin put --help` lists no `--passphrase-file`, and passing one is a clap error:
+`unexpected argument '--passphrase-file' found`. The caller is told to use an
+option that exists on `secret set` and not here, and told about a password the
+command does not take.
+
+### What a fix has to satisfy
+
+The sentence belongs to the command, not to the reader. Either give `put` the
+flag every other password-reading command has (it would be accepted and unused,
+which is worse), or let the caller pass the wording: `secret set` names the
+password flag because it has one, `admin put` says only that stdin carried no
+value. A test asserting the two messages differ is enough to keep them honest.
+
+### How it was found
+
+Replaying `QUICKSTART.md` step 8, where the admin's own record is written with a
+value on stdin.
 
 ---
 

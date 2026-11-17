@@ -43,6 +43,20 @@ pub struct Deployment {
     pub user_account: Option<String>,
     /// The ID the admin key is pinned under.
     pub admin_key_id: KeyId,
+    /// The ID the admin's **own vault** was enrolled under, when she has one.
+    ///
+    /// Distinct from [`Self::admin_key_id`]: that key signs policies and reports
+    /// and lives in the keystore; this one is the admin's vault binding, and it
+    /// exists so she can open her own records to publish them. Absent until
+    /// `admin seal-vault` runs (CF-018).
+    pub admin_vault_signing_key_id: Option<KeyId>,
+    /// The ID the admin vault's X25519 key was enrolled under.
+    pub admin_vault_recipient_key_id: Option<KeyId>,
+    /// The admin vault's X25519 **public** key.
+    ///
+    /// Recorded so a publication can seal its content key to her without her
+    /// password. Public material, and useless without the vault itself.
+    pub admin_vault_recipient_key: Option<ksp_identity::RecipientPublicKey>,
     /// The ID the user's Ed25519 key was enrolled under.
     pub user_signing_key_id: Option<KeyId>,
     /// The user's Ed25519 **public** key, as enrolled.
@@ -72,6 +86,12 @@ struct DeploymentWire {
     user_account: Option<String>,
     admin_key_id: String,
     #[serde(default)]
+    admin_vault_signing_key_id: Option<String>,
+    #[serde(default)]
+    admin_vault_recipient_key_id: Option<String>,
+    #[serde(default)]
+    admin_vault_recipient_key: Option<[u8; 32]>,
+    #[serde(default)]
     user_signing_key_id: Option<String>,
     #[serde(default)]
     user_signing_key: Option<[u8; 32]>,
@@ -94,6 +114,11 @@ impl Deployment {
             user_name: wire.user_name,
             user_account: wire.user_account,
             admin_key_id: KeyId::new(wire.admin_key_id),
+            admin_vault_signing_key_id: wire.admin_vault_signing_key_id.map(KeyId::new),
+            admin_vault_recipient_key_id: wire.admin_vault_recipient_key_id.map(KeyId::new),
+            admin_vault_recipient_key: wire
+                .admin_vault_recipient_key
+                .map(ksp_identity::RecipientPublicKey::from_bytes),
             user_signing_key_id: wire.user_signing_key_id.map(KeyId::new),
             user_signing_key: wire
                 .user_signing_key
@@ -122,6 +147,15 @@ impl Deployment {
             user_name: self.user_name.clone(),
             user_account: self.user_account.clone(),
             admin_key_id: self.admin_key_id.as_str().to_string(),
+            admin_vault_signing_key_id: self
+                .admin_vault_signing_key_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
+            admin_vault_recipient_key_id: self
+                .admin_vault_recipient_key_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
+            admin_vault_recipient_key: self.admin_vault_recipient_key.map(|key| key.to_bytes()),
             user_signing_key_id: self
                 .user_signing_key_id
                 .as_ref()
@@ -205,6 +239,9 @@ mod tests {
             user_name: Some("alice".to_string()),
             user_account: None,
             admin_key_id: KeyId::new("admin-2026"),
+            admin_vault_signing_key_id: None,
+            admin_vault_recipient_key_id: None,
+            admin_vault_recipient_key: None,
             user_signing_key_id: None,
             user_signing_key: None,
             user_recipient_key_id: None,

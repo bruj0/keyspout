@@ -55,6 +55,18 @@ pub fn home_from_env() -> Option<PathBuf> {
 
 /// Run one invocation.
 pub fn dispatch(cli: &Cli, home: &Path) -> Outcome {
+    // The layout gate precedes every command that touches this host's state, so a
+    // home this build cannot represent is refused before a record, a key or a
+    // policy is opened. `version` is the one command that reads nothing here: it
+    // is how an operator finds out which build to run against the old tree.
+    if !matches!(cli.command, Command::Version) {
+        let layout = Layout::new(home.to_path_buf());
+        if let Err(error) = crate::layout::require_current(&layout) {
+            let mut emitter = Emitter::new(cli.json, std::io::stdout());
+            let _ = emitter.refusal(&error.to_string());
+            return Outcome::Failed(exit::CAPABILITY_REFUSAL);
+        }
+    }
     match &cli.command {
         Command::Version => {
             // The version is not a secret and carries no state.
@@ -218,6 +230,11 @@ pub fn dispatch(cli: &Cli, home: &Path) -> Outcome {
             let mut emitter = Emitter::new(cli.json, std::io::stdout());
             run_admin(command, &layout, &mut emitter)
         }
+        Command::Policy { command } => {
+            let layout = Layout::new(home.to_path_buf());
+            let mut emitter = Emitter::new(cli.json, std::io::stdout());
+            user_policy_read(&layout, &mut emitter, command)
+        }
         Command::Secret { command } => {
             let layout = Layout::new(home.to_path_buf());
             let mut emitter = Emitter::new(cli.json, std::io::stdout());
@@ -325,6 +342,7 @@ fn run_admin<W: Write>(
                     signing_key_id,
                     recipient_key_id,
                     unix_user,
+                    home: target_home,
                     passphrase_file,
                 },
         } => {
@@ -350,6 +368,7 @@ fn run_admin<W: Write>(
                 ksp_identity::KeyId::new(signing_key_id.clone()),
                 ksp_identity::KeyId::new(recipient_key_id.clone()),
                 unix_user.as_deref(),
+                target_home.as_deref(),
             ) {
                 Ok(principal) => report_or_internal(
                     emitter,
@@ -368,7 +387,7 @@ fn run_admin<W: Write>(
                 }
             }
         }
-        AdminCommand::Put { id, name } => {
+        AdminCommand::Put { id, name, own } => {
             let value = match crate::secret::read_value(&mut std::io::stdin()) {
                 Ok(value) => value,
                 Err(error) => {
@@ -379,7 +398,16 @@ fn run_admin<W: Write>(
                 }
             };
             let secret = ksp_types::OpaqueSecretId::new(id.clone());
-            match crate::admin::put(layout, &secret, name.as_bytes(), &value) {
+            // `--own` seals to the admin's vault at her own principal; without it the
+            // value is sealed to the user, which is the transfer. One dispatch, so a
+            // caller that forgets the flag writes a record it cannot publish from and
+            // the refusal names the flag rather than the wrong key.
+            let written = if *own {
+                crate::admin::put_own(layout, &secret, name.as_bytes(), &value)
+            } else {
+                crate::admin::put(layout, &secret, name.as_bytes(), &value)
+            };
+            match written {
                 Ok(version) => {
                     // Administrative write, signed with the admin's key; the record
                     // is durable before the new version is named.
@@ -431,6 +459,24 @@ fn run_admin<W: Write>(
                 }
             }
         }
+        AdminCommand::SealVault { passphrase_file } => {
+            let password = match crate::app::password(passphrase_file.as_deref()) {
+                Ok(password) => password,
+                Err(error) => {
+                    return refused(emitter, error.exit_code(), &error.to_string());
+                }
+            };
+            match crate::admin::seal_vault(layout, &password) {
+                Ok(sealed) => report_or_internal(
+                    emitter,
+                    &Report::PrincipalIssued {
+                        operation: "admin seal-vault".to_string(),
+                        principal: sealed.principal.to_string(),
+                    },
+                ),
+                Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+            }
+        }
         AdminCommand::List => match crate::admin::list(layout) {
             Ok(records) => report_or_internal(emitter, &Report::Records { records }),
             Err(error) => {
@@ -455,11 +501,18 @@ fn run_admin<W: Write>(
             }
         },
         AdminCommand::Policy {
+            command,
             agents,
             secrets,
             replace,
             show,
         } => {
+            // The read verbs answer before the legacy flags are looked at: `list`
+            // takes no grant, and a caller that typed one alongside it would be
+            // asking for a write that the verb does not perform.
+            if let Some(verb) = command {
+                return admin_policy(layout, emitter, verb);
+            }
             // The read-back. It writes nothing and needs no admin key: the
             // policy is public material every principal reads, and a caller that
             // must hold the admin key to *see* what it may do cannot check a
@@ -1375,11 +1428,44 @@ fn run_secret<W: Write>(
             id,
             agent,
             name,
+            policy,
             ttl,
             uses,
             out,
             passphrase_file,
         } => {
+            // Two deliveries behind one verb. `--policy` exports an artifact the admin
+            // already signed; without it the user mints a leased copy. They share no
+            // step after the identifier, so the dispatch happens here rather than
+            // threading a flag through the mint.
+            if let Some(policy) = policy {
+                return share_through_policy(
+                    policy,
+                    id,
+                    agent.as_deref(),
+                    name.as_deref(),
+                    *ttl,
+                    *uses,
+                    out,
+                    passphrase_file.as_deref(),
+                    layout,
+                    emitter,
+                );
+            }
+            let Some(agent) = agent.as_deref() else {
+                return refused(
+                    emitter,
+                    exit::USAGE,
+                    "`secret share` needs --agent, or --policy to deliver through a grant",
+                );
+            };
+            let Some(name) = name else {
+                return refused(
+                    emitter,
+                    exit::USAGE,
+                    "`secret share` needs --name, or --policy to deliver through a grant",
+                );
+            };
             let password = match password(passphrase_file.as_deref()) {
                 Ok(password) => password,
                 // The sentence the error carries, not just its code. The code
@@ -1452,7 +1538,7 @@ fn run_secret<W: Write>(
                 &identity,
                 &ksp_types::OpaqueSecretId::new(id.clone()),
                 name.as_bytes(),
-                *ttl,
+                ttl.unwrap_or(1_200),
                 *uses,
                 out,
             ) {
@@ -1486,6 +1572,134 @@ fn run_secret<W: Write>(
             passphrase_file.as_deref(),
         ),
         other => crate::secret::run(other, layout, emitter),
+    }
+}
+
+/// `secret share --policy`: deliver through a grant instead of minting a copy.
+///
+/// Nothing here reads a password or signs anything. The artifact was signed by the
+/// admin when the grant was created, and the publication entry is sealed to the
+/// agent, so the user's "share" is a copy of a file she could not open if she tried
+/// (C1, FR-018, CF-020).
+///
+/// The two things that can be wrong are named before anything is exported: a
+/// different secret than the grant delivers, and a different agent than the grant
+/// names. Both are refused with the name the grant actually carries, because an
+/// agent handed the wrong credential is the defect this check exists to prevent.
+#[allow(clippy::too_many_arguments)]
+fn share_through_policy<W: Write>(
+    policy: &str,
+    secret: &str,
+    agent: Option<&str>,
+    name: Option<&str>,
+    ttl: Option<u64>,
+    uses: Option<u32>,
+    out: &Path,
+    passphrase_file: Option<&Path>,
+    layout: &Layout,
+    emitter: &mut Emitter<W>,
+) -> Outcome {
+    // The grant already fixed all three, so a flag that repeats or contradicts one is
+    // refused by name rather than ignored — and the sentence carries the accepted
+    // form, so an operator can derive it (CF-038).
+    let accepted =
+        format!("accepted form is `ksp secret share {secret} --policy {policy} --out <file>`");
+    if name.is_some() {
+        return refused(
+            emitter,
+            exit::USAGE,
+            &format!(
+                "`secret share --policy` takes no --name, which the grant already fixed; {accepted}"
+            ),
+        );
+    }
+    if ttl.is_some() {
+        return refused(
+            emitter,
+            exit::USAGE,
+            &format!(
+                "`secret share --policy` takes no --ttl, because a policy delivery has no copy to \
+                 lease: its only deadline is the grant's own window; {accepted}"
+            ),
+        );
+    }
+    if uses.is_some() {
+        return refused(
+            emitter,
+            exit::USAGE,
+            &format!(
+                "`secret share --policy` takes no --uses, because a policy delivery has no copy to \
+                 bound: its only lease is the grant's own window; {accepted}"
+            ),
+        );
+    }
+    if passphrase_file.is_some() {
+        return refused(
+            emitter,
+            exit::USAGE,
+            &format!(
+                "`secret share --policy` takes no --passphrase-file, because it reads no vault: the \
+                 token carries no content key; {accepted}"
+            ),
+        );
+    }
+    let (recorded, _anchor) = match crate::deployment::require(layout) {
+        Ok(required) => required,
+        Err(error) => return refused(emitter, exit::MISSING_KEY, &error.to_string()),
+    };
+    let id = match ksp_identity::policy_edge::PolicyId::parse(policy) {
+        Ok(id) => id,
+        Err(error) => return refused(emitter, exit::USAGE, &error.to_string()),
+    };
+    let store = crate::edges::EdgeStore::new(layout, &recorded);
+    // Read through `load`, not `load_unsigned`: a token must not be exported from a
+    // grant this host cannot attribute to the pinned admin key.
+    let edge = match store.load(&id) {
+        Ok(edge) => edge,
+        Err(error) => return refused(emitter, exit::POLICY_DENIAL, &error.to_string()),
+    };
+    if edge.secret().as_str() != secret {
+        return refused(
+            emitter,
+            exit::POLICY_DENIAL,
+            &format!(
+                "policy {policy} delivers {}, not {secret}: {}",
+                edge.secret().as_str(),
+                format_args!("a token is only ever for the secret its grant was signed for")
+            ),
+        );
+    }
+    let ksp_identity::policy_edge::PolicyTarget::Agent(named) = edge.target() else {
+        return refused(
+            emitter,
+            exit::POLICY_DENIAL,
+            &format!(
+                "policy {policy} is cooperative: it names every enrolled agent and issues no token, \
+                 so there is nothing to export; deliver the value with `ksp secret share {secret} \
+                 --agent <uuid> --name <name> --out <file>` instead"
+            ),
+        );
+    };
+    if let Some(requested) = agent
+        && requested != named.to_string()
+    {
+        return refused(
+            emitter,
+            exit::POLICY_DENIAL,
+            &format!("policy {policy} names agent {named}, not {requested}"),
+        );
+    }
+    match crate::token::export_policy_token(layout, &edge, &named, out) {
+        Ok(()) => report_or_internal(
+            emitter,
+            &Report::Confirmation {
+                operation: format!(
+                    "secret share {secret} --policy {policy} wrote {}",
+                    out.display()
+                ),
+            },
+        ),
+        Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
     }
 }
 
@@ -1576,6 +1790,276 @@ fn parse_agent(text: &str) -> Result<ksp_types::AgentId, crate::agent::AgentErro
 }
 
 /// Parse every `--agent` flag of one command before any of them is acted on.
+/// `ksp admin policy`: the deployment-wide policy surface.
+///
+/// `list` and `show` are read-only and keyless: every input is public material the
+/// deployment records with group read, so they work from an admin home that holds no
+/// password (FR-027). `create`, `update` and `delete` are the writes, and they ask
+/// for a password only in the cases that publish a value. One dispatch rather than a
+/// read function and a write function, because two dispatches over one enum means one
+/// of them can be left non-exhaustive and report a routing mistake as a refusal.
+fn admin_policy<W: Write>(
+    layout: &Layout,
+    emitter: &mut Emitter<W>,
+    verb: &crate::commands::AdminPolicyCommand,
+) -> Outcome {
+    use crate::commands::AdminPolicyCommand;
+    let reader =
+        match crate::policy_view::PolicyReader::open(layout, crate::run::now_seconds() as i64) {
+            Ok(reader) => reader,
+            Err(error) => return refused(emitter, error.exit_code(), &error.to_string()),
+        };
+    match verb {
+        AdminPolicyCommand::List {
+            user,
+            secret,
+            state,
+            limit,
+        } => {
+            let user = match user.as_deref().map(parse_principal).transpose() {
+                Ok(user) => user,
+                Err(message) => return refused(emitter, exit::USAGE, &message),
+            };
+            let secret = secret
+                .as_deref()
+                .map(|text| ksp_types::OpaqueSecretId::new(text.to_string()));
+            let state = match state.as_deref() {
+                None => None,
+                Some(text) => match crate::policy_view::PolicyState::parse(text) {
+                    Some(state) => Some(state),
+                    None => {
+                        return refused(
+                            emitter,
+                            exit::USAGE,
+                            &format!(
+                                "{text} is not a policy state: accepted states are {}",
+                                crate::policy_view::PolicyState::ALL.join(", ")
+                            ),
+                        );
+                    }
+                },
+            };
+            let filter = crate::policy_view::PolicyFilter {
+                user,
+                secret,
+                state,
+                scope: None,
+                limit: *limit,
+            };
+            match reader.list(&filter) {
+                Ok(listing) => report_or_internal(
+                    emitter,
+                    &Report::Policies {
+                        records: listing.records.clone(),
+                        total: listing.total,
+                        limit: listing.limit,
+                        unattributed_issuances: listing.unattributed_issuances,
+                    },
+                ),
+                Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+            }
+        }
+        AdminPolicyCommand::Show { id } => match reader.show(id, None) {
+            Ok(view) => report_or_internal(emitter, &Report::PolicyEdge(view)),
+            Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+        },
+        AdminPolicyCommand::Create {
+            user,
+            secret,
+            version,
+            agent,
+            any,
+            expires_at,
+            passphrase_file,
+        } => {
+            let user = match parse_principal(user) {
+                Ok(user) => user,
+                Err(message) => return refused(emitter, exit::USAGE, &message),
+            };
+            let target = match policy_target(agent.as_deref(), *any) {
+                Ok(target) => target,
+                Err(message) => return refused(emitter, exit::USAGE, &message),
+            };
+            // A cooperative grant writes no publication, so it never reads a password
+            // it will not use. A prompt that changes nothing is the step an operator
+            // learns to skip.
+            let password = match &target {
+                ksp_identity::policy_edge::PolicyTarget::Agent(_) => {
+                    match password(passphrase_file.as_deref()) {
+                        Ok(password) => Some(password),
+                        Err(error) => {
+                            let _ = emitter.refusal(&error.to_string());
+                            return Outcome::Failed(error.exit_code());
+                        }
+                    }
+                }
+                ksp_identity::policy_edge::PolicyTarget::AnyEnrolled => None,
+            };
+            match crate::grant::create(
+                layout,
+                password.as_deref(),
+                user,
+                &ksp_types::OpaqueSecretId::new(secret.clone()),
+                ksp_types::RecordVersion(*version),
+                target,
+                *expires_at,
+            ) {
+                Ok(written) => grant_report(emitter, &written),
+                Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+            }
+        }
+        AdminPolicyCommand::Update {
+            id,
+            agent,
+            any,
+            expires_at,
+            passphrase_file,
+        } => {
+            let id = match ksp_identity::policy_edge::PolicyId::parse(id) {
+                Ok(id) => id,
+                Err(error) => return refused(emitter, exit::USAGE, &error.to_string()),
+            };
+            // No target flags means "keep the target, move the window". Naming one
+            // means "re-target", and that needs the password the publication re-seal
+            // needs.
+            let target = match (agent.as_deref(), *any) {
+                (None, false) => None,
+                (agent, any) => match policy_target(agent, any) {
+                    Ok(target) => Some(target),
+                    Err(message) => return refused(emitter, exit::USAGE, &message),
+                },
+            };
+            let password = match &target {
+                Some(ksp_identity::policy_edge::PolicyTarget::Agent(_)) => {
+                    match password(passphrase_file.as_deref()) {
+                        Ok(password) => Some(password),
+                        Err(error) => {
+                            let _ = emitter.refusal(&error.to_string());
+                            return Outcome::Failed(error.exit_code());
+                        }
+                    }
+                }
+                _ => None,
+            };
+            match crate::grant::update(layout, password.as_deref(), &id, target, *expires_at) {
+                Ok(written) => grant_report(emitter, &written),
+                Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+            }
+        }
+        AdminPolicyCommand::Delete { id } => {
+            let id = match ksp_identity::policy_edge::PolicyId::parse(id) {
+                Ok(id) => id,
+                Err(error) => return refused(emitter, exit::USAGE, &error.to_string()),
+            };
+            // The acting principal is the admin on whose behalf the decision is
+            // recorded: a withdrawal attributed to the user would be a decision she
+            // did not make.
+            let actor = match crate::deployment::require(layout) {
+                Ok((recorded, _anchor)) => recorded.admin,
+                Err(_) => return Outcome::Failed(exit::MISSING_KEY),
+            };
+            match crate::grant::withdraw(layout, &id, actor) {
+                Ok(view) => report_or_internal(emitter, &Report::PolicyEdge(view)),
+                Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+            }
+        }
+    }
+}
+
+/// Print a policy write: the joined view, and where the token went.
+fn grant_report<W: Write>(
+    emitter: &mut Emitter<W>,
+    written: &crate::grant::GrantWritten,
+) -> Outcome {
+    let outcome = report_or_internal(emitter, &Report::PolicyEdge(written.view.clone()));
+    if !outcome.is_success() {
+        return outcome;
+    }
+    match &written.token {
+        Some(path) => report_or_internal(
+            emitter,
+            &Report::Confirmation {
+                operation: format!("delivery token written to {}", path.display()),
+            },
+        ),
+        // A cooperative grant issues no token, and saying nothing is the honest
+        // report: the view beside it already prints `cooperative`.
+        None => outcome,
+    }
+}
+
+/// The target the flags name, or the sentence that says what one looks like.
+fn policy_target(
+    agent: Option<&str>,
+    any: bool,
+) -> Result<ksp_identity::policy_edge::PolicyTarget, String> {
+    match (agent, any) {
+        (Some(agent), false) => crate::agent::parse_agent(agent)
+            .map(ksp_identity::policy_edge::PolicyTarget::Agent)
+            .map_err(|error| error.to_string()),
+        (None, true) => Ok(ksp_identity::policy_edge::PolicyTarget::AnyEnrolled),
+        // `clap` refuses both flags together, so this is the neither case.
+        (None, false) => Err("a grant needs a target: name one agent with --agent <uuid>, or                               --any for any enrolled agent"
+            .to_string()),
+        (Some(_), true) => Err("--agent and --any name two different targets: choose one".to_string()),
+    }
+}
+
+/// `policy list` / `policy show`: the same join, scoped to the caller.
+///
+/// The caller is resolved from the effective uid against the recorded account
+/// bindings, and there is no flag or variable that names a different principal: a
+/// scope a caller could set is a scope that is not a scope (FR-026).
+fn user_policy_read<W: Write>(
+    layout: &Layout,
+    emitter: &mut Emitter<W>,
+    verb: &crate::commands::PolicyCommand,
+) -> Outcome {
+    use crate::commands::PolicyCommand;
+    let caller = match crate::registry::acting_principal(layout) {
+        Ok(caller) => caller,
+        Err(error) => return refused(emitter, exit::POLICY_DENIAL, &error.to_string()),
+    };
+    let reader =
+        match crate::policy_view::PolicyReader::open(layout, crate::run::now_seconds() as i64) {
+            Ok(reader) => reader,
+            Err(error) => return refused(emitter, error.exit_code(), &error.to_string()),
+        };
+    match verb {
+        PolicyCommand::List => {
+            let filter = crate::policy_view::PolicyFilter {
+                user: None,
+                secret: None,
+                state: None,
+                scope: Some(caller),
+                limit: usize::MAX,
+            };
+            match reader.list(&filter) {
+                Ok(listing) => report_or_internal(
+                    emitter,
+                    &Report::Policies {
+                        records: listing.records.clone(),
+                        total: listing.total,
+                        limit: listing.limit,
+                        unattributed_issuances: listing.unattributed_issuances,
+                    },
+                ),
+                Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+            }
+        }
+        PolicyCommand::Show { id } => match reader.show(id, Some(caller)) {
+            Ok(view) => report_or_internal(emitter, &Report::PolicyEdge(view)),
+            Err(error) => refused(emitter, error.exit_code(), &error.to_string()),
+        },
+    }
+}
+
+/// A principal identifier, or the sentence that says what one looks like.
+fn parse_principal(text: &str) -> Result<ksp_types::PrincipalId, String> {
+    ksp_types::PrincipalId::parse(text)
+        .map_err(|_| format!("{text} is not a principal identifier (a UUID)"))
+}
+
 fn parse_agents(texts: &[String]) -> Result<Vec<ksp_types::AgentId>, crate::agent::AgentError> {
     texts.iter().map(|text| parse_agent(text)).collect()
 }

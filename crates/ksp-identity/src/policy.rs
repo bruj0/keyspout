@@ -310,6 +310,10 @@ impl Policy {
     pub fn max_ttl_for(&self, target: &Level) -> u64 {
         match target {
             Level::Agent(_) => self.body.max_agent_ttl_secs,
+            // A publication is read through a policy, never delivered into, so it
+            // has no lease to grant. [`Self::check_ttl`] refuses any request at
+            // this level; zero here is the bound that makes that refusal true.
+            Level::Granted => 0,
             Level::Admin | Level::User => self.body.max_user_ttl_secs,
         }
     }
@@ -322,6 +326,9 @@ impl Policy {
                 Level::Agent(_) => PolicyRefusal::MaxAgentTtl {
                     max: bound,
                     requested: requested_secs,
+                },
+                Level::Granted => PolicyRefusal::NotADeliveryTarget {
+                    level: target.path_segment(),
                 },
                 Level::Admin | Level::User => PolicyRefusal::MaxUserTtl {
                     max: bound,
@@ -555,7 +562,9 @@ pub enum PolicyRefusal {
         found: String,
     },
     /// The source/target level pair is not a share this system performs.
-    #[error("the level pair {from_level} -> {to_level} is not an allowed share")]
+    #[error(
+        "the level pair {from_level} -> {to_level} is not a share: the two accepted sources are a `user` record and an `admin` record, and the only accepted target is one agent's level (`agent-<principal-uuid>`)"
+    )]
     LevelPair {
         /// The level the copy would be read from.
         from_level: String,
@@ -573,6 +582,14 @@ pub enum PolicyRefusal {
     AgentGrant {
         /// The agent the request named.
         agent: String,
+    },
+    /// The level is a publication namespace, which is read rather than delivered.
+    #[error(
+        "level {level} is a publication: it is read through a policy, and the accepted delivery targets are one agent's level (`agent-<principal-uuid>`)"
+    )]
+    NotADeliveryTarget {
+        /// The level that was named.
+        level: String,
     },
     /// The delivery is written at a level that is not the granted agent's.
     ///
@@ -919,7 +936,7 @@ impl PolicyVerifier {
                     target: target_agent.to_string(),
                 });
             }
-            Level::Admin | Level::User => {
+            Level::Admin | Level::User | Level::Granted => {
                 return Err(PolicyRefusal::LevelPair {
                     from_level: request.source.path_segment(),
                     to_level: request.target.path_segment(),

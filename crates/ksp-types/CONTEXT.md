@@ -58,18 +58,24 @@ _History_:
   cannot be mistaken for a rebind.
 
 **Principal Registry**:
-The rule and the two entry points that issue a **Principal** UUID once at
-enrolment and never reissue it: `admin init` mints the user principal and
-`agent enroll` mints an agent principal. A repeat reports the existing UUID; a
-display name is recorded as mutable metadata and is never resolved to an
-identity without an explicit lookup.
+The rule and the entry points that issue a **Principal** UUID once at enrolment and
+never reissue it: `admin init` mints the **admin** principal, `admin user add`
+mints a **user** principal in its own home, and `agent enroll` mints an agent
+principal. A repeat reports the existing UUID; a display name is recorded as
+mutable metadata and is never resolved to an identity without an explicit lookup.
+The registry file itself — `p/<vault>/<admin>/principals.cbor`, `0644` — is what
+makes one vault hold one admin and N users.
 _Avoid_: user database, account list, id allocator
 _Subsystems_: Shared Contract Types, Keyspout Command-Line Interface
-_Files_: crates/ksp-types/src/metadata.rs, crates/ksp/src/admin.rs, crates/ksp/src/agent.rs, crates/ksp/src/deployment.rs
+_Files_: crates/ksp-types/src/metadata.rs, crates/ksp/src/registry.rs, crates/ksp/src/admin.rs, crates/ksp/src/agent.rs, crates/ksp/src/deployment.rs
 _Relates to_: Principal (issues), Actor ID (is carried by), Enrolment Fingerprint (binds the keys)
 _History_:
 - 2026-10-24 (002-file-os-split-sweeper): Term introduced. The rule is what makes
   a shared display name harmless and a re-run unable to mint a second identity.
+- 2026-11-17 (014-policy-scoped-sharing): **Implemented** in
+  `crates/ksp/src/registry.rs`. `admin init` mints the admin and `admin user add`
+  appends each user to the same registry instead of refusing the second one. Test
+  `crates/ksp/tests/principal_topology.rs`.
 
 **Agent ID**:
 The **Principal** UUID of one enrolled agent, viewed in its agent role: it is

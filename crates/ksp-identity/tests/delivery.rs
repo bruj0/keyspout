@@ -15,9 +15,10 @@
 use std::path::PathBuf;
 
 use ksp_identity::{
-    AdminSigningKey, DeliveryArtifact, DeliveryEnvelope, DeliveryError, DeliveryHeader, Domain,
-    EnrollmentRecord, KeyId, RecipientPublicKey, SelectedRecord, SigningSecretKey,
-    UnsignedEnrolment, VerifiedDelivery, VerifiedRecipientKey, downstream_copy, open, seal, verify,
+    AdminSigningKey, DeliveredKey, DeliveryArtifact, DeliveryEnvelope, DeliveryError,
+    DeliveryHeader, Domain, EnrollmentRecord, KeyId, RecipientPublicKey, SelectedRecord,
+    SigningSecretKey, UnsignedEnrolment, VerifiedDelivery, VerifiedRecipientKey, downstream_copy,
+    open, seal, verify,
 };
 use ksp_types::{
     ActorId, AgentId, BoundMetadata, ContentKey, Level, OpaqueSecretId, RecordVersion, VaultId,
@@ -25,6 +26,13 @@ use ksp_types::{
 };
 
 const ADMIN_ID: &str = "admin-1";
+
+/// Every fixture in this file is a plain record, so its entry carries a key.
+fn delivered(keys: Vec<(SelectedRecord, ContentKey)>) -> Vec<(SelectedRecord, DeliveredKey)> {
+    keys.into_iter()
+        .map(|(record, key)| (record, DeliveredKey::Content(key)))
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -69,10 +77,12 @@ fn selected() -> Vec<SelectedRecord> {
         SelectedRecord {
             secret: ksp_types::OpaqueSecretId::new("secret-1"),
             version: RecordVersion(3),
+            policy: None,
         },
         SelectedRecord {
             secret: ksp_types::OpaqueSecretId::new("secret-2"),
             version: RecordVersion(1),
+            policy: None,
         },
     ]
 }
@@ -119,7 +129,7 @@ fn sealed() -> Sealed {
         .iter()
         .map(|record| (record.clone(), ContentKey::generate()))
         .collect();
-    let selection = ksp_identity::SelectedContentKeys::new(&head, keys.clone()).unwrap();
+    let selection = ksp_identity::SelectedContentKeys::new(&head, delivered(keys.clone())).unwrap();
     let artifact = seal(&signer, &head, &selection, &recipient).unwrap();
     let verified = verify(&artifact, &signer.verifying_public()).unwrap();
 
@@ -353,7 +363,8 @@ fn the_envelope_carries_only_the_selected_versions_keys() {
         .iter()
         .map(|record| (record.clone(), ContentKey::generate()))
         .collect();
-    let selection = ksp_identity::SelectedContentKeys::new(&head, selected_keys.clone()).unwrap();
+    let selection =
+        ksp_identity::SelectedContentKeys::new(&head, delivered(selected_keys.clone())).unwrap();
     assert_eq!(selection.len(), 2);
 
     // A key for a version the header does not name is refused, not silently
@@ -363,18 +374,19 @@ fn the_envelope_carries_only_the_selected_versions_keys() {
         SelectedRecord {
             secret: ksp_types::OpaqueSecretId::new("secret-9"),
             version: RecordVersion(9),
+            policy: None,
         },
         ContentKey::generate(),
     ));
     assert!(matches!(
-        ksp_identity::SelectedContentKeys::new(&head, surplus).unwrap_err(),
+        ksp_identity::SelectedContentKeys::new(&head, delivered(surplus)).unwrap_err(),
         DeliveryError::UnselectedContentKey { version: 9, .. }
     ));
 
     // A selected record with no key is refused too.
     let short = vec![selected_keys[0].clone()];
     assert!(matches!(
-        ksp_identity::SelectedContentKeys::new(&head, short).unwrap_err(),
+        ksp_identity::SelectedContentKeys::new(&head, delivered(short)).unwrap_err(),
         DeliveryError::MissingContentKey { .. }
     ));
 
@@ -448,6 +460,7 @@ fn a_modified_header_makes_the_envelope_fail_to_open() {
             vec![SelectedRecord {
                 secret: ksp_types::OpaqueSecretId::new("secret-1"),
                 version: RecordVersion(4),
+                policy: None,
             }],
             original.expires_at(),
             original.jti().to_string(),
@@ -713,6 +726,7 @@ fn pinned_header() -> DeliveryHeader {
         vec![SelectedRecord {
             secret: ksp_types::OpaqueSecretId::new("secret-1"),
             version: RecordVersion(3),
+            policy: None,
         }],
         500,
         "jti-1".to_string(),
@@ -782,7 +796,7 @@ fn sealing_to_a_key_the_header_does_not_name_is_refused() {
         .iter()
         .map(|r| (r.clone(), ContentKey::generate()))
         .collect();
-    let selection = ksp_identity::SelectedContentKeys::new(&head, keys).unwrap();
+    let selection = ksp_identity::SelectedContentKeys::new(&head, delivered(keys)).unwrap();
 
     assert!(matches!(
         seal(&signer, &head, &selection, &recipient).unwrap_err(),
@@ -817,10 +831,12 @@ fn two_secrets_at_the_same_version_keep_their_own_keys() {
             SelectedRecord {
                 secret: OpaqueSecretId::new("secret-a"),
                 version: RecordVersion(1),
+                policy: None,
             },
             SelectedRecord {
                 secret: OpaqueSecretId::new("secret-b"),
                 version: RecordVersion(1),
+                policy: None,
             },
         ],
         500,
@@ -833,8 +849,14 @@ fn two_secrets_at_the_same_version_keep_their_own_keys() {
     let selection = ksp_identity::SelectedContentKeys::new(
         &head,
         vec![
-            (head.records()[0].clone(), key_a.clone()),
-            (head.records()[1].clone(), key_b.clone()),
+            (
+                head.records()[0].clone(),
+                DeliveredKey::Content(key_a.clone()),
+            ),
+            (
+                head.records()[1].clone(),
+                DeliveredKey::Content(key_b.clone()),
+            ),
         ],
     )
     .unwrap();
@@ -845,16 +867,28 @@ fn two_secrets_at_the_same_version_keep_their_own_keys() {
     let secret_a = OpaqueSecretId::new("secret-a");
     let secret_b = OpaqueSecretId::new("secret-b");
     assert_eq!(
-        opened.get(&secret_a, RecordVersion(1)).unwrap().as_bytes(),
+        opened
+            .content_key(&secret_a, RecordVersion(1))
+            .unwrap()
+            .as_bytes(),
         key_a.as_bytes()
     );
     assert_eq!(
-        opened.get(&secret_b, RecordVersion(1)).unwrap().as_bytes(),
+        opened
+            .content_key(&secret_b, RecordVersion(1))
+            .unwrap()
+            .as_bytes(),
         key_b.as_bytes()
     );
     assert_ne!(
-        opened.get(&secret_a, RecordVersion(1)).unwrap().as_bytes(),
-        opened.get(&secret_b, RecordVersion(1)).unwrap().as_bytes()
+        opened
+            .content_key(&secret_a, RecordVersion(1))
+            .unwrap()
+            .as_bytes(),
+        opened
+            .content_key(&secret_b, RecordVersion(1))
+            .unwrap()
+            .as_bytes()
     );
 }
 
@@ -946,10 +980,12 @@ fn a_header_naming_the_same_record_twice_is_refused() {
         SelectedRecord {
             secret: OpaqueSecretId::new("secret-a"),
             version: RecordVersion(1),
+            policy: None,
         },
         SelectedRecord {
             secret: OpaqueSecretId::new("secret-a"),
             version: RecordVersion(1),
+            policy: None,
         },
     ];
     assert!(matches!(
@@ -987,7 +1023,7 @@ fn two_content_keys_for_one_record_are_refused() {
     // Every selected record has a key, and one of them has two.
     supplied.push((head.records()[0].clone(), ContentKey::generate()));
     assert!(matches!(
-        ksp_identity::SelectedContentKeys::new(&head, supplied).unwrap_err(),
+        ksp_identity::SelectedContentKeys::new(&head, delivered(supplied)).unwrap_err(),
         DeliveryError::DuplicateContentKey { .. }
     ));
 }

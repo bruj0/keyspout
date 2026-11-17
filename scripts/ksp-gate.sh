@@ -67,6 +67,14 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# The VM half compiles and runs targets whose subject is a Linux mechanism. On a
+# host that is not Linux they either fail to compile or — worse — compile a
+# `cfg(target_os = "linux")` branch out and report the host's answer as the
+# kernel's. One guard, shared with `scripts/ksp-vm.sh`, refuses instead.
+#
+# shellcheck source=lib/vm-guard.sh
+. "${script_dir}/lib/vm-guard.sh"
+
 # Test targets whose subject is a mechanism a non-Linux host cannot provide, or
 # that need root. Everything else is a host target.
 #
@@ -234,12 +242,28 @@ host_part() {
 
     # A shipped skill is instructions to run `ksp`, so a skill that names a
     # command the binary does not have is a broken product with no compiler to
-    # catch it. This runs after the build so the binary it checks against is the
-    # one in this tree. Exit 2 means there are no skills yet, which is not a
-    # failure.
+    # catch it. The build is part of this step, so the binary it checks against is
+    # the one this tree produces. Exit 2 means there are no skills yet, which is
+    # not a failure.
+    # The VM guard is the check that a Linux-only target cannot be run here, and a
+    # guard that has never refused is a guard nobody has seen work. Its self-test
+    # needs no VM: a fixture `colima` on PATH is the whole environment.
+    step "host: scripts/ksp-vm.sh --selftest"
+    ./scripts/ksp-vm.sh --selftest
+    step "host: scripts/ksp-vm-provision.sh --selftest"
+    ./scripts/ksp-vm-provision.sh --selftest
+
     step "host: scripts/ksp-skills.sh"
-    ./scripts/ksp-skills.sh --selftest
-    ./scripts/ksp-skills.sh || [ $? -eq 2 ]
+    # The binary is built here, into this script's own target directory, because
+    # the check reads its command list. `ksp-skills.sh` defaults to
+    # `$ROOT/target/debug/ksp`, which this script never writes — every build it
+    # runs goes to $target — and a VM run into the repository's target directory
+    # leaves an ELF there that no macOS host can execute. The fixture skill was
+    # then refused for naming a command the "binary" did not have, so the gate
+    # failed before the build that was supposed to precede it.
+    CARGO_TARGET_DIR="$target" cargo build -p ksp --bin ksp
+    KSP_BIN="$target/debug/ksp" ./scripts/ksp-skills.sh --selftest
+    KSP_BIN="$target/debug/ksp" ./scripts/ksp-skills.sh || [ $? -eq 2 ]
 
     step "host: cargo fmt --check"
     cargo fmt --check
@@ -299,6 +323,10 @@ host_part() {
 }
 
 vm_part() {
+    # Before anything else, including the disk check: a run on the host is not a
+    # run that can be trusted, and it must stop before it spends a second on it.
+    vm_guard "scripts/ksp-gate.sh vm" "scripts/ksp-gate.sh"
+
     check_disk
     export CARGO_TARGET_DIR="$target"
 

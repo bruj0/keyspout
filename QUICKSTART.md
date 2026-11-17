@@ -1,8 +1,9 @@
 # Quickstart — macOS and Linux
 
 Two UNIX accounts, a configured host, a proven sweeper, an enrolled user and
-agent, and a secret delivered to a child process. Seven steps, each with the
-commands, a diagram and the output to expect.
+agent, and a secret delivered to a child process — first as a sealed copy, then
+through a signed grant with no copy at all. Eight steps, each with the commands, a
+diagram and the output to expect.
 
 **The commands are the same on both platforms.** This page was written and run
 on macOS (aarch64); every step also runs on Linux, and the handful of places
@@ -152,6 +153,15 @@ sudo chmod 711 "$KSP_HOME"
 `0711` lets another principal traverse a known path without enumerating it.
 `mkdir` gives `0755`, which `ksp status` reports as drift.
 
+**The two accounts must share a group, and `-GID 20` is what does it.** The store
+holds files at `0640` and directories at `0750` in that group: a publication's
+token, the ledgers and the store's level roots are readable by the group and by
+nobody else. On macOS every ordinary account is in `staff` (gid 20), so the two
+accounts share it without anything further. On Linux a `useradd` that gives the
+admin its own group leaves the user outside it, and the failure is confusing: the
+admin publishes a token, and the user's `secret share --policy` reports that no
+token was ever issued.
+
 > **Use `sysadminctl`, not `dscl`, to create an account.** `dscl` takes one
 > attribute per call, so several attributes in one `-create` collapse into the
 > *value* of the first, leaving the account with no `UniqueID`.
@@ -160,13 +170,20 @@ sudo chmod 711 "$KSP_HOME"
 > created by the next block either way:
 >
 > ```bash
-> sudo useradd -M -N -s /bin/sh -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 keyspout
+> sudo useradd -M -N -s /bin/sh -g "$(id -gn)" \
+>   -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 keyspout
 > id keyspout
 > ```
 >
+> `-g "$(id -gn)"` is the Linux counterpart of `-GID 20`: it puts the admin in the
+> **user's** group, which is the group the store is then created in. Leave it out
+> and `useradd` gives the admin a group of its own, the two accounts share nothing,
+> and the user cannot read the publication token her agent needs.
+>
 > `id` must print a uid before you go on, exactly as on a Mac. The rest of this
-> step — `mkdir`, `chown`, `chmod 0711` — is identical, and it uses `$KSP_HOME`,
-> so it follows whichever home you set in [Before you start](#before-you-start).
+> step uses the same group name, so `chown -R keyspout:"$(id -gn)" "$KSP_HOME"`
+> replaces the `keyspout:staff` above. `staff` does not exist on most Linux hosts,
+> and `chown` to a group that does not exist fails, leaving the home owned by root.
 
 ---
 
@@ -249,6 +266,23 @@ Two facts to carry forward, and they are the whole macOS story:
 > rather than `mlock`. The command is the same; only the measurement differs.
 > See [Where Linux differs](#2-the-requirement-level-ksp-init-writes).
 
+**Widen the configuration so the second principal can read it:**
+
+```bash
+sudo chmod 0644 "$KSP_HOME/config.toml"
+```
+
+`ksp init` writes `0600`, which is right when one account runs everything. With
+two accounts it is not: the user's `secret set`, `agent enroll` and `run` all read
+this file, and she cannot open a `0600` file the admin owns. The guard objects to a
+file another principal can **write** — that is the path that lowers the requirement
+level — and not to one she can read, so `0644` is the shape the two-account
+session is built on. The directory above it is `0711` and only the admin can write
+that, which is what keeps the file the admin's.
+
+Leave it at `0600` and the user's first command fails with
+`the capability configuration … could not be read: Permission denied`.
+
 A second `ksp init` changes nothing and exits `0`. Re-probing is
 `ksp config init --force`.
 
@@ -321,19 +355,33 @@ The password arrives on **stdin**, never in argv. This step needs **root**:
 it hands the vault to another account and edits a group.
 
 ```bash
-printf 'correct horse battery staple' > "$KSP_HOME/pw"
-chmod 600 "$KSP_HOME/pw"
+# Your copy, in your home, 0600 and yours.
+printf 'correct horse battery staple' > "$HOME/.ksp-password"
+chmod 600 "$HOME/.ksp-password"
+
+# The admin's copy of the same password. `admin seal-vault` and
+# `admin policy create` open the admin vault, and they run as the admin account.
+sudo env KSP_HOME="$KSP_HOME" sh -c \
+  "cp '$HOME/.ksp-password' '$KSP_HOME/pw'; chown keyspout '$KSP_HOME/pw'; chmod 600 '$KSP_HOME/pw'"
 
 sudo env KSP_HOME="$KSP_HOME" "$KSP" admin user add \
   --unix-user "$USER" \
   --signing-key-id "$USER-ed25519-1" \
   --recipient-key-id "$USER-x25519-1" \
-  < "$KSP_HOME/pw"
+  --passphrase-file "$HOME/.ksp-password"
 ```
 
 ```
 admin user add: principal=a1716261-f3c8-4f70-be0b-7f2f5081c559
 ```
+
+> **One password, one file per account that needs it.** Keyspout never stores
+> the password; it reads it from the file you name. Your commands run as you and
+> read `$HOME/.ksp-password`; the two admin commands that unseal the admin vault
+> run as `keyspout` and read their own copy at `$KSP_HOME/pw`. Pointing the
+> user's commands at the admin's copy fails with
+> `the passphrase file … could not be opened: check the path`, because a `0600`
+> file in another account's home is exactly that — unopenable.
 
 > The `--signing-key-id` and `--recipient-key-id` flags replace the CLI defaults
 > `alice-ed25519-1` and `alice-x25519-1`, which are **not** derived from
@@ -348,7 +396,7 @@ asadmin status | grep -E '^(binding|permissions):'
 
 ```
 binding:     bruj0 (uid 501)
-permissions: 17 protected roots match the layout
+permissions: 16 protected roots match the layout
 ```
 
 `binding:` names the user account that owns the vault. Without it the line
@@ -403,10 +451,32 @@ asadmin backend arm-sweep --interval 1h \
 ```
 
 ```
-arming: backend=file  kind=systemd  identifier=ksp-sweep.service  interval=3600s  scope=p/vault-1/a1716261-…/agent-*  credential=ksp-sweep  rights=delete:p/vault-1/a1716261-…/agent-*  principal=a1716261-…  recorded_at=1794509100  id=5b7311a745d00883
-note: this records a schedule; it is configuration until a signed sweep proof confirms a run. The interval says how often the job is declared to run, never how long a lease lives.
-note: nothing was installed. ksp wrote no unit, no property list, no crontab entry and ran no privileged helper.
+arming: backend=file  kind=systemd  identifier=ksp-sweep  interval=3600s  scope=p/vault-1/…/agent-*  credential=ksp-sweep  rights=delete:p/vault-1/…/agent-*  principal=…  recorded_at=1794924305  id=…
+
+[Unit]
+Description=Keyspout lease sweep (file, ksp-sweep)
+After=network.target
+
+[Service]
+Type=oneshot
+User=ksp-admin
+# The armed job uses only this credential (FR-034): ksp-sweep
+ExecStart=/usr/local/bin/ksp secret gc
+
+[Timer]
+OnUnitActiveSec=3600s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
 ```
+
+Naming `--kind systemd` prints the unit the schedule describes — that is the
+"nothing was installed" note made concrete: you are handed the artifact, not a
+running job. Omit `--kind` and the host's own default applies, which is `systemd`
+on Linux and `launchd` on macOS; on macOS that means a property list rather than
+the unit above.
+
 
 Run the sweep once. **This is what writes the proof:**
 
@@ -472,7 +542,7 @@ ksp backend arm-sweep --interval 1h \
   --credential ksp-user-sweep \
   --grant "delete:p/vault-1/$USER_ID/agent-*" \
   --identifier com.keyspout.user-sweep \
-  --user-arming --passphrase-file "$KSP_HOME/pw"
+  --user-arming --passphrase-file "$HOME/.ksp-password"
 ```
 
 The plist it prints names your sweep, not the admin's:
@@ -493,7 +563,7 @@ The plist it prints names your sweep, not the admin's:
 run with no terminal. Put the vault password there and install the plist:
 
 ```bash
-cp "$KSP_HOME/pw" "$KSP_HOME/sweep.passphrase"
+cp "$HOME/.ksp-password" "$KSP_HOME/sweep.passphrase"
 chmod 600 "$KSP_HOME/sweep.passphrase"
 # save the printed plist, then:
 launchctl load -w ~/Library/LaunchAgents/com.keyspout.user-sweep.plist
@@ -543,8 +613,8 @@ is ever in argv:
 
 ```bash
 printf 's3cr3t-value-1' > "$KSP_HOME/value"
-ksp secret set s1 --name db_password --passphrase-file "$KSP_HOME/pw" < "$KSP_HOME/value"
-ksp secret get s1 --reveal --passphrase-file "$KSP_HOME/pw"
+ksp secret set s1 --name db_password --passphrase-file "$HOME/.ksp-password" < "$KSP_HOME/value"
+ksp secret get s1 --reveal --passphrase-file "$HOME/.ksp-password"
 ```
 
 ```
@@ -587,14 +657,23 @@ asadmin admin policy --agent "$AGENT" --secret s1
 ```
 
 ```
-admin policy: ok
+policy:      revision=2  merged
+added:       agents=7975116e-…  secrets=s1
+removed:     agents=none  secrets=none
+grants not named here were kept; pass --replace to withdraw them
 ```
+
+The report is the read-back: a write **merges** by default and says what it
+added. `--replace` writes the whole set and withdraws every grant the call does
+not name, which is the only way to drop several at once. To drop one and keep the
+decision on record, use `admin revoke` — or, for a grant made by the policy-scoped
+surface in step 8, `admin policy delete`.
 
 Now the share. `7200` is admitted because step 5 proved a `3600s` cadence:
 
 ```bash
 ksp secret share s1 --agent "$AGENT" --name db_password \
-  --out "$KSP_HOME/token.ksp" --ttl 7200 --passphrase-file "$KSP_HOME/pw"
+  --out "$KSP_HOME/token.ksp" --ttl 7200 --passphrase-file "$HOME/.ksp-password"
 ```
 
 ```
@@ -654,22 +733,224 @@ asadmin audit verify
 ```
 
 ```
-audit verify: segments=3  records=4  valid=4  revoked=0  unpinned=0  mismatch=0  invalid=0  unreadable=0  chain=unbroken
+audit verify: segments=3  records=4  valid=4  revoked=0  unpinned=0  mismatch=0  invalid=0  unreadable=1  chain=unbroken
 head 736e3c4f-…/keyspout=3945dba9…
 head a1716261-…/7975116e-…-ed25519-1=3c6b6caf…
 head a1716261-…/bruj0-ed25519-1=c49a74e6…
+note: could not read audit/a1716261-…: the audit segment could not be read: …/audit/a1716261-…
 note: completeness unknown: no head digest was supplied from outside the log, so a deleted tail verifies exactly like a whole one
+note: 1 entr(ies) could not be read, so this run did not check every record
+ksp: refused (exit 12: the audit log did not verify; the report names the finding)
 ```
 
-One head per writer, and `chain=unbroken`. Completeness stays unknown because
-no head arrived from outside the log.
+One head per writer. **`unreadable=1` is the other account's chain**, and in a
+two-account deployment it is expected: each principal's chain directory is `0700`
+and belongs to that principal, so the admin can read its own segment and not the
+user's. `chain=unbroken` is the verdict on what it could read.
+
+The exit code is `12` because a segment it could not read means it did not check
+every record. Run it as the other account and the count moves with you; neither
+run is a global verdict, and both say so. Completeness stays unknown either way,
+because no head arrived from outside the log.
+
+**Each principal verifies its own chains.** `asadmin audit verify` covers the
+admin's; `ksp audit verify` run as the user covers hers and reports the admin's as
+unreadable. Read `valid` beside `unreadable`: a non-zero `unreadable` with
+`invalid=0` means "not mine to read", not "corrupt".
+
+---
+
+## 8. Deliver through a signed grant, with no copy
+
+Steps 6 and 7 made a **copy**: an agent-level record sealed to that agent's key.
+This step delivers a value with no copy at all. The admin publishes one sealed
+entry, signs a grant, and mints the token the grant authorises; the user exports
+that token without a password; the agent opens the publication with its own key.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Admin as admin, as keyspout
+    participant K as ksp
+    participant Pub as granted level
+    participant You
+    participant Agent
+    Admin->>K: admin seal-vault
+    K->>Pub: the vault every entry's content key is sealed to
+    Admin->>K: admin put published --own
+    K->>Pub: the admin's own record, the plaintext source
+    Admin->>K: admin policy create --user … --agent …
+    K->>Pub: publication entry, sealed to that agent
+    K-->>Admin: policy id, and the delivery token
+    You->>K: secret share published --policy ID
+    K-->>You: the token, keyless: no password and no key
+    You->>Agent: hand over the token
+    Agent->>K: run --token … --env VAR
+    K->>Agent: opens the publication with its own key
+```
+
+The admin's vault is what every publication entry's content key is sealed to, so it
+comes first, and there is one per deployment:
+
+```bash
+asadmin admin seal-vault --passphrase-file "$KSP_HOME/pw"
+```
+```
+admin seal-vault: principal=736e3c4f-7543-4f62-9438-051cc313ba47
+```
+
+Then the record the publication is made from. `--own` seals it at the **admin's**
+own principal, to her own vault. A record sealed to the user cannot be opened by the
+admin, so a policy whose only source was that record has no plaintext to publish.
+`--own` needs no password at all: the value arrives on stdin, and the record is
+sealed to the admin's *public* recipient key.
+
+```bash
+printf 'value-the-admin-publishes' | \
+  sudo -u keyspout -H env KSP_HOME="$KSP_HOME" "$KSP" admin put published --name published --own
+```
+```
+admin/published  level=admin  version=1
+```
+
+Sign one grant. This step does open the admin vault, because the publication
+entry's content key is sealed to it:
+
+```bash
+asadmin admin policy create --user "$USER_ID" --secret published --version 1 \
+  --agent "$AGENT" --passphrase-file "$KSP_HOME/pw" --json
+```
+```
+{"agents":[{"identity":"7975116e-…","fingerprint":"e5f6c426…"}],"id":"a0e6819fb4dbad6a2924a76ab63d9c67","kind":"policy_edge","not_after":1797516483,"publication":"p/vault-1/736e3c4f-…/granted/published/1","revision":1,"state":"active","target":"agent:7975116e-…","tokens":[{"jti":"a0e6819f…-1","state":"live"}],"user":"a1716261-…","verified":true,"version":1}
+{"kind":"confirmation","operation":"delivery token written to …/policies/a0e6819fb4dbad6a2924a76ab63d9c67.token"}
+```
+
+Capture the identifier it printed:
+
+```bash
+POLICY=a0e6819fb4dbad6a2924a76ab63d9c67
+```
+
+Export it as the user. **No password**, and nothing is decrypted: the token carries
+a publication reference and no content key, so there is nothing for the user to
+unlock.
+
+```bash
+ksp secret share published --policy "$POLICY" --out "$HOME/policy-token.ksp"
+```
+```
+secret share published --policy a0e6819fb4dbad6a2924a76ab63d9c67 wrote /Users/you/policy-token.ksp: ok
+```
+
+`--policy` takes none of `--name`, `--uses`, `--ttl` or `--passphrase-file`. The
+grant already fixed the secret, the agent and the window; there is no copy to lease
+and no vault to open. Each refusal names the flag and the accepted form.
+
+The agent runs it like any other token:
+
+```bash
+ksp run --token "$HOME/policy-token.ksp" --env KSP_POLICY_VALUE -- /usr/bin/printenv KSP_POLICY_VALUE
+```
+```
+value-the-admin-publishes
+```
+
+`--consume` is refused here, and names the reason: a policy delivery has no
+agent-level copy to delete. The publication stays, and the grant's window is the
+only control.
+
+Read the grant back:
+
+```bash
+asadmin admin policy show "$POLICY"
+asadmin admin policy list
+```
+```
+policy:      a0e6819fb4dbad6a2924a76ab63d9c67
+revision:    1
+user:        a1716261-f3c8-4f70-be0b-7f2f5081c559
+secret:      published@1
+target:      agent:7975116e-1677-466d-8997-ea11b8ab87cd (cryptographic)
+state:       active
+validity:    1794924483..1797516483
+issuer:      verified against the pinned anchor
+publication: p/vault-1/736e3c4f-…/granted/published/1
+agent:       7975116e-…  name=<you>-laptop  signing=7975116e-…-ed25519-1  recipient=7975116e-…-x25519-1  fingerprint=e5f6c426…
+token:       jti=a0e6819f…-1  expires_at=1797516483  state=live  remaining_uses=-
+withdrawn:   no -- this policy is not recorded as withdrawn
+last change: 1794924483
+```
+```
+a0e6819fb4dbad6a2924a76ab63d9c67  user=a1716261-…  secret=published@1  mode=cryptographic  state=active  revision=1  tokens=1
+1 of 1
+```
+
+`state` is the join, not a flag. The five values `list --state` accepts are
+`active`, `expired`, `withdrawn`, `dangling` and `unverified`. `dangling` means a
+link the grant names is gone — the publication, the agent's index entry or the
+record version — and `state_reason` names which one. A grant whose publication is
+missing reads `dangling`, never `active`: a grant that cannot deliver is not a
+healthy grant. `unverified` is the one to look at twice: the edge is there, and
+this host could not check the admin's signature over it.
+
+`list` also tells you what it could not attribute. A row is a policy; an issuance
+record that names a revision but no policy identifier cannot be counted against
+one, and the note under the table says how many of those there are.
+
+Three more verbs, once a grant exists:
+
+```bash
+asadmin admin policy update "$POLICY" --expires-at 1797519999   # move the window, no password
+asadmin admin policy delete "$POLICY"                           # withdraw, remove, record
+asadmin admin policy list --state active --limit 20             # filtered and bounded
+```
+
+`update` prints the same joined view at the next revision — `revision: 2` above —
+so the read-back is the confirmation. `list` is bounded at `50` by default and
+filters on `--user`, `--secret` and `--state`.
+
+`--expires-at` needs no password because the entry is already sealed — the update
+writes a token and a ledger row, not a new publication.
+
+`delete` is the withdrawal, and it records the decision before it removes the
+artifact, so an operator can tell a withdrawn grant from one that never existed:
+
+```bash
+asadmin admin policy delete "$POLICY"
+```
+```
+policy:      a0e6819fb4dbad6a2924a76ab63d9c67
+revision:    2
+state:       withdrawn
+issuer:      NOT verified against the pinned anchor: nothing below is evidence
+reason:      the ledger records this withdrawal and the artifact is gone, which is what
+             a withdrawal leaves behind: the decision stands, and the target it named is
+             not in the record
+withdrawn:   revision=2  actor=736e3c4f-…  at=1794925673
+```
+
+The read-back is honest about what is left: the edge is gone, so there is no
+target to verify and no token to name. `list` keeps the row with
+`state=withdrawn`, which is the difference between a grant that was withdrawn and
+one that never existed. The next run refuses:
+
+```
+ksp: this host holds no grant with that policy id: it was never published here, or it has been withdrawn
+ksp: refused (exit 2: policy denied the operation)
+```
+
+> **This is the flow that has no hidden copy.** Step 7's token carries a content
+> key and a copy at the agent's level, and `--consume` deletes that copy. This
+> token carries neither: the agent opens one entry, and the value stays available
+> for as long as the grant's window and the publication both exist. Withdrawal stops
+> the next run; it does not recall a value the agent already read.
 
 ---
 
 ## Everything else that does work
 
 ```bash
-ksp secret rm s3cr3t-id-1 --passphrase-file "$KSP_HOME/pw"   # one version
+ksp secret rm s3cr3t-id-1 --passphrase-file "$HOME/.ksp-password"   # one version
 ksp secret purge-expired --limit 100                       # one batch, at most 100
 ksp secret gc                                              # repeat until nothing is left
 ksp admin list                                             # record paths, all levels
@@ -689,7 +970,7 @@ capability=Scheduled { interval: 3600s }  selected=0  removed=0  already_absent=
 removed 0 of 0 expired lease(s) on this host; 0 were already absent
 ```
 
-`capability` reads `Scheduled { interval: 3600s }` here because step 8 armed a
+`capability` reads `Scheduled { interval: 3600s }` here because step 5 armed a
 schedule; on a host that never armed one it reads `None` and the second line
 explains that no sweep can remove anything. Either way the command reports what
 it did — nothing — instead of claiming a cleanup, and exits `0` because the
@@ -739,27 +1020,44 @@ and one integer cannot say all three.
 ```
 $KSP_HOME/
 ├── vault.cbor            the user's sealed vault — needs the password (0600)
-├── policy.cbor           the admin-signed policy
+├── admin-vault.cbor      the admin's vault: what a publication entry's
+│                         content key is sealed to (0600)
+├── policy.cbor           the admin-signed grant set, for the leased path
 ├── admin-anchor.cbor     the admin public key this host pins      (0644)
-├── deployment.cbor       the vault and user identifiers, and public keys (0644)
-├── config.toml           this host's capability configuration        (0600)
+├── deployment.cbor       the vault and principal identifiers, and public keys (0644)
+├── config.toml           this host's capability configuration (0644, two accounts)
 ├── admin/                the admin signing key          (0700, owner-only)
 ├── agent/                enrolled agent key bundles     (0700, owner-only)
 ├── enrolments/           signed enrolment records, one per agent (0755)
-├── store/                the sealed records                   (0755)
-│   └── intents/          arm records, and each copy's use counter (1770, sticky)
+├── store/
+│   └── p/<vault>/<principal>/
+│       ├── principals.cbor      the registry: who is in this deployment (0644)
+│       ├── policy-events.jsonl  the admin's grant decisions             (0640)
+│       ├── user/                the principal's own records            (0700)
+│       ├── agent-<id>/          a leased copy, sealed to that agent    (0700)
+│       ├── granted/             the publication a grant delivers from  (0750)
+│       └── policies/            the token a grant minted               (0755)
+├── store/intents/        arm records, and each copy's use counter (1770, sticky)
 ├── sweeper/proofs/       sweep proofs, readable by any principal (0755)
 ├── sweeper/armings/      armed schedules, one per backend+scope   (0755)
 ├── journal/              deletion acknowledgements            (0700)
-├── audit/                the audit log's writer segments       (0700)
+├── audit/                one writer segment per principal      (0711)
 ├── layout.cbor           which uid owns which root, recorded at creation
-└── issuance.jsonl        what this host minted and revoked (after a revoke)
+├── issuance.jsonl        what this host minted (written on the first lease)
+└── pw                    the admin's copy of the password — Keyspout never
+                          writes this; you do, for the two commands that unseal
+                          the admin vault
 ```
 
 Every row above has one mode in one table, and `ksp status` measures the disk
-against it. Inside `store/`, each principal's level directory is `0700` and its
-parent is `0711`: a principal that can *name* a level traverses into it, and one
-that cannot name it cannot list the siblings it might guess.
+against it. Inside `store/`, each principal's root is `0711` and the level
+directories under it are `0700`: a principal that can *name* a level traverses
+into it, and one that cannot name it cannot list the siblings it might guess.
+
+`granted/` is `0750` and `policies/` is `0755`, both in the store's **group**.
+That is the group from step 1, and it is why the two accounts have to share one:
+the user exports the token the admin wrote, and a group neither account is in
+leaves her reading "no delivery token was issued" about a file that exists.
 
 Back up `vault.cbor`, `admin-anchor.cbor`, `admin/` and `agent/`: they are the
 identities, and replacing them changes who can read what. Losing the password
@@ -819,7 +1117,7 @@ object per record lets a consumer read a record at a time instead of buffering t
 whole log. The first line is a header, and every later line is a record:
 
 ```
-$ ksp --json audit --passphrase-file "$KSP_HOME/pw"
+$ ksp --json audit --passphrase-file "$HOME/.ksp-password"
 {"kind":"log","records":2,"total":2,"segments":2,...}
 {"kind":"audit-record","actor":"…","component":"agent","operation":"deliver",...}
 {"kind":"audit-record","actor":"…","component":"cli","operation":"put",...}
@@ -831,9 +1129,13 @@ A consumer reads the whole output as one JSON document and fails with
 **The tenant view needs the vault password.** Supply it with
 `--passphrase-file`, or pipe it on stdin. A caller that leaves stdin open and
 never writes to it is refused with exit `6` rather than left waiting: an open pipe
-never delivers, and a hang produces no exit code and no message. `audit --admin`,
-`audit verify` and `admin audit` need no password at all, which is why they are
-the cheapest paths to read.
+never delivers, and a hang produces no exit code and no message.
+
+`audit verify` and `admin audit` read no vault and need no password. `audit
+--admin` reads the **admin signing key**, so it runs as the admin account and
+needs no password there — run as the user it is refused with exit `6`, because the
+key is `0700` and belongs to the admin. In a two-account deployment the cheapest
+read is `asadmin audit --admin`.
 
 **The read is bounded by default.** `--limit` caps the record lines emitted, and
 `--limit 0` reads without a bound. The header reports `records` (what this
@@ -841,14 +1143,14 @@ invocation emitted) beside `total` (what the scope holds), so a truncated view i
 never mistaken for a complete one:
 
 ```
-$ ksp --json audit --limit 1 --passphrase-file "$KSP_HOME/pw"
+$ ksp --json audit --limit 1 --passphrase-file "$HOME/.ksp-password"
 {"kind":"log","records":1,"total":3,"limit":1,...}
 ```
 
 **`--since` filters by each record's own timestamp**, as `<n><s|m|h|d>`:
 
 ```bash
-ksp audit --since 1h --limit 50 --passphrase-file "$KSP_HOME/pw"
+ksp audit --since 1h --limit 50 --passphrase-file "$HOME/.ksp-password"
 ```
 
 A duration that will not parse is a usage error (exit `13`) naming the accepted
@@ -860,7 +1162,7 @@ forms, rather than a window nobody asked for.
 
 ```bash
 ksp status
-# permissions: 2 of 17 protected roots drifted
+# permissions: 2 of 16 protected roots drifted
 #   drift:     /Users/keyspout/.ksp is mode 0755 owned by uid 502; expected directory mode 0711 owned by unrecorded
 #   drift:     /Users/keyspout/.ksp/admin is mode 0775 owned by uid 502; expected directory mode 0700 owned by uid 502
 ```
@@ -905,7 +1207,12 @@ whoever must write there, never a weaker boundary.
   host told you in advance what it cannot hold.
 - **Rotation and revocation change the future, not the past.** An old artifact
   still opens with the archived key, and a withdrawn grant does not recall a copy
-  already taken.
+  already taken — nor a value the agent read through step 8's publication.
+- **A policy write merges; `--replace` is the destructive one.** `admin policy
+  --agent … --secret …` adds the grants you name and keeps the ones you did not.
+  `--replace` writes the named grants as the whole set and withdraws every other,
+  and its report lists what it withdrew. Neither is a no-op you can undo: an
+  un-named grant that `--replace` withdrew is gone.
 - **Deletion is best effort.** No sweep, expiry or revoke here can recall a copy
   someone already saved — a saved key and ciphertext pair stays decryptable.
 
@@ -926,8 +1233,9 @@ flowchart TD
 
 ## Where Linux differs
 
-Everything above runs unchanged on Linux. Five things differ, and each is a
-property of the host rather than of the workflow.
+The commands are the same on Linux. Six things differ, and each is a property of
+the host rather than of the workflow — the first two change what you type, and the
+rest change only what you read back.
 
 ### 1. The scheduler the default names
 
@@ -1000,11 +1308,12 @@ Mac and `~/.bashrc` on Linux.
 to exist first, and the tool that creates it differs:
 
 ```bash
-# macOS
+# macOS — -GID 20 is `staff`, the group every ordinary macOS account is in
 sudo sysadminctl -addUser keyspout -UID 502 -GID 20 -shell /bin/zsh -home /Users/keyspout
 
-# Linux
-sudo useradd -M -N -s /bin/sh -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 keyspout
+# Linux — -g puts the admin in *your* group, which is the group the store uses
+sudo useradd -M -N -s /bin/sh -g "$(id -gn)" \
+  -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 keyspout
 ```
 
 Step 1 covers the macOS form in full. On Linux, `-K SUB_UID_COUNT=0 -K
@@ -1013,6 +1322,38 @@ hosts that have none spare; it has nothing to do with what the deployment needs.
 
 **Linux note:** use `useradd`, not `dscl`. And on either platform, check the
 account is resolvable before the next step: `id keyspout` must print a uid.
+
+### 6. The group the two accounts share
+
+This is the difference that fails quietly, so it gets its own entry.
+
+The store holds its shared material at `0640` and `0750` in **one group**: the
+publication a grant delivers from, the token the grant mints, `policy-events.jsonl`
+and the registry. Both accounts have to be in it.
+
+On macOS they already are: `-GID 20` puts the admin in `staff`, and so is every
+ordinary account. On Linux the two have no group in common unless you say so, and
+`-g "$(id -gn)"` in step 1 is the way to say it.
+
+Leaving it out does not fail at creation. It fails later, in two places that do not
+name the group:
+
+```
+$ ksp secret share published --policy a0e6819f…
+ksp: no delivery token was issued for policy a0e6819f…; expected it at …/policies/a0e6819f….token
+ksp: refused (exit 2: policy denied the operation)
+```
+
+The file is there. The user cannot read it, and the message reports the absence it
+observed. `sudo ls -l` on the `policies/` directory shows a `0640` file in a group
+she is not in, which is the whole diagnosis.
+
+Check it before you need it:
+
+```bash
+id -gn keyspout           # the admin's group
+id -Gn                    # yours, as a list
+```
 
 ---
 

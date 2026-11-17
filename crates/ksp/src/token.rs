@@ -25,9 +25,11 @@
 //! share, and that is the whole of her contribution to a lease (spec §3.7).
 
 use ksp_identity::delivery::{self, VerifiedRecipientKey};
+use ksp_identity::policy_edge::{PolicyEdge, PolicyId, PolicyRecordRef, PolicyTarget};
 use ksp_identity::{
-    DeliveryHeader, MintBinding, MintRefusal, MintRequest, Policy, PolicyRequest, PolicyVerifier,
-    SelectedContentKeys, TrustAnchors, UnsignedEnrolment, decode_policy, mint,
+    DeliveredKey, DeliveryArtifact, DeliveryHeader, MintBinding, MintRefusal, MintRequest, Policy,
+    PolicyRequest, PolicyVerifier, SelectedContentKeys, TrustAnchors, UnsignedEnrolment,
+    decode_policy, mint,
 };
 use ksp_record::{ContentBlob, Record, RecordEnvelope, commit_version};
 use ksp_types::{
@@ -37,9 +39,11 @@ use ksp_types::{
 
 use crate::admission::Admission;
 use crate::config::{self, Layout};
-use crate::deployment;
+use crate::deployment::{self, Deployment};
+use crate::edges::EdgeStore;
 use crate::exit::{self, Outcome};
 use crate::keys::StoredEnrolment;
+use crate::publication::PublicationPath;
 use crate::secret;
 
 /// Why a mint stopped.
@@ -97,6 +101,103 @@ pub enum TokenError {
     /// The ledger could not be read, written, or is not safe to use as it is.
     #[error("{0}")]
     Ledger(String),
+    /// The token at a policy's path does not verify, so it is not exported.
+    #[error("the token at {path} does not verify as policy {policy}'s delivery: {reason}")]
+    UnverifiableToken {
+        /// The policy it is filed under.
+        policy: String,
+        /// The file that failed.
+        path: String,
+        /// What the verifier said.
+        reason: String,
+    },
+    /// A policy names no publication, so there is nothing to deliver.
+    #[error("policy {policy} names no publication, so it authorises no delivery")]
+    NoPublication {
+        /// The policy that names none.
+        policy: String,
+    },
+    /// A policy names a path that is not the derived publication path.
+    ///
+    /// The refusal names the accepted path rather than the segment that differed,
+    /// so an operator can write the right one instead of guessing (FR-036).
+    #[error("policy {policy} names {found}, but a publication is only readable at {accepted}")]
+    PublicationNotDerived {
+        /// The policy that names it.
+        policy: String,
+        /// The derived path this build accepts.
+        accepted: String,
+        /// The path the policy records.
+        found: String,
+    },
+    /// The publication a policy names could not be read, for its own reason.
+    #[error("the publication policy {policy} names could not be read: {reason}")]
+    PublicationUnreadable {
+        /// The policy naming it.
+        policy: String,
+        /// What the reader said.
+        reason: String,
+    },
+    /// The policy is cooperative, so no cryptographic delivery exists to issue.
+    ///
+    /// `AnyEnrolled` seals the publication entry to the user, who opens it with her
+    /// own key and passes the value on. Calling that a restricted delivery would
+    /// claim a control the grant does not make (FR-035).
+    #[error(
+        "policy {policy} names any enrolled agent, so it is cooperative: the user opens it and \
+         passes the value on, and there is no per-agent delivery to issue"
+    )]
+    Cooperative {
+        /// The cooperative policy.
+        policy: String,
+    },
+    /// The agent a policy names has published no keys this host can read.
+    #[error("agent {agent} has published no enrolment, so a token for it cannot be built")]
+    AgentNotPublished {
+        /// The agent whose index entry is absent.
+        agent: String,
+    },
+    /// The export named an agent the policy does not name.
+    #[error("policy {policy} names agent {names}, not {requested}")]
+    NotThisAgent {
+        /// The policy.
+        policy: String,
+        /// The agent the policy names.
+        names: String,
+        /// The agent the export asked for.
+        requested: String,
+    },
+    /// The export named a secret the policy does not deliver.
+    ///
+    /// A policy token is only ever for the secret its grant was signed for, so
+    /// exporting it under another secret's name would hand an agent a credential the
+    /// operator did not mean to send. The two names are printed so the operator can
+    /// see which grant they actually signed.
+    #[error("policy {policy} delivers {names}, not {requested}")]
+    NotThisSecret {
+        /// The policy.
+        policy: String,
+        /// The secret the policy delivers.
+        names: String,
+        /// The secret the export named.
+        requested: String,
+    },
+    /// The policy has no issued token on this host.
+    #[error("no delivery token was issued for policy {policy}; expected it at {path}")]
+    TokenAbsent {
+        /// The policy.
+        policy: String,
+        /// Where the token would be.
+        path: String,
+    },
+    /// The file at the policy's token path is a different policy's token.
+    #[error("the token at {path} is not the one policy {policy} issued")]
+    TokenIsAnotherPolicys {
+        /// The policy.
+        policy: String,
+        /// The file that disagreed.
+        path: String,
+    },
 }
 
 impl TokenError {
@@ -118,6 +219,19 @@ impl TokenError {
             // the command asked for something the host cannot do, and saying so
             // is not the same as failing unexpectedly.
             Self::UnknownToken(_) => exit::POLICY_DENIAL,
+            // A policy that cannot authorise the delivery asked of it is a policy
+            // denial, not a failure: the operator asked for something this grant
+            // does not provide, and the sentence says which.
+            Self::NoPublication { .. }
+            | Self::PublicationNotDerived { .. }
+            | Self::Cooperative { .. }
+            | Self::NotThisAgent { .. }
+            | Self::NotThisSecret { .. }
+            | Self::TokenAbsent { .. }
+            | Self::AgentNotPublished { .. } => exit::POLICY_DENIAL,
+            Self::PublicationUnreadable { .. }
+            | Self::TokenIsAnotherPolicys { .. }
+            | Self::UnverifiableToken { .. } => exit::INTERNAL,
             // A ledger that cannot be read, is torn, or is readable by others is
             // an operator problem this command cannot fix, and it must not
             // pretend otherwise.
@@ -341,7 +455,15 @@ pub fn mint_lease(
             deadline: i64::try_from(at.saturating_add(ttl_secs)).unwrap_or(i64::MAX),
             policy_revision: policy.revision(),
         };
-        let ledger = ksp_identity::IssuanceLedger::at(layout.issuance_ledger());
+        // The registry that names the admin is authenticated against the pinned anchor:
+        // a registry another principal planted would name her own directory, and the
+        // issuance record would land in a ledger no reader consults.
+        let anchor = crate::keys::Anchor::load(&layout.admin_anchor_file())
+            .map_err(|_| TokenError::NotProvisioned)?;
+        let ledger =
+            crate::ledgers::LedgerPaths::discover(layout, policy.vault(), *policy.user(), &anchor)
+                .map_err(|error| TokenError::Ledger(error.to_string()))?
+                .as_ledger();
 
         let outcome = mint(
             &store,
@@ -380,6 +502,7 @@ pub fn mint_lease(
                 let selected = ksp_identity::SelectedRecord {
                     secret: secret_id.clone(),
                     version,
+                    policy: None,
                 };
                 // The header names the key that signs it, and that is hers: the
                 // artifact's `issuer` is the principal's enrolled key, verified
@@ -408,8 +531,11 @@ pub fn mint_lease(
                     intent_id.clone(),
                 )
                 .map_err(|error| TokenError::Seal(format!("the header: {error}")))?;
-                let keys = SelectedContentKeys::new(&header, vec![(selected, content_key)])
-                    .map_err(|error| TokenError::Seal(error.to_string()))?;
+                let keys = SelectedContentKeys::new(
+                    &header,
+                    vec![(selected, DeliveredKey::Content(content_key))],
+                )
+                .map_err(|error| TokenError::Seal(error.to_string()))?;
                 let artifact = delivery::seal(signer, &header, &keys, &recipient)
                     .map_err(|error| TokenError::Seal(error.to_string()))?;
                 artifact
@@ -608,7 +734,18 @@ fn standing_for(revoked: Option<&str>, presence: Presence) -> String {
 /// `consumed`: this host cannot tell a deleted record from an unreadable one, and
 /// saying `consumed` for both would claim an absence nobody established.
 pub fn listing(layout: &Layout) -> Result<crate::output::TokenLedger, TokenError> {
-    let ledger = ksp_identity::IssuanceLedger::at(layout.issuance_ledger());
+    // The ledgers live under the principals in the store, and their two paths are not
+    // derivable from one another, so a provisioned host resolves them from its record.
+    // A host with no record can only be reading a ledger written before the move —
+    // the home-local file — and that is what it lists: the alternative is reporting a
+    // history this command cannot see as no history at all.
+    let deployment = crate::deployment::require(layout).ok();
+    let ledger = match &deployment {
+        Some((recorded, _anchor)) => {
+            crate::ledgers::LedgerPaths::for_deployment(layout, recorded).as_ledger()
+        }
+        None => ksp_identity::IssuanceLedger::at(layout.issuance_ledger()),
+    };
     let listing = ledger
         .listing()
         .map_err(|error| TokenError::Ledger(error.to_string()))?;
@@ -620,7 +757,7 @@ pub fn listing(layout: &Layout) -> Result<crate::output::TokenLedger, TokenError
     // A host with no deployment has no records to look for, so every row is
     // `unknown` rather than `consumed` — an absent deployment is not an absent
     // record.
-    let deployment = crate::deployment::require(layout).ok();
+    let deployment = deployment.map(|(recorded, _anchor)| recorded);
     let store = crate::config::open_file_store(layout).ok();
 
     let rows = listing
@@ -628,7 +765,7 @@ pub fn listing(layout: &Layout) -> Result<crate::output::TokenLedger, TokenError
         .iter()
         .map(|entry| {
             let presence = match (&deployment, &store) {
-                (Some((deployment, _anchor)), Some(store)) => {
+                (Some(deployment), Some(store)) => {
                     let metadata = ksp_types::BoundMetadata {
                         vault_id: deployment.vault.clone(),
                         user_id: deployment.user,
@@ -684,7 +821,16 @@ pub fn revoke(
     token_id: &str,
     at: i64,
 ) -> Result<crate::output::Revocation, TokenError> {
-    let ledger = ksp_identity::IssuanceLedger::at(layout.issuance_ledger());
+    // The mark goes where `run` reads it, which is the same resolution `listing` uses:
+    // the store ledger on a provisioned host, and the pre-move home file on a host with
+    // no record — a host whose `run` finds no store ledger either, so the pair cannot
+    // disagree about which file they are talking about.
+    let ledger = match crate::deployment::require(layout) {
+        Ok((deployment, _anchor)) => {
+            crate::ledgers::LedgerPaths::for_deployment(layout, &deployment).as_ledger()
+        }
+        Err(_) => ksp_identity::IssuanceLedger::at(layout.issuance_ledger()),
+    };
     let mark = ledger.revoke(token_id, at).map_err(|error| match error {
         ksp_identity::LedgerError::UnknownToken { token_id } => TokenError::UnknownToken(format!(
             "this host has no record of token {token_id}, so there is nothing to revoke; \
@@ -751,6 +897,300 @@ pub fn run<W: std::io::Write>(
         }
         _ => Outcome::Failed(exit::INTERNAL),
     }
+}
+
+/// What issuing one policy's delivery token produced.
+#[derive(Debug)]
+pub struct IssuedToken {
+    /// Where the token was written, beside its policy.
+    pub path: std::path::PathBuf,
+    /// The policy it authorises.
+    pub policy: PolicyId,
+    /// The publication path it names.
+    pub publication: String,
+}
+
+/// When a policy-bound delivery stops being authorised.
+///
+/// The policy's own `not_after` is the only lease such a delivery has (CF-020): a
+/// per-token TTL would need a fresh signature for every delivery, and the key that
+/// could sign it belongs to the admin, not to the user exporting it. Two
+/// consequences are deliberate — withdrawing the policy ends access at the source,
+/// and an unwithdrawn policy keeps its window whatever the user exports.
+fn policy_delivery_window(edge: &PolicyEdge) -> u64 {
+    edge.body().not_after()
+}
+
+/// The publication path this edge must name, refusing one that is not it.
+///
+/// Derived here rather than trusted from the artifact, because the artifact's
+/// string is written by an earlier command and the path is the address the agent
+/// will read: a path that is not the derived one is a publication somewhere else
+/// (FR-036).
+fn derived_publication(
+    layout: &Layout,
+    edge: &PolicyEdge,
+) -> Result<(PublicationPath, Deployment), TokenError> {
+    let (recorded, _) = deployment::require(layout).map_err(|_| TokenError::NotProvisioned)?;
+    let derived = PublicationPath::derive(
+        edge.vault().clone(),
+        recorded.admin,
+        edge.secret().clone(),
+        edge.record_version(),
+    );
+    match edge.body().publication() {
+        None => Err(TokenError::NoPublication {
+            policy: edge.id().to_string(),
+        }),
+        Some(found) if found != derived.canonical() => Err(TokenError::PublicationNotDerived {
+            policy: edge.id().to_string(),
+            accepted: derived.canonical(),
+            found: found.to_string(),
+        }),
+        Some(_) => Ok((derived, recorded)),
+    }
+}
+
+/// Issue the delivery token one specific-agent policy authorises (FR-018, CF-020).
+///
+/// This runs when the policy is created, with the admin's own password, and it is
+/// the only place a policy-bound token is ever signed: the signature is the
+/// admin's, so the user who later exports the token has nothing to sign and needs
+/// no key. `run` verifies the token against the admin anchor, then the policy,
+/// then opens the publication entry sealed to that agent.
+///
+/// The token names the policy and the publication and carries **no content key**:
+/// the user cannot open the publication, so a key in her token would be a key she
+/// never had authority to obtain (C1).
+pub fn issue_policy_token(
+    layout: &Layout,
+    admin: &ksp_identity::AdminSigningKey,
+    edge: &PolicyEdge,
+    jti: String,
+) -> Result<IssuedToken, TokenError> {
+    let (recorded, anchor) = deployment::require(layout).map_err(|_| TokenError::NotProvisioned)?;
+    // The grant is the authority, so it has to be the pinned admin's grant. Nothing
+    // below may run for an edge this host cannot attribute.
+    if !edge.verify_issuer(&anchor.key) {
+        return Err(TokenError::PolicyIssuer);
+    }
+    // A cooperative grant names any agent, so its publication entry is sealed to the
+    // *user* and she opens it with her own key. There is no cryptographic delivery to
+    // issue, and issuing one would claim a restriction the policy does not make
+    // (FR-035).
+    let PolicyTarget::Agent(agent) = edge.target() else {
+        return Err(TokenError::Cooperative {
+            policy: edge.id().to_string(),
+        });
+    };
+    let (publication_path, _) = derived_publication(layout, edge)?;
+    // The artifact must already be there: a token that names a publication nobody
+    // wrote is a run that fails at the agent, far from the command that could have
+    // refused it.
+    let publication = crate::publication::load(layout, &publication_path).map_err(|error| {
+        TokenError::PublicationUnreadable {
+            policy: edge.id().to_string(),
+            reason: error.to_string(),
+        }
+    })?;
+    publication
+        .verify_binding(&publication_path)
+        .map_err(|error| TokenError::PublicationUnreadable {
+            policy: edge.id().to_string(),
+            reason: error.to_string(),
+        })?;
+
+    // The agent's public material comes from the index its owner publishes, which is
+    // readable without her home: the admin cannot traverse a `0700` agent directory
+    // and does not need to (CF-011).
+    let stored =
+        crate::agent_index::load(layout, edge.vault(), *edge.user(), &agent).map_err(|error| {
+            match error {
+                crate::keys::PinError::Absent => TokenError::AgentNotPublished {
+                    agent: agent.to_string(),
+                },
+                other => TokenError::Seal(other.to_string()),
+            }
+        })?;
+    if stored.identity != agent {
+        return Err(TokenError::AgentNotPublished {
+            agent: agent.to_string(),
+        });
+    }
+
+    let not_after = policy_delivery_window(edge);
+    // The admin has no out-of-band fingerprint for another principal's agent, so the
+    // published index is what she reads: it is the user's signed publication of her
+    // own agent's keys (CF-011), and the alternative would be traversing a `0700`
+    // home she cannot enter.
+    // The pin recomputes its fingerprint from its own claims, so this confirms the
+    // record is internally consistent rather than that the key is the agent's. The
+    // authority for the latter is the user's own publication of that entry (CF-011),
+    // which is the only material the admin can reach without entering her home.
+    let pin = UnsignedEnrolment::bind(
+        ActorId::Agent(agent),
+        stored.signing_key,
+        stored.recipient_key,
+        stored.signing_key_id.clone(),
+        stored.recipient_key_id.clone(),
+    )
+    .map_err(|error| TokenError::Seal(error.to_string()))?;
+    let confirmed = *pin.fingerprint();
+    let recipient = VerifiedRecipientKey::confirm_pin(&pin, &confirmed)
+        .map_err(|error| TokenError::Seal(error.to_string()))?;
+    let selected = ksp_identity::SelectedRecord {
+        secret: edge.secret().clone(),
+        version: edge.record_version(),
+        policy: Some(edge.id().clone()),
+    };
+
+    let artifact = admin.with_signing_key(|signer| {
+        let header = DeliveryHeader::new(
+            edge.vault().clone(),
+            // The publication's owning principal, which is also the issuer: a
+            // policy-bound record is read where the admin published it, not under
+            // the user who owns the secret.
+            recorded.admin,
+            recorded.admin_key_id.clone(),
+            agent,
+            stored.signing_key,
+            stored.recipient_key,
+            stored.signing_key_id.clone(),
+            stored.recipient_key_id.clone(),
+            Level::Granted,
+            Level::Admin,
+            Level::Granted.path_segment(),
+            vec![selected.clone()],
+            not_after,
+            jti,
+        )
+        .map_err(|error| TokenError::Seal(format!("the header: {error}")))?;
+        let keys = SelectedContentKeys::new(
+            &header,
+            vec![(
+                selected,
+                DeliveredKey::Policy(PolicyRecordRef {
+                    policy_id: edge.id().clone(),
+                    publication: publication_path.canonical(),
+                }),
+            )],
+        )
+        .map_err(|error| TokenError::Seal(error.to_string()))?;
+        delivery::seal(signer, &header, &keys, &recipient)
+            .map_err(|error| TokenError::Seal(error.to_string()))
+    })?;
+
+    let store = EdgeStore::new(layout, &recorded);
+    let path = store.token_path(edge.id());
+    write_token(
+        &path,
+        &artifact.to_bytes().map_err(|_| TokenError::Delivery)?,
+    )?;
+    Ok(IssuedToken {
+        path,
+        policy: edge.id().clone(),
+        publication: publication_path.canonical(),
+    })
+}
+
+/// The mode a token is written with, beside the publication's own modes.
+///
+/// `0640`: the admin writes it and her group reads it. The assumption is the store's
+/// one group — the same assumption `PUBLICATION_FILE_MODE`'s `0740` and
+/// `PUBLICATIONS_DIR_MODE`'s `0750` rest on — because the user who must *export* this
+/// token is a different principal from the admin who wrote it (FR-018). A deployment
+/// whose principals stop sharing that group breaks the export before it breaks
+/// anything else.
+pub const POLICY_TOKEN_MODE: u32 = 0o640;
+
+/// Write a token where an operator and the agent can read it.
+///
+/// Renamed over the target, so a crash cannot leave a half-written artifact that
+/// `run` would parse as a different token.
+fn write_token(path: &std::path::Path, bytes: &[u8]) -> Result<(), TokenError> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut temporary = path.to_path_buf();
+    temporary.set_extension("token.tmp");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(POLICY_TOKEN_MODE)
+        .open(&temporary)
+        .map_err(|_| TokenError::Write)?;
+    file.write_all(bytes).map_err(|_| TokenError::Write)?;
+    file.sync_all().map_err(|_| TokenError::Write)?;
+    std::fs::set_permissions(
+        &temporary,
+        std::fs::Permissions::from_mode(POLICY_TOKEN_MODE),
+    )
+    .map_err(|_| TokenError::Write)?;
+    std::fs::rename(&temporary, path).map_err(|_| TokenError::Write)
+}
+
+/// Export a policy's issued token, reading no password (FR-018).
+///
+/// The bytes are the admin's signed artifact, so the export is a copy rather than a
+/// mint: nothing is signed here and nothing secret is read. The refusals exist
+/// because an export is where an operator learns that a policy names a different
+/// agent than the one they asked for.
+pub fn export_policy_token(
+    layout: &Layout,
+    edge: &PolicyEdge,
+    agent: &AgentId,
+    out: &std::path::Path,
+) -> Result<(), TokenError> {
+    let (recorded, anchor) = deployment::require(layout).map_err(|_| TokenError::NotProvisioned)?;
+    if !edge.verify_issuer(&anchor.key) {
+        return Err(TokenError::PolicyIssuer);
+    }
+    match edge.target() {
+        PolicyTarget::Agent(named) if named == *agent => {}
+        PolicyTarget::Agent(named) => {
+            return Err(TokenError::NotThisAgent {
+                policy: edge.id().to_string(),
+                names: named.to_string(),
+                requested: agent.to_string(),
+            });
+        }
+        PolicyTarget::AnyEnrolled => {
+            return Err(TokenError::Cooperative {
+                policy: edge.id().to_string(),
+            });
+        }
+    }
+    let store = EdgeStore::new(layout, &recorded);
+    let issued = store.token_path(edge.id());
+    let bytes = std::fs::read(&issued).map_err(|_| TokenError::TokenAbsent {
+        policy: edge.id().to_string(),
+        path: issued.display().to_string(),
+    })?;
+    // The export checks what it can prove, and no less. The anchor is already in
+    // hand, so a tampered or truncated file is refused *here* rather than shipped to
+    // an agent that discovers it at `run` — a refusal an operator can act on is worth
+    // one signature check. The policy's standing is still `run`'s to judge: this is a
+    // copy, and a copy does not become authority by being exported.
+    let artifact = DeliveryArtifact::from_bytes(&bytes).map_err(|_| TokenError::Delivery)?;
+    delivery::verify(&artifact, &anchor.key).map_err(|error| TokenError::UnverifiableToken {
+        policy: edge.id().to_string(),
+        path: issued.display().to_string(),
+        reason: error.to_string(),
+    })?;
+    let header = artifact.header();
+    let named = header
+        .records()
+        .first()
+        .and_then(|record| record.policy.clone())
+        .ok_or(TokenError::Delivery)?;
+    if &named != edge.id() || header.issuer_key_id() != edge.issuer_key_id() {
+        return Err(TokenError::TokenIsAnotherPolicys {
+            policy: edge.id().to_string(),
+            path: issued.display().to_string(),
+        });
+    }
+    write_token(out, &bytes)
 }
 
 #[cfg(test)]
@@ -828,6 +1268,7 @@ mod tests {
             PASSWORD,
             KeyId::new("alice-ed25519-1"),
             KeyId::new("alice-x25519-1"),
+            None,
             None,
         )
         .unwrap();

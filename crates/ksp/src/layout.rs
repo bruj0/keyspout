@@ -192,9 +192,9 @@ pub const POLICY_MODE: u32 = 0o644;
 /// Two files, and each has exactly one writer, which is why this mode is enough:
 /// `issuance.jsonl` belongs to the user principal, who appends `Issued` inside the
 /// mint's publication closure and `TokenRevoked` when she withdraws a token;
-/// `withdrawals.jsonl` belongs to the admin, who appends `GrantWithdrawn` in
-/// `admin revoke`. `run` reads both, so a withdrawal reaches the principal it
-/// withdraws from.
+/// `policy-events.jsonl` belongs to the admin, who appends `GrantWithdrawn` in
+/// `admin revoke` and every policy lifecycle event she signs. `run` reads both, so
+/// a withdrawal reaches the principal it withdraws from.
 ///
 /// A single shared file would have to be group-*writable*, and a mint history any
 /// group member can rewrite is a history that member can forge: appending a
@@ -234,6 +234,16 @@ pub struct RootSpec {
 ///
 /// File rows are measured, never created — an empty `vault.cbor` would be worse
 /// than an absent one, and the command that writes it owns its mode.
+///
+/// # Why the two ledgers are not rows
+///
+/// They live in the *store*, under the principal that writes each one
+/// (`p/<vault>/<user>/issuance.jsonl`, `p/<vault>/<admin>/policy-events.jsonl`), and
+/// this table describes one home. A row here would measure a path nothing writes and
+/// report drift forever, which teaches an operator to ignore the table. The mode is
+/// enforced where the file is created — `ledgers::LedgerPaths::prepare` with
+/// `ISSUANCE_LEDGER_MODE` — and the boundary is one writer per file under the
+/// principal that appends to it.
 pub fn table(root: &Path) -> Vec<RootSpec> {
     let layout = Layout::new(root.to_path_buf());
     vec![
@@ -357,25 +367,6 @@ pub fn table(root: &Path) -> Vec<RootSpec> {
             reason: "signed policy: readable by every principal, replaceable only with the admin key",
             refusal: true,
         },
-        RootSpec {
-            path: layout.issuance_ledger(),
-            mode: ISSUANCE_LEDGER_MODE,
-            kind: RootKind::File,
-            reason: "the principal's mint record: she writes it, the admin reads it",
-            // A ledger writable by a third party is a mint history that party can
-            // forge: appending a revocation is how a token stops working, and
-            // removing one is how it starts again.
-            refusal: true,
-        },
-        RootSpec {
-            path: layout.withdrawals_ledger(),
-            mode: ISSUANCE_LEDGER_MODE,
-            kind: RootKind::File,
-            reason: "the admin's withdrawal record: he writes it, the principal's run reads it",
-            // The same argument in the other direction: a withdrawal another
-            // principal can remove is a revocation that silently stops holding.
-            refusal: true,
-        },
     ]
 }
 
@@ -416,6 +407,24 @@ pub enum LayoutError {
     Record {
         /// Why it failed, in this crate's own words.
         reason: &'static str,
+    },
+    /// The home is a pre-014 layout, which this build cannot represent.
+    #[error(
+        "this home holds the pre-014 layout: {path} exists and no principal registry does; this build cannot read its grants as access edges, has no conversion tool for them, and will not modify the tree — start a fresh deployment, or read the old one with the build that wrote it"
+    )]
+    Pre014Layout {
+        /// The artifact that identifies the old layout.
+        path: String,
+    },
+    /// A configured store root is absent, or is not a readable directory.
+    #[error(
+        "the configured store root at {path} is not a readable directory: create or mount it, or unset {env} to use this home's own store"
+    )]
+    StoreRootAbsent {
+        /// The configured path.
+        path: String,
+        /// The variable that named it.
+        env: &'static str,
     },
 }
 
@@ -765,9 +774,30 @@ pub fn level_mode(level: &ksp_types::Level) -> u32 {
 /// clean start. Creating it here rather than at first append is what keeps the
 /// deployment root `0711` a boundary — neither account needs write on it.
 pub fn ensure_ledger_file(root: &Path, path: &Path, owner: (u32, u32)) -> Result<(), LayoutError> {
+    let layout = Layout::new(root.to_path_buf());
+    ensure_ledger_file_in(&layout, path, owner)?;
+    // The owner is *replaced*, not recorded once: `admin init` created this file
+    // as the account that provisioned the deployment, and `admin user add` moves
+    // it to the account that writes it. Recording it a second time would be
+    // refused as a conflicting claim, which is the right rule for a file whose
+    // owner is meant to stay put and the wrong one for a handover.
+    rebind_file_owner(root, path, owner.0)
+}
+
+/// The same, for a ledger that lives in a store some other root names.
+///
+/// `ensure_ledger_file` reconstructs a layout from the home it is given, which is
+/// right when the ledger sits beside the deployment: `<home>/store` is then the store
+/// whose group the file must take. A ledger in a **configured** store has no such
+/// relationship — a store root's own `store_root()` is `<store>/store` — so the group
+/// would silently fall back to the owner's and the other principal could not read it.
+pub fn ensure_ledger_file_in(
+    layout: &Layout,
+    path: &Path,
+    owner: (u32, u32),
+) -> Result<(), LayoutError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-    let layout = Layout::new(root.to_path_buf());
     let unwritable = || LayoutError::Unwritable {
         path: path.display().to_string(),
     };
@@ -778,22 +808,19 @@ pub fn ensure_ledger_file(root: &Path, path: &Path, owner: (u32, u32)) -> Result
         .write(true)
         .create(true)
         .truncate(false)
-        .mode(0o640)
+        .mode(ISSUANCE_LEDGER_MODE)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .map_err(|_| unwritable())?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o640))
+    file.set_permissions(std::fs::Permissions::from_mode(ISSUANCE_LEDGER_MODE))
         .map_err(|_| unwritable())?;
     let store_gid = std::fs::metadata(layout.store_root())
         .map(|metadata| metadata.gid())
         .unwrap_or(owner.1);
     std::os::unix::fs::chown(path, Some(owner.0), Some(store_gid)).map_err(|_| unwritable())?;
-    // The owner is *replaced*, not recorded once: `admin init` created this file
-    // as the account that provisioned the deployment, and `admin user add` moves
-    // it to the account that writes it. Recording it a second time would be
-    // refused as a conflicting claim, which is the right rule for a file whose
-    // owner is meant to stay put and the wrong one for a handover.
-    rebind_file_owner(root, path, owner.0)
+    // No `rebind_file_owner`: that table describes the *home's* roots, and a ledger
+    // in a shared store is not one of them. Its owner is the chown above.
+    Ok(())
 }
 
 /// Create the store's arm journal, or repair its mode and group.
@@ -1158,6 +1185,167 @@ pub fn refusal(root: &Path) -> Option<LayoutRefusal> {
                     .any(|row| row.path == finding.path && row.refusal)
         })
         .map(|finding| LayoutRefusal { finding })
+}
+
+/// The mode of a directory a principal owns and every other principal reaches.
+///
+/// The same `0711` as a level parent: a sibling may traverse to a path it already
+/// knows — `principals.cbor`, or its own levels beside this one — and may not
+/// enumerate what else lives there.
+pub const PRINCIPAL_ROOT_MODE: u32 = LEVEL_PARENT_MODE;
+
+/// The principal registry: public keys and account bindings, readable by every
+/// principal in the deployment.
+///
+/// `0644` is a `file` fact. On `s3` and `valkey` the deployment credential is the
+/// read boundary, and this file's confidentiality there is the store's.
+pub const REGISTRY_FILE_MODE: u32 = PUBLIC_FILE_MODE;
+
+/// Create `p/<vault>/<principal>/` and its traversable ancestors.
+///
+/// Every directory on the way is `0711` and set explicitly: the store may be a
+/// configured path whose ancestors another account created, and an inherited
+/// `umask` must not decide who can reach a principal's root. Nothing here is
+/// owner-only — a principal's *levels* are, and they are created by
+/// [`ensure_level`].
+pub fn ensure_principal_root(
+    layout: &Layout,
+    vault_id: &ksp_types::VaultId,
+    principal: ksp_types::PrincipalId,
+) -> Result<PathBuf, LayoutError> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    // A configured store root is mounted or created by its operator, never by a
+    // record write: creating it here would turn an unmounted path into a fresh
+    // empty store that reads as "no records".
+    match layout.configured_store() {
+        Some(store) => {
+            if !store.is_dir() {
+                return Err(LayoutError::StoreRootAbsent {
+                    path: store.display().to_string(),
+                    env: crate::config::STORE_ENV,
+                });
+            }
+        }
+        None => ensure_row(layout.root(), &layout.store_root())?,
+    }
+
+    use std::os::unix::fs::MetadataExt;
+
+    let relative = ksp_record::RecordPath::directory(vault_id, principal, None);
+    let mut cursor = layout.store_root();
+    let euid = ksp_posture::permissions::effective_uid();
+    for segment in relative.split('/').filter(|part| !part.is_empty()) {
+        cursor = cursor.join(segment);
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(LayoutError::Unusable {
+                        path: cursor.display().to_string(),
+                        kind: RootKind::Directory,
+                    });
+                }
+                // A directory owned by another principal is not ours to `chmod`.
+                // `p/<vault>/` belongs to the admin, and the user's own root is
+                // `0711` beside it: an agent enrolling as her reaches both, and
+                // demanding the right to change their modes refused the enrolment
+                // with "unreadable" — a permission complaint about a `chmod`
+                // nobody need make. The mode is still enforced, by the owner that
+                // wrote it and by the kernel for everyone else.
+                if metadata.uid() != euid {
+                    continue;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new()
+                    .mode(PRINCIPAL_ROOT_MODE)
+                    .create(&cursor)
+                    .map_err(|_| LayoutError::Unwritable {
+                        path: cursor.display().to_string(),
+                    })?;
+            }
+            Err(_) => {
+                return Err(LayoutError::Unwritable {
+                    path: cursor.display().to_string(),
+                });
+            }
+        }
+        // `open(2)`'s mode is masked by the caller's `umask`, so each directory in this
+        // chain is re-stated through `set_permissions` — the mode is a decision, not an
+        // inherited accident. Every segment that reaches here was either just created or
+        // is owned by this account: one owned by another principal `continue`s above,
+        // because it is not ours to `chmod`.
+        std::fs::set_permissions(
+            &cursor,
+            std::fs::Permissions::from_mode(PRINCIPAL_ROOT_MODE),
+        )
+        .map_err(|_| LayoutError::Unwritable {
+            path: cursor.display().to_string(),
+        })?;
+    }
+    Ok(cursor)
+}
+
+/// Whether the store holds a principal registry.
+///
+/// The deployment record names the exact path, but a record that cannot be read
+/// must not turn into "this is a pre-014 home": that would report an unreadable
+/// record as an unsupported layout, and the operator would look for the wrong
+/// problem. So the store is scanned as well — bounded by the number of principals,
+/// which is the deployment's own size.
+fn registry_present(layout: &Layout) -> bool {
+    if crate::registry::PrincipalRegistry::path(layout).is_ok_and(|path| path.is_file()) {
+        return true;
+    }
+    let Ok(vaults) = std::fs::read_dir(layout.store_root().join("p")) else {
+        return false;
+    };
+    for vault in vaults.flatten() {
+        let Ok(principals) = std::fs::read_dir(vault.path()) else {
+            continue;
+        };
+        for principal in principals.flatten() {
+            if principal.path().join("principals.cbor").is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Refuse a layout this build cannot represent, before any record is read.
+///
+/// Two conditions, each with its own sentence because each has its own action:
+///
+/// - a **configured store root** that is absent or not a readable directory. The
+///   refusal names `KSP_STORE`, because the operator's fix is to mount it or
+///   unset it — and a fallback to `<home>/store` would give one principal a
+///   private store while every other principal shares the real one.
+/// - a **pre-014 home**: `policy.cbor` beside a deployment record and no
+///   principal registry. The old policy cannot be read as access edges, so a
+///   command that proceeded would report an empty grant set rather than an
+///   unsupported layout — and report it as success.
+pub fn require_current(layout: &Layout) -> Result<(), LayoutError> {
+    if let Some(store) = layout.configured_store() {
+        match std::fs::metadata(store) {
+            Ok(metadata) if metadata.is_dir() => {}
+            _ => {
+                return Err(LayoutError::StoreRootAbsent {
+                    path: store.display().to_string(),
+                    env: crate::config::STORE_ENV,
+                });
+            }
+        }
+    }
+    if layout.policy_file().exists()
+        && layout.deployment_file().exists()
+        && !registry_present(layout)
+    {
+        return Err(LayoutError::Pre014Layout {
+            path: layout.policy_file().display().to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

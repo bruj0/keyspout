@@ -605,7 +605,24 @@ pub enum Report {
         agents: Vec<AgentListing>,
     },
     /// The policy this host holds, as a read-back rather than a write.
-    Policy(PolicyView),
+    Policy(HeldPolicyView),
+    /// The policies one listing selected, with the total it matched.
+    ///
+    /// A struct variant so the tag and the sequence can live together, and a
+    /// `total` beside the records because a bounded listing that prints a prefix
+    /// and not the count answers a different question than the one asked (FR-024).
+    Policies {
+        /// The records this listing prints, in the documented order.
+        records: Vec<crate::policy_view::PolicyView>,
+        /// How many records the filter matched, whether printed or not.
+        total: usize,
+        /// The bound that was applied.
+        limit: usize,
+        /// Issuance rows that name a policy revision but no policy.
+        unattributed_issuances: usize,
+    },
+    /// One policy, joined to its tokens, its agent and its decision record.
+    PolicyEdge(crate::policy_view::PolicyView),
     /// What one `admin policy` write changed.
     ///
     /// A write that merges has to say what it merged. Without the two lists the
@@ -682,12 +699,16 @@ pub struct PolicyGrantedView {
 /// IDs, and it is the material a user principal reads to learn what she may do.
 /// Nothing that could be a private half has a route into this structure.
 ///
+/// Named `Held` because it views the one `policy.cbor` this host holds — the
+/// pre-edge model. The per-edge projection is [`crate::policy_view::PolicyView`],
+/// and two types called `PolicyView` would be one too many.
+///
 /// The grants are two lists rather than a matrix because the policy carries two
 /// lists: `shareable_secrets` and `shareable_agents`. A reader that wants "may
 /// this agent have this secret" asks `Policy::grants`, which is the same
 /// question the mint asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PolicyView {
+pub struct HeldPolicyView {
     /// The revision this policy carries.
     pub revision: u64,
     /// The vault the policy governs.
@@ -1014,6 +1035,114 @@ fn render(report: &Report) -> String {
             }
             if policy.shareable_secrets.is_empty() && policy.shareable_agents.is_empty() {
                 lines.push("grants:      none — this policy authorises no delivery".to_owned());
+            }
+            lines.join("\n")
+        }
+        Report::Policies {
+            records,
+            total,
+            limit,
+            unattributed_issuances,
+        } => {
+            // One line per policy, and the mode and state lead the eye: they are
+            // the two facts a reader compares across rows. The total is printed
+            // last and always, because a bounded listing that stays silent about
+            // what it did not print reads as the whole set.
+            let mut lines: Vec<String> = records
+                .iter()
+                .map(|record| {
+                    format!(
+                        "{}  user={}  secret={}@{}  mode={}  state={}  revision={}  tokens={}",
+                        record.id,
+                        record.user,
+                        record.secret,
+                        record.version,
+                        record.mode,
+                        record.state,
+                        record.revision,
+                        record.tokens.len()
+                    )
+                })
+                .collect();
+            if records.len() < *total {
+                lines.push(format!(
+                    "showing {} of {total} (limit {limit}); narrow the filter with --user, --secret or --state",
+                    records.len()
+                ));
+            } else {
+                lines.push(format!("{total} of {total}"));
+            }
+            if *unattributed_issuances > 0 {
+                lines.push(format!(
+                    "note: {} issuance record(s) name a policy revision and no policy identifier, so they are not counted against any row",
+                    unattributed_issuances
+                ));
+            }
+            lines.join("\n")
+        }
+        Report::PolicyEdge(record) => {
+            let mut lines = vec![
+                format!("policy:      {}", record.id),
+                format!("revision:    {}", record.revision),
+                format!("user:        {}", record.user),
+                format!("secret:      {}@{}", record.secret, record.version),
+                format!("target:      {} ({})", record.target, record.mode),
+                format!("state:       {}", record.state),
+                format!("validity:    {}..{}", record.not_before, record.not_after),
+                format!(
+                    "issuer:      {}",
+                    if record.verified {
+                        "verified against the pinned anchor"
+                    } else {
+                        "NOT verified against the pinned anchor: nothing below is evidence"
+                    }
+                ),
+            ];
+            if let Some(reason) = &record.state_reason {
+                lines.push(format!("reason:      {reason}"));
+            }
+            match &record.publication {
+                Some(path) => lines.push(format!("publication: {path}")),
+                None => lines.push(
+                    "publication: none — a cooperative grant is sealed to the user, not to an agent"
+                        .to_owned(),
+                ),
+            }
+            for agent in &record.agents {
+                lines.push(format!(
+                    "agent:       {}  name={}  signing={}  recipient={}  fingerprint={}",
+                    agent.identity,
+                    agent.display_name.as_deref().unwrap_or("-"),
+                    agent.signing_key_id,
+                    agent.recipient_key_id,
+                    agent.fingerprint
+                ));
+            }
+            if record.tokens.is_empty() {
+                lines.push("tokens:      none — this grant issued no token".to_owned());
+            }
+            for token in &record.tokens {
+                lines.push(format!(
+                    "token:       jti={}  expires_at={}  state={}  remaining_uses={}",
+                    token.jti,
+                    token.expires_at,
+                    token.state,
+                    token
+                        .remaining_uses
+                        .map(|uses| uses.to_string())
+                        .unwrap_or_else(|| "-".to_owned())
+                ));
+            }
+            match &record.withdrawal {
+                Some(withdrawal) => lines.push(format!(
+                    "withdrawn:   revision={}  actor={}  at={}",
+                    withdrawal.revision, withdrawal.actor, withdrawal.at
+                )),
+                None => lines
+                    .push("withdrawn:   no -- this policy is not recorded as withdrawn".to_owned()),
+            }
+            if let Some(at) = record.last_decision_at {
+                lines.push(format!("last change: {at}"));
             }
             lines.join("\n")
         }

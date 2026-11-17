@@ -74,6 +74,7 @@ use serde::{Deserialize, Serialize};
 use crate::enrolment::AdminSigningKey;
 pub use crate::policy::Withdrawal;
 use crate::policy::{Policy, PolicyRefusal};
+use crate::policy_edge::{PolicyId, PolicyLedgerEntry, RevisionHead};
 
 /// What a revocation reaches, in the words the command prints.
 ///
@@ -422,14 +423,20 @@ enum LedgerEvent {
     Issued { issuance: Issuance },
     TokenRevoked { mark: RevocationMark },
     GrantWithdrawn { withdrawal: GrantWithdrawal },
+    PolicyChanged { entry: PolicyLedgerEntry },
 }
 
-/// The withdrawals file's name, beside the issuance file.
+/// The admin's file's name, beside the issuance file.
+///
+/// Named for what it holds rather than for its first writer: it starts as the
+/// withdrawal record and gains the rest of the policy lifecycle, and a name that
+/// promised only withdrawals would be wrong the first time a `create` landed in
+/// it.
 ///
 /// Fixed rather than configurable: the two files are one ledger, and a caller
 /// that could name them separately could point the admin's decisions at a file the
 /// principal never reads.
-const WITHDRAWALS_FILE: &str = "withdrawals.jsonl";
+const POLICY_EVENTS_FILE: &str = "policy-events.jsonl";
 
 /// The ledger files this host writes beside its deployment.
 ///
@@ -442,7 +449,8 @@ const WITHDRAWALS_FILE: &str = "withdrawals.jsonl";
 /// - `issuance.jsonl` is the user principal's: she appends `Issued` inside the
 ///   mint's publication closure, and `TokenRevoked` when she withdraws a token she
 ///   minted.
-/// - `withdrawals.jsonl` is the admin's: `admin revoke` appends `GrantWithdrawn`.
+/// - `policy-events.jsonl` is the admin's: `admin revoke` appends `GrantWithdrawn`,
+///   and every policy lifecycle event the admin signs is appended there too.
 ///
 /// Both are `0640` in the store's group, so each account *reads* what the other
 /// wrote — `run` has to see a withdrawal, and the admin's `audit verify` has to
@@ -450,19 +458,34 @@ const WITHDRAWALS_FILE: &str = "withdrawals.jsonl";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuanceLedger {
     issued: PathBuf,
-    withdrawn: PathBuf,
+    events: PathBuf,
 }
 
 impl IssuanceLedger {
-    /// A ledger whose issuance file is `path`, with the withdrawals beside it.
+    /// A ledger whose issuance file is `path`, with the admin's file beside it.
     ///
     /// The sibling name is derived rather than passed so that every existing
     /// caller — and every fixture that builds a ledger from one path — keeps
     /// working, and so the two files cannot be pointed at unrelated directories.
     pub fn at(path: impl AsRef<Path>) -> Self {
         let issued = path.as_ref().to_path_buf();
-        let withdrawn = issued.with_file_name(WITHDRAWALS_FILE);
-        Self { issued, withdrawn }
+        let events = issued.with_file_name(POLICY_EVENTS_FILE);
+        Self { issued, events }
+    }
+
+    /// A ledger whose two files are named independently.
+    ///
+    /// `at` derives the admin's file as the issuance file's sibling, which is
+    /// right when both live in one home. In a shared store they live under
+    /// **different principals** — the user writes her issuance history, the admin
+    /// writes her policy events — so the two paths are passed rather than derived.
+    /// Deriving one from the other would put the admin's file inside the user's
+    /// directory, where the admin cannot write it and nobody should.
+    pub fn with_paths(issued: impl AsRef<Path>, events: impl AsRef<Path>) -> Self {
+        Self {
+            issued: issued.as_ref().to_path_buf(),
+            events: events.as_ref().to_path_buf(),
+        }
     }
 
     /// The path the issuance file reads and writes.
@@ -470,9 +493,9 @@ impl IssuanceLedger {
         &self.issued
     }
 
-    /// The path the withdrawals file reads and writes.
-    pub fn withdrawals_path(&self) -> &Path {
-        &self.withdrawn
+    /// The path the admin's file reads and writes.
+    pub fn policy_events_path(&self) -> &Path {
+        &self.events
     }
 
     /// Seal first, record second, and only then hand the artifact back.
@@ -573,6 +596,74 @@ impl IssuanceLedger {
         Ok(contents.withdrawals)
     }
 
+    /// Record one policy decision, idempotently.
+    ///
+    /// A decision already in force is returned rather than appended again, and the
+    /// clock does not count: a retry after a crash between the append and the artifact
+    /// carries the same policy, revision and digest, so it lands on the recorded entry
+    /// instead of writing a duplicate of it.
+    ///
+    /// The ordering that makes this a control rather than an audit log is **not** here
+    /// — the caller appends before it writes an artifact. This method's only promise is
+    /// that one decision is one line.
+    pub fn record_policy(
+        &self,
+        entry: &PolicyLedgerEntry,
+    ) -> Result<PolicyLedgerEntry, LedgerError> {
+        let contents = self.read()?;
+        if let Some(existing) = contents
+            .policies
+            .iter()
+            .find(|seen| seen.same_decision(entry))
+        {
+            return Ok(existing.clone());
+        }
+        self.append(&LedgerEvent::PolicyChanged {
+            entry: entry.clone(),
+        })?;
+        Ok(entry.clone())
+    }
+
+    /// The highest revision recorded for one policy, with its digest.
+    ///
+    /// `None` means no decision about that policy is recorded here — which is not the
+    /// same as revision zero, and the caller has to tell the two apart before it
+    /// decides whether a candidate is a create or a regression.
+    pub fn policy_head(&self, policy: &PolicyId) -> Result<Option<RevisionHead>, LedgerError> {
+        let contents = self.read()?;
+        if contents.torn_tail {
+            return Err(LedgerError::TornTail {
+                path: self.policy_events_path().to_path_buf(),
+            });
+        }
+        Ok(contents
+            .policies
+            .iter()
+            .filter(|entry| &entry.policy == policy)
+            .map(|entry| RevisionHead {
+                revision: entry.revision,
+                digest: entry.digest,
+            })
+            .fold(None, |head: Option<RevisionHead>, candidate| match head {
+                Some(current) if current.revision >= candidate.revision => Some(current),
+                _ => Some(candidate),
+            }))
+    }
+
+    /// Every policy decision this host recorded, oldest first.
+    ///
+    /// Read-only and public because `audit verify` and the scoped audit view report
+    /// these beside the withdrawals: one file, one stream of the admin's decisions.
+    pub fn policy_entries(&self) -> Result<Vec<PolicyLedgerEntry>, LedgerError> {
+        let contents = self.read()?;
+        if contents.torn_tail {
+            return Err(LedgerError::TornTail {
+                path: self.policy_events_path().to_path_buf(),
+            });
+        }
+        Ok(contents.policies)
+    }
+
     /// Everything this host minted, with the marks it holds against each.
     pub fn listing(&self) -> Result<LedgerListing, LedgerError> {
         let contents = self.read()?;
@@ -624,14 +715,21 @@ impl IssuanceLedger {
             issuances: Vec::new(),
             marks: Vec::new(),
             withdrawals: Vec::new(),
+            policies: Vec::new(),
         };
         let issued = self.read_one(&self.issued)?;
-        let withdrawn = self.read_one(&self.withdrawn)?;
+        let withdrawn = self.read_one(&self.events)?;
         contents.present = issued.present || withdrawn.present;
         contents.torn_tail = issued.torn_tail || withdrawn.torn_tail;
         contents.issuances = issued.issuances;
         contents.marks = issued.marks;
         contents.withdrawals = withdrawn.withdrawals;
+        // Both files are read for policy decisions. Today only the admin's holds any,
+        // and merging both anyway is what keeps a future routing change from silently
+        // hiding half the decisions: a reader that forgot one file would answer "no
+        // revision recorded", which is a create where a regression belongs.
+        contents.policies = issued.policies;
+        contents.policies.extend(withdrawn.policies);
         Ok(contents)
     }
 
@@ -645,6 +743,7 @@ impl IssuanceLedger {
                     issuances: Vec::new(),
                     marks: Vec::new(),
                     withdrawals: Vec::new(),
+                    policies: Vec::new(),
                 });
             }
             Err(error) => return Err(self.io(path, &error)),
@@ -661,6 +760,7 @@ impl IssuanceLedger {
             issuances: Vec::new(),
             marks: Vec::new(),
             withdrawals: Vec::new(),
+            policies: Vec::new(),
         };
         for (index, line) in lines.iter().enumerate() {
             let line = line.trim();
@@ -673,6 +773,7 @@ impl IssuanceLedger {
                 Ok(LedgerEvent::GrantWithdrawn { withdrawal }) => {
                     contents.withdrawals.push(withdrawal);
                 }
+                Ok(LedgerEvent::PolicyChanged { entry }) => contents.policies.push(entry),
                 // Only the final line may be truncated: earlier lines were
                 // followed by a complete append, so a damaged one is corruption.
                 Err(_) if index + 1 == lines.len() => contents.torn_tail = true,
@@ -692,7 +793,10 @@ impl IssuanceLedger {
     /// command can write into the file it does not own.
     fn append(&self, event: &LedgerEvent) -> Result<(), LedgerError> {
         let path = match event {
-            LedgerEvent::GrantWithdrawn { .. } => &self.withdrawn,
+            // Both are the admin's decisions: a withdrawal and a lifecycle change are
+            // signed by the same account, and splitting them would be two files whose
+            // order a reader has to reconstruct.
+            LedgerEvent::GrantWithdrawn { .. } | LedgerEvent::PolicyChanged { .. } => &self.events,
             _ => &self.issued,
         };
         self.append_to(path, event)
@@ -834,6 +938,7 @@ struct Contents {
     issuances: Vec<Issuance>,
     marks: Vec<RevocationMark>,
     withdrawals: Vec<GrantWithdrawal>,
+    policies: Vec<PolicyLedgerEntry>,
 }
 
 impl Contents {

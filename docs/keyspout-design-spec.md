@@ -55,12 +55,12 @@ Three rules keep these markers honest:
 2. **A marker never changes a normative rule.** Each normative rule lives in the
    section that owns its subject, and that section wins over any historical text
    wherever the two disagree.
-3. **A marker is dated.** The snapshot below was taken on **2026-11-14**, after
-   features `001`–`009` merged into `main`.
+3. **A marker is dated.** The snapshot below was taken on **2026-11-17**, after
+   features `001`–`014` merged into `main`.
 
-### Implementation snapshot — 2026-11-14
+### Implementation snapshot — 2026-11-17
 
-Verified against the merged tree on `main`. Features `001`–`011` are implemented;
+Verified against the merged tree on `main`. Features `001`–`014` are implemented;
 `003` is research only and shipped no code.
 
 | Area | Marker | Evidence |
@@ -79,7 +79,7 @@ Verified against the merged tree on `main`. Features `001`–`011` are implement
 | Sealed delivery artifact, recipient sealing, issuer signature | **[Implemented]** | `crates/ksp-identity/src/delivery.rs`, `header.rs`, `signature.rs` |
 | Proof of possession, deterministic preimage, time buckets, compliant run path | **[Implemented]** | `crates/ksp-identity/src/pop.rs`, `run.rs`; `crates/ksp/src/run_gate.rs` |
 | Mint sequence: admission, arm-before-publication, fingerprint refusal | **[Implemented]** | `crates/ksp-identity/src/mint.rs`; `crates/ksp/src/token.rs` |
-| Issuance ledger: one row per minted lease, appended by `publish_recorded` so `token list` and `token revoke` have a subject. Two files, one writer each — the principal's `issuance.jsonl` and the admin's `withdrawals.jsonl`, both `0640` in the store's group so each account reads what the other wrote and writes only its own. On `file`, a lease is admitted only once a sweep proof exists, so `token mint` and `secret share` refuse until the schedule has run | **[Implemented]** | `crates/ksp-identity/src/issuance.rs`, `mint.rs`; `crates/ksp/src/token.rs`; the handover is `crates/ksp/src/admin.rs`; the refusal is `crates/ksp-backend/src/admission.rs` |
+| Issuance ledger: one row per minted lease, appended by `publish_recorded` so `token list` and `token revoke` have a subject. Two files, one writer each — the principal's `issuance.jsonl` and the admin's `policy-events.jsonl`, both `0640` in the store's group so each account reads what the other wrote and writes only its own. On `file`, a lease is admitted only once a sweep proof exists, so `token mint` and `secret share` refuse until the schedule has run | **[Implemented]** | `crates/ksp-identity/src/issuance.rs`, `mint.rs`; `crates/ksp/src/token.rs`; the handover is `crates/ksp/src/admin.rs`; the refusal is `crates/ksp-backend/src/admission.rs` |
 | Deletion intent, actor report, absence observation, acknowledgement journal | **[Implemented]** | `crates/ksp-deletion/src/` |
 | Consume ordering, delete-after-read, honest outcome | **[Implemented]** | `crates/ksp-deletion/src/consume.rs`; `crates/ksp/src/consume.rs` |
 | Per-writer audit chain, append-before-effect, chain verification | **[Implemented]** | `crates/ksp-deletion/src/audit.rs`; `crates/ksp/src/audit_verify.rs` |
@@ -93,6 +93,14 @@ Verified against the merged tree on `main`. Features `001`–`011` are implement
 | Sweep arming record, `backend arm-sweep`, signed sweep proof, proof gate, freshness and grace | **[Implemented]** | `crates/ksp-backend/src/proof.rs`, `sweeper.rs`; `crates/ksp/src/sweep.rs`, `arm.rs` |
 | Sweep scope is a level, never a record: a deeper `--scope` or `--grant` is refused and the refusal names the accepted shape | **[Implemented]** | `crates/ksp-backend/src/sweeper.rs` (`SweepScope::parse`, `within`); tests `crates/ksp-backend/src/sweeper.rs`, `crates/ksp/tests/arming.rs`. Feature `012-upstream-defect-fixes`. |
 | Principal UUIDs, per-principal roots, cross-UID vault binding | **[Implemented]** | `crates/ksp/src/layout.rs`, `admin.rs`; test `crates/ksp/tests/principals.rs` |
+| Principal registry: one vault, one admin and N users. `admin init` mints the admin, `admin user add` appends each user, and every path is keyed on the principal UUID | **[Implemented]** | `crates/ksp/src/registry.rs`; test `crates/ksp/tests/principal_topology.rs`. Feature `014-policy-scoped-sharing`. |
+| Policy as one signed edge per grant: `PolicyId`, revision, named record version, target, publication reference and validity window; every decision appended to `policy-events.jsonl` before the artifact moves | **[Implemented]** | `crates/ksp-identity/src/policy_edge.rs`; `crates/ksp/src/edges.rs`, `lifecycle.rs`. Feature `014-policy-scoped-sharing`. |
+| Publication: a fourth level under the admin's principal holding the sealed entry a grant delivers from — one derived path, `0750` on its directories and `0740` on the artifact, the entry sealed to the one agent the grant names, and the content key sealed to the admin vault | **[Implemented]** | `crates/ksp/src/publication.rs`; test `crates/ksp/tests/publication.rs`. Feature `014-policy-scoped-sharing`. |
+| Policy-bound delivery: the admin signs the token at grant creation, the user exports it without a password, and the token carries a publication reference instead of a content key | **[Implemented]** | `crates/ksp/src/token.rs` (`issue_policy_token`, `export_policy_token`), `app.rs`; test `crates/ksp/tests/policy_scenario.rs`. Feature `014-policy-scoped-sharing`. |
+| Policy write surface: creating, re-signing and withdrawing a grant from the command line, the admin's own record writer, the admin vault verb, and the keyless policy export | **[Implemented]** | `crates/ksp/src/grant.rs`, `admin.rs`, `commands.rs`, `app.rs`; test `crates/ksp/tests/policy_scenario.rs`. Feature `014-policy-scoped-sharing`. |
+| Policy read surface: the deployment-wide list and show, and the same join scoped to the calling principal — artifact, ledger, agent pin, publication and withdrawal — reporting `dangling` rather than omitting a policy whose link is gone | **[Implemented]** | `crates/ksp/src/policy_view.rs`; tests `crates/ksp/tests/policy_read_surfaces.rs`, `crates/ksp/tests/policy_read_back.rs`. Feature `014-policy-scoped-sharing`. |
+| Cooperative target (`AnyEnrolled`): labelled `cooperative` on every surface, never rendered as an enforced restriction, and issuing no token | **[Implemented]** | `crates/ksp-identity/src/policy_edge.rs` (`PolicyTarget`), `crates/ksp/src/token.rs` (`TokenError::Cooperative`). Feature `014-policy-scoped-sharing`. |
+| Linux test environment for the gate: one idempotent VM provisioner, a `ksp-vm.sh status` report that reads the ABI the binary prints, and one guard that refuses rather than reporting a host answer as the kernel's | **[Implemented]** | `scripts/ksp-vm.sh`, `scripts/ksp-vm-provision.sh`, `scripts/lib/vm-guard.sh`. Feature `014-policy-scoped-sharing`. |
 | Durable owner-only key lifecycle for agent and admin identities | **[Implemented]** | `crates/ksp-key-lifecycle/src/` |
 | Local session agent (§3.6) | **[Not implemented]** | The subcommands are **absent, not hidden**: `agent start`, `agent stop`, `agent status`, `agent lock-timeout`. A test in `crates/ksp/src/commands.rs` asserts their absence. |
 | `ksp vault unseal` and `ksp vault seal` | **[Absent by decision]** | Every operation unseals inside its own process and exits. The command list has no such verbs: `crates/ksp/src/commands.rs`. |
@@ -1533,15 +1541,15 @@ made of. Unknown bound means `None`.
 
 ---
 
-### 3.8 The three storage levels
+### 3.8 The four storage levels
 
 > **Current level distinction; historical lifetime and diagram claims.** The
-> `admin`, `user`, and `agent-<id>` siblings remain. The diagram below is unchanged
-> historical illustration: “single use” and “cannot detect sharing” are not
-> guarantees. §§3.9 and 0.7 govern deletion and containment. Public metadata can
-> reveal that sharing occurred, even when values and names remain encrypted.
+> `admin`, `user`, `agent-<id>` and `granted` siblings remain. The diagram below is
+> unchanged historical illustration: “single use” and “cannot detect sharing” are
+> not guarantees. §§3.9 and 0.7 govern deletion and containment. Public metadata
+> can reveal that sharing occurred, even when values and names remain encrypted.
 
-> **Status: [Implemented], with two authorized changes.** The three levels, the
+> **Status: [Implemented], with three authorized changes.** The levels, the
 > sibling structure, the path grammar and the confinement that makes them real
 > are implemented in `crates/ksp/src/layout.rs`,
 > `crates/ksp-posture/src/confinement.rs` and `crates/ksp-backend/src/file.rs`.
@@ -1549,9 +1557,14 @@ made of. Unknown bound means `None`.
 > two things changed: the `<user-id>` segment is now a **principal UUID**, and
 > the per-agent-accounts mechanism extends to the local `file` backend for the
 > **admin ↔ user** boundary. The agent boundary is unchanged: it still runs as
-> the user and is bounded by Landlock plus the lease.
+> the user and is bounded by Landlock plus the lease. Under feature
+> `014-policy-scoped-sharing` (operator-authorized in that feature's
+> `spec.md`) a fourth level, `granted`, holds the publication a policy delivers
+> from: `crates/ksp/src/publication.rs`. It lives under the **admin's** principal,
+> not the user's, because the admin is who writes it and who must be able to
+> release it.
 
-Records live at one of three **levels**. The level is a property of the record,
+Records live at one of four **levels**. The level is a property of the record,
 recorded in its signed metadata, and it decides who can read, who wrote, and
 whether a deadline applies. Levels are not separate vaults and not separate
 stores — the same backend, the same path scheme, the same record format. Only the
@@ -1562,7 +1575,7 @@ authorization rule and the expiry rule differ.
 | `p/` | fixed prefix | Store namespace. Not security-relevant | **[Implemented]** — `crates/ksp-record/src/path.rs` |
 | `<vault-id>` | e.g. `acme` | One org or tenant. All users share it | **[Implemented]** — `crates/ksp-record/src/path.rs` |
 | `<principal-id>` | a **UUID** issued at enrolment | Every record belongs to exactly one principal. A display name is mutable metadata, so keying a path on one makes a rename indistinguishable from a rebind | **[Implemented]** — changed under feature 002; `crates/ksp-record/src/path.rs` refuses a path whose principal is not canonical |
-| `<level>` | `admin`, `user` or `agent-<id>` | **The three levels of §3.8**, as siblings — never nested | **[Implemented]** — `crates/ksp-types/src/metadata.rs` |
+| `<level>` | `admin`, `user`, `agent-<id>` or `granted` | **The four levels of §3.8**, as siblings — never nested | **[Implemented]** — `crates/ksp-types/src/metadata.rs` |
 | `<opaque-secret-id>` | e.g. `7b1d40` | Random. The real name lives inside the sealed payload, never in the path | **[Implemented]** — `crates/ksp-types/src/metadata.rs`, `crates/ksp-record/src/path.rs` |
 | `<version>` | e.g. `2` | Monotonic per secret. The unit a lease deletes | **[Implemented]** — `crates/ksp-record/src/path.rs` |
 
@@ -1570,10 +1583,21 @@ Concretely, one user's store looks like this — the same three level names exis
 under every vault:
 
 ```text
-p/acme/<principal-uuid>/admin/9f3c2e/1              db_password, sealed by the admin
+p/acme/<principal-uuid>/admin/9f3c2e/1              db_password, sealed by the admin to the user
 p/acme/<principal-uuid>/user/7b1d40/3               personal_api_key, no TTL, durable
 p/acme/<principal-uuid>/agent-deploy-bot/7b1d40/1   a leased copy of personal_api_key
 p/acme/<principal-uuid>/agent-deploy-bot/7b1d40/2   a second lease, newer key, older is a tombstone
+```
+
+A deployment with a policy also holds these, under the **admin's** principal:
+
+```text
+p/acme/<admin-uuid>/admin/4c1f80/1                  the admin's own copy; sealed to her admin vault
+p/acme/<admin-uuid>/granted/4c1f80/1                the publication a grant delivers from, 0740
+p/acme/<admin-uuid>/policies/<policy-id>.cbor       the signed grant, 0644
+p/acme/<admin-uuid>/policies/<policy-id>.token      the delivery artifact the grant issued
+p/acme/<admin-uuid>/policy-events.jsonl             the decision ledger, 0640
+p/acme/<admin-uuid>/principals.cbor                 the registry: admin and every user, 0644
 ```
 
 > **The `<user-id>` segment became a UUID.** The examples above show
@@ -1601,9 +1625,20 @@ level system is for:
 
 | Level | Written by | Readable by | Lifetime | Admin controls |
 |---|---|---|---|---|
-| **`admin`** | Admin | The user it was addressed to | **No TTL by default**; optional TTL (§4.5) | Content, audience, max TTL, revocation |
+| **`admin`** | Admin | The user it was addressed to — or, at the admin's own principal, the admin through her admin vault | **No TTL by default**; optional TTL (§4.5) | Content, audience, max TTL, revocation |
 | **`user`** | The user | The user | No TTL | Whether the secret may be **downstreamed** to an agent, and for how long |
 | **`agent-<id>`** | The user | That agent, with its token **and its private key** (§4.3.1) | Optional TTL; a lease by default (§4.5) | Scope through the user's grants, not content |
+| **`granted`** | Admin, when it creates or re-targets a policy | Every principal in the store's group (the *cryptographic* boundary is the sealed entry: only the agent named by the grant opens it), and the admin through her admin vault, which is how a later entry recovers the content key | The policy's own `not_after` — the only lease a policy-bound delivery has (§4.5) | Create, re-target, withdraw (below) |
+
+**The `admin` level appears at two principals, and the difference is the point.**
+An `admin`-level record at the *user's* principal is a transfer: the admin sealed
+it to the user's recipient key on the way in, so she cannot open it afterwards —
+`ksp admin put`. An `admin`-level record at the *admin's own* principal is sealed
+to her admin vault instead — `ksp admin put --own` — and that copy is the plaintext
+a publication re-seals under the publication's own bound metadata. [Implemented] —
+`crates/ksp/src/admin.rs` (`put`, `put_own`, `open_own`), `crates/ksp/src/secret.rs`
+(`seal_record_by`); test `crates/ksp/tests/policy_scenario.rs`. Feature
+`014-policy-scoped-sharing`.
 
 **Confinement is what makes the levels real.** The tree above is only a naming
 convention unless something enforces it, and on a local `file` backend an agent
@@ -1853,23 +1888,31 @@ make the following true by construction rather than by careful coding:
 
 #### 3.8.1 Who can read what: the actors, and the boundary that separates them
 
-> **Status: [Implemented].** The modes below are the constants in
-> `crates/ksp/src/layout.rs` — `HOME_MODE`, `LEVEL_PARENT_MODE`,
-> `LEVEL_MODE`, `AGENT_LEVEL_MODE`, `ADMIN_KEY_MODE`, `AGENT_KEY_MODE`,
+> **Status: [Implemented], with the principal rule changed by feature
+> `014-policy-scoped-sharing`.** The modes below are the constants in
+> `crates/ksp/src/layout.rs` — `HOME_MODE`, `LEVEL_PARENT_MODE`, `LEVEL_MODE`,
+> `AGENT_LEVEL_MODE`, `PRINCIPAL_ROOT_MODE`, `ADMIN_KEY_MODE`, `AGENT_KEY_MODE`,
 > `POLICY_MODE`, `ISSUANCE_LEDGER_MODE` and `ARM_JOURNAL_MODE` — and they are
-> measured against the disk by `audit` in the same file. The one-user-per-
-> deployment rule is enforced by `admin user add` in `crates/ksp/src/admin.rs`
-> (`AlreadyEnrolled`, exit `2`), and by `Deployment` naming exactly one `user` and
-> one `admin` in `crates/ksp/src/deployment.rs`.
+> measured against the disk by `audit` in the same file. The publication's own two
+> modes live beside the module that writes them:
+> `crates/ksp/src/publication.rs` (`PUBLICATION_DIR_MODE` `0750`,
+> `PUBLICATION_FILE_MODE` `0740`). **One deployment holds one vault and N
+> principals** — one admin and any number of users — recorded in
+> `principals.cbor` (`crates/ksp/src/registry.rs`); the older one-user-per-
+> deployment rule is gone, and `admin user add` appends instead of refusing.
 
 The levels table above says what a level *means*. This one says who actually
 holds which key, which account, and therefore what they can reach. Read it before
 answering "can Bob see Alice's secret" — the answer is not "no because the code
 checks", it is "no because there is no path and no key".
 
-**First, the constraint that decides most rows: one deployment holds one user.**
-`Deployment` names a single `user` principal and a single `admin` principal, and a
-second `admin user add` on the same host is refused:
+**First, the constraint that decides most rows: one deployment holds one vault and
+N principals.** `Principals.cbor` records the admin and every user; `Deployment`
+names the vault, that admin, and the principal whose home it was written from. A
+second `admin user add` in a *different* home appends a second user to the same
+registry — that is the shared-store arrangement — while a second enrolment into
+the *same* home is still refused, because it would replace a sealed vault and lock
+its principal out of every record already sealed to her:
 
 ```
 ksp: this host already holds a sealed vault for 084cfed2-…: enrolling again would
@@ -1878,23 +1921,38 @@ replace it and lock that principal out of every record sealed to her; use
 ksp: refused (exit 2: policy denied the operation)
 ```
 
-So Alice and Bob are **two deployments**, not two users of one. Each has its own
-`KSP_HOME`, its own `store/`, its own vault and its own ledger. The path grammar
-`p/<vault>/<principal-uuid>/…` can express many principals under one vault, and
-the record type supports it, but no command creates a second one today.
+So Alice and Bob are **two user principals of one deployment** when they share a
+store and an admin, and two deployments when they do not. Each principal has its
+own `KSP_HOME` and its own vault; the store, the registry, the admin anchor, the
+policy directory and the ledgers are shared. The path grammar
+`p/<vault>/<principal-uuid>/…` is what makes the second arrangement possible, and
+`crates/ksp/src/registry.rs` is what records who the principals are.
 
 | Actor | Holds | UNIX account | Can read | Cannot read | Enforced by |
 |---|---|---|---|---|---|
-| **Admin** | Ed25519 policy-signing **private** key (`admin/`, `0700`); Alice's **public** keys from `deployment.cbor` | the admin account | The policy it signed; `admin`-level records it wrote (it knew those values at entry); every level's *metadata* it can name; `withdrawals.jsonl` (write) and `issuance.jsonl` (read) | **Any `user`-level value.** It holds no X25519 private key, so it cannot open an envelope sealed to Alice | Asymmetric keys (§4.0). Plus `0711` on the deployment root and `0700` on `user/` |
-| **Alice** (the user principal) | X25519 **private** key + Ed25519 token-signing **private** key, both sealed under her phrase in `vault.cbor` (`0600`) | her own account, bound at `admin user add --unix-user` | Her `user/` level (`0700`, she is the owner); `admin/` records addressed to her; every `agent-<id>/` copy she made; `issuance.jsonl` (write); `withdrawals.jsonl` (read) | Another principal's levels — there are none in her deployment; a sibling deployment's store entirely | `0700` on `user/`; the vault password; the store root's group membership |
+| **Admin** | Ed25519 policy-signing **private** key (`admin/`, `0700`); an X25519 key in her **admin vault** (`admin-vault.cbor`, `0600`, `ksp admin seal-vault`); Alice's **public** keys from the registry | the admin account | The policies it signed; the publications a policy delivers from, because each entry's content key is sealed to her admin vault; its own `admin`-level records at its own principal; every level's *metadata* it can name; `policy-events.jsonl` (write) and `issuance.jsonl` (read) | **Any `user`-level value, and any `admin`-level record it addressed to a user.** It holds no key that opens an envelope sealed to Alice | Asymmetric keys (§4.0). Plus `0711` on the deployment root and `0700` on `user/` |
+| **Alice** (the user principal) | X25519 **private** key + Ed25519 token-signing **private** key, both sealed under her phrase in `vault.cbor` (`0600`) | her own account, bound at `admin user add --unix-user` | Her `user/` level (`0700`, she is the owner); `admin/` records addressed to her; every `agent-<id>/` copy she made; `issuance.jsonl` (write); `policy-events.jsonl` (read) | **Another principal's levels.** One deployment holds one vault with several principals (§3.8.1), so Bob's `user/` level and his `agent-<id>/` copies are on the same store and are not hers; a sibling deployment's store entirely | `0700` on `user/`; the vault password; the store root's group membership |
 | **Alice's agent** (`agent-alice-1`) | Its **own** Ed25519 + X25519 private keys (`agent/`, `0700`); a delivery token sealed to its recipient key | **the same account as Alice on `file`** — see the warning below | Only the exact record versions its token names, decrypted with the content key the token carried; `agent-alice-1/` (its own level, `0730`) | `user/`, `admin/`, `agent-alice-2/`, the vault, the admin key | **Landlock** (§3.8 mechanism 1) + the lease. **Not** a separate UNIX account |
-| **Bob** (a second user) | His own vault, his own keys, his own store | his own account, in his own deployment | Everything in **his** deployment, exactly as Alice does in hers | **Everything in Alice's deployment.** Not one record, not one path | Separate `KSP_HOME` on disk. There is no shared store to attack |
-| **Bob's agent** (`agent-bob-2`) | Its own keypairs; a token sealed to it | same account as Bob on `file` | Only what Bob's token names, inside Bob's deployment | Alice's deployment entirely; Bob's `user/` and `admin/` levels | Landlock + the lease, within Bob's store |
+| **Bob** (a second user in the same deployment) | His own vault in his own `KSP_HOME`; the shared store, registry and ledgers | his own account, bound at `admin user add` | His own `user/` level; `admin/` records addressed to him; the publications his policies deliver from (through his agent's token, not his own key); `issuance.jsonl` (write); `policy-events.jsonl` (read) | **Any value of Alice's.** Not one record, not one path, and no key that opens either | `0700` on each principal's `user/`; the registry names the principals; asymmetric keys do the rest |
+| **Bob's agent** (`agent-bob-2`) | Its own keypairs; a token sealed to it | same account as Bob on `file` | Only what Bob's token names, inside the shared store | Alice's levels, and Bob's `user/` and `admin/` levels | Landlock + the lease, as for Alice's agent |
 
 **The `agent-<id>` level is `0730`, not `0700`, and that is deliberate.** Group
 write without group read: the admin (in the store's group) can unlink a version it
 knows from the arming scope, and cannot list the level or read a copy. `user/` and
 `admin/` stay `0700`. Nothing is widened to other.
+
+**The `granted` level is a permission class, and it is the only one.** An
+`agent-<id>` level is `0730` because one principal's record has to be removable by
+the admin's sweep. A publication is different: every principal in the group must be
+able to *read* it, because the agent that opens it belongs to the user's account
+while the admin wrote it, and a `0700` directory under the admin's principal would
+be a delivery the agent cannot reach. So the directories are `0750` and the artifact
+is `0740`, and the file mode is not what protects the value: the entry is sealed to
+the one agent the grant names, and the artifact carries only ciphertext plus a
+reference. The mode says who may read bytes that open for almost nobody; the
+envelope says who may open them. `crates/ksp/src/publication.rs`
+(`PUBLICATION_DIR_MODE`, `PUBLICATION_FILE_MODE`, `apply_modes`); test
+`crates/ksp/tests/publication.rs`. Feature `014-policy-scoped-sharing`.
 
 **The warning that matters most.** On the `file` backend an agent launched by
 `ksp run --agent <id>` runs as **the user's own UNIX account**. Its containment is
@@ -1917,6 +1975,7 @@ above cannot show in a cell:
 | Admin ↔ user (different accounts) | **Yes** — `0700` on `user/`, `0711` on the parent | `file`, and `sftp` |
 | Alice ↔ Bob (different deployments) | **Yes** — separate directories, separate accounts | any backend |
 | User ↔ agent (same account) | **Only by Landlock, and only on Linux** | `file` |
+| Every principal ↔ a publication's *value* | **Yes, by encryption** — the entry is sealed to the agent the grant names, so the readable mode reveals only ciphertext and a reference | `file`, and every backend |
 | Agent ↔ agent (same account) | **Only by Landlock, and only on Linux** | `file` |
 | Agent ↔ agent (separate accounts) | **Yes** | `sftp` only, and `sftp` does not exist: no file implements it |
 | Any actor ↔ a *copied* plaintext | **No mechanism exists** | §3.7.2 |
@@ -2094,8 +2153,34 @@ paper share.
 > a valid signature.
 
 
-Admin-signed policy contains user ID, trusted enrollment public keys, **allowed
-source levels and per-secret sharing permissions**, maximum agent TTL, a
+**A policy is one signed edge, not one host-local grant list.** [Implemented] —
+`crates/ksp-identity/src/policy_edge.rs`, `crates/ksp/src/edges.rs`. Since feature
+`014-policy-scoped-sharing` the authority the admin signs is a `PolicyEdge`: one
+`(user, secret, record version, target)` grant, with its own `PolicyId`, a revision,
+a validity window, and — for a specific agent — the path of the publication it
+authorises. The older arrangement, one `policy.cbor` per host listing every grant,
+is retained only as the legacy `admin policy --show` read-back; no new grant is
+written into it. The reasons it changed are in that feature's `spec.md`: a
+host-local list cannot say *which version* of a secret a grant names, cannot be
+revoked one grant at a time with a recorded decision, and cannot carry a
+publication reference.
+
+| Field | Meaning |
+|---|---|
+| `id` | 128 random bits as hex. A withdrawn grant that is issued again gets a **new** id, so a token minted under the old one cannot come back into force |
+| `revision` | Increases by one per decision. The ledger holds every revision and its digest, so a replayed or restored older artifact is detectable |
+| `user`, `secret`, `record_version` | What the grant delivers. The version is named, not resolved at delivery time |
+| `target` | `Agent(uuid)` — cryptographic: the publication entry is sealed to that key. `AnyEnrolled` — **cooperative**, rendered as such everywhere (FR-035) and never described as an enforced restriction |
+| `publication` | The path the entry lives at, for a specific agent. `None` for a cooperative grant, which writes no publication |
+| `not_before`, `not_after` | The validity window. For a policy-bound delivery this is the **only** lease: there is no per-token TTL, because a per-token TTL would need a fresh signature per delivery |
+
+Every decision — create, update, withdraw — is appended to `policy-events.jsonl`
+*before* the artifact is written or removed (FR-029, FR-030), and a create orders
+it ledger → artifact → publication so that an interrupted publish is completable
+rather than half-visible. The layered guarantees are stated in §4.10.
+
+Admin-signed policy also contains the user ID, trusted enrollment public keys,
+**allowed source levels and per-secret sharing permissions**, maximum agent TTL, a
 monotonically increasing revision and a validity period. Because the levels
 (§3.8) differ in what they mean, policy carries two distinct TTL limits:
 
@@ -2109,6 +2194,23 @@ Policy also says which `user` level secrets may be shared at all, and with which
 agents. It cannot see a `user` record's contents, so it constrains **permission**,
 not data — the correct limit. A policy that lists `db_password` as shareable is
 naming a secret the admin cannot read.
+
+**What a policy-bound delivery carries, and what it does not.** The token the admin
+signs names the policy and the publication, and carries **no content key**: the
+user cannot open the publication, so a key in her token would be one she never had
+authority to obtain. The agent opens the sealed entry with its own X25519 key and
+receives a `PolicyRecordRef`. That is why `ksp secret share --policy` reads no
+password and signs nothing: it copies a file. [Implemented] —
+`crates/ksp/src/token.rs` (`issue_policy_token`, `export_policy_token`); test
+`crates/ksp/tests/policy_scenario.rs`.
+
+**Cooperative grants deliver nothing by themselves.** `AnyEnrolled` names no agent,
+so its publication would have to be sealed to the user's key — a second readable
+copy of a value she already holds — and no token can be issued for it
+(`issue_policy_token` refuses with its own sentence). The grant records that she
+*may* deliver to an agent, and the delivery is the agent-level copy that §4.3's
+`secret share` writes. [Implemented] — `crates/ksp-identity/src/policy_edge.rs`
+(`PolicyTarget`), `crates/ksp/src/token.rs` (`TokenError::Cooperative`).
 
 Admin receives only public keys. Alice and agents pin the admin public key
 fingerprint independently; signatures prove who wrote policy, not that the latest
@@ -2757,7 +2859,7 @@ only state Keyspout keeps that is not derived from a sealed artifact.
 
 ```
 $KSP_HOME/issuance.jsonl      0640  owned by the user principal
-$KSP_HOME/withdrawals.jsonl   0640  owned by the admin
+$KSP_HOME/policy-events.jsonl 0640  owned by the admin
 ```
 
 Both are `0640` — owner read/write, **group read** — in the store's group, which
@@ -2770,7 +2872,7 @@ account:
 |---|---|---|---|
 | `issued` | the user principal | `secret share`, `token mint` | `issuance.jsonl` |
 | `token_revoked` | the user principal | `token revoke` | `issuance.jsonl` |
-| `grant_withdrawn` | the admin | `admin revoke` | `withdrawals.jsonl` |
+| `grant_withdrawn` | the admin | `admin revoke` | `policy-events.jsonl` |
 
 A single shared file would have to be group-**writable**, and a mint history any
 group member can rewrite is a history that member can forge: appending a
@@ -3172,9 +3274,19 @@ proves freshness when all state comes from untrusted storage.
 > policy decision), because a caller responds differently to each.
 
 ```
-ksp admin      init | user add | policy [--show] [--replace] | put | list | revoke | audit
+ksp admin      init | user add | policy | put | list | revoke | audit
                                         # admin audit = the deletion acknowledgement journal
+               seal-vault               # one admin vault; publications seal to its key
+               policy [--show] [--agent UUID]... [--secret ID]... [--replace]
+                                        # the grant set: a write merges, --replace is whole-set
                                         # policy --show = read the revision this host holds
+               policy create --user UUID --secret ID [--version N] --agent UUID | --any
+               policy update ID [--agent UUID | --any] [--expires-at T]
+               policy delete ID          # withdrawal: record, remove artifact, release entry
+               policy list [--user UUID] [--secret ID] [--state S] [--limit N]
+               policy show ID            # artifact, verification, tokens, agent keys,
+                                        #   publication and withdrawal, joined
+               put --own                # seal to the admin vault instead of the user's key
 ksp audit      [--admin] [--principal UUID] [--limit N] [--since D] [--json]
                                         # the signed log, scoped to the caller
                                         # --limit bounds the record lines; --limit 0 is unbounded
@@ -3186,8 +3298,11 @@ ksp agent      start | stop | status | lock-timeout     # optional session agent
 ksp token      mint | lease | list | inspect | revoke    # lease = arm a deletion deadline (§4.5)
 ksp secret     ls | get | set | rm | share | purge-expired | gc
                                         # share = copy user to agent level (§3.8)
+                                        # share --policy = export the admin-signed token;
+                                        #   no password, because the token holds no key
                                         # purge-expired = lazy sweep (§4.5)
                                         # gc = batch sweep, foreground, exits (§4.5)
+ksp policy     list | show              # the same join as admin policy, scoped to the caller
 ksp run        --token F | --agent ID | --env NAME=secret | --env-all | --consume -- <command>
 ksp backend    list | test | arm-sweep
                                         # arm-sweep = record one sweep schedule per backend and

@@ -23,6 +23,7 @@
 
 use ksp_identity::AgentKeyBundle;
 use ksp_identity::delivery::{self, DeliveryArtifact, VerifiedDelivery};
+use ksp_identity::policy_edge::PolicyTarget;
 use ksp_identity::pop::{PopPreimage, bucket_start, sign_pop};
 use ksp_identity::run::{HostKeys, PresentedProof, RunRequest};
 use ksp_key_lifecycle::{KeyRoot, KeyStore};
@@ -148,8 +149,8 @@ pub enum RunError {
     /// one-time permission that survives the withdrawal of the authority that
     /// granted it.
     #[error(
-        "this delivery came from an admin-written record, and this host holds no policy to \
-         authorise it"
+        "this host holds no grant with that policy id: it was never published here, or it \
+         has been withdrawn"
     )]
     PolicyAbsent,
     /// The policy on this host could not be decoded.
@@ -182,6 +183,33 @@ pub enum RunError {
         /// The agent the delivery names.
         agent: String,
     },
+    /// A policy-bound delivery was asked to consume.
+    ///
+    /// Refused before the child starts, because there is no agent-level copy to
+    /// delete and the copy that does exist is the publication the grant owns. The
+    /// sentence names the control that does end access (FR-019).
+    #[error(
+        "policy {policy} governs this delivery, and a policy-bound record cannot be \
+         consumed: withdraw the policy instead, which ends access for every delivery at once"
+    )]
+    ConsumePolicyBound {
+        /// The policy the token names.
+        policy: String,
+    },
+    /// The publication the grant names is not the one this delivery derives.
+    #[error("this delivery derives {accepted} as its publication, and the policy names another")]
+    PublicationNotDerived {
+        /// The derived path, which is the only one this build reads.
+        accepted: String,
+    },
+    /// The publication could not be read or is bound elsewhere.
+    #[error("the publication policy {policy} names could not be read: {reason}")]
+    PublicationUnreadable {
+        /// The policy naming it.
+        policy: String,
+        /// What the reader said.
+        reason: String,
+    },
 }
 
 impl RunError {
@@ -212,10 +240,12 @@ impl RunError {
             | Self::PolicyIssuer
             | Self::PolicyExpired { .. }
             | Self::PolicyNotYetValid { .. }
-            | Self::PolicyGrant { .. } => exit::POLICY_DENIAL,
+            | Self::PolicyGrant { .. }
+            | Self::ConsumePolicyBound { .. }
+            | Self::PublicationNotDerived { .. } => exit::POLICY_DENIAL,
             // A ledger that cannot be read is this host's problem, not the
             // token's: no verdict is available, so the run stops as internal.
-            Self::Ledger => exit::INTERNAL,
+            Self::Ledger | Self::PublicationUnreadable { .. } => exit::INTERNAL,
             Self::Proof => exit::UNPROVEN,
             Self::Layout(_) => exit::CAPABILITY_REFUSAL,
         }
@@ -233,7 +263,12 @@ pub(crate) struct Loaded {
     pub(crate) preimage: PopPreimage,
     pub(crate) bundle: AgentKeyBundle,
     pub(crate) plaintext: Option<Vec<u8>>,
-    pub(crate) content_key: ksp_types::ContentKey,
+    /// The content key of a copied record.
+    ///
+    /// `None` for a policy-bound delivery: the agent opens the publication's own
+    /// entry with its recipient key and never holds a content key at all, which is
+    /// what makes `--consume` impossible for it rather than merely refused.
+    pub(crate) content_key: Option<ksp_types::ContentKey>,
     pub(crate) agent: ksp_types::AgentId,
     /// The bound metadata of the version this run carried.
     ///
@@ -260,6 +295,172 @@ pub(crate) struct Loaded {
     pub(crate) level_directory: std::path::PathBuf,
 }
 
+/// Read one policy-bound delivery: verify the grant, then open its publication.
+///
+/// The order is the control (FR-020): the token's issuer is checked before this is
+/// reached, and here the grant is checked before any ciphertext is touched — the
+/// anchor signature, the target, the secret version and both ends of the validity
+/// window. A withdrawal removes the edge, so a withdrawn grant stops at
+/// [`RunError::PolicyAbsent`] rather than decrypting first and reporting after.
+fn policy_bound_loaded(
+    args: &RunArgs,
+    layout: &Layout,
+    verified: VerifiedDelivery,
+    header: ksp_identity::DeliveryHeader,
+    bundle: AgentKeyBundle,
+) -> Result<Loaded, RunError> {
+    let selected = header
+        .records()
+        .first()
+        .ok_or(RunError::TokenFormat)?
+        .clone();
+    let policy = selected.policy.clone().ok_or(RunError::TokenFormat)?;
+
+    // FR-019: withdrawal is the accepted control for a policy-bound record, and a
+    // consume would delete a copy that does not exist while the publication stays.
+    // Refused here, before any child starts.
+    if args.consume {
+        return Err(RunError::ConsumePolicyBound {
+            policy: policy.to_string(),
+        });
+    }
+
+    // The store is located from the token's own claims — its vault, the principal
+    // the grant lives under, and the key id that signed it — because the host reading
+    // a policy-bound delivery holds the store and the token, not necessarily a
+    // deployment record. The signature check below is what makes those claims mean
+    // anything.
+    let edge = crate::edges::EdgeStore::at(
+        layout,
+        header.vault().clone(),
+        *header.user(),
+        header.issuer_key_id().clone(),
+    )
+    .load(&policy)
+    .map_err(|_| RunError::PolicyAbsent)?;
+
+    let anchor =
+        crate::keys::Anchor::load(&layout.admin_anchor_file()).map_err(|_| RunError::Anchor)?;
+    if !edge.verify_issuer(&anchor.key) {
+        return Err(RunError::PolicyIssuer);
+    }
+    // The grant must be about this delivery and no other: a token naming a policy
+    // that grants a different agent or version is refused before anything opens.
+    let granted = match edge.target() {
+        PolicyTarget::Agent(named) => named == *header.agent(),
+        // A cooperative grant seals to the user, so no agent-bound delivery of it
+        // can exist; a token claiming one is refused rather than opened.
+        PolicyTarget::AnyEnrolled => false,
+    };
+    if !granted || edge.secret() != &selected.secret || edge.record_version() != selected.version {
+        return Err(RunError::PolicyGrant {
+            secret: selected.secret.as_str().to_string(),
+            agent: header.agent().to_string(),
+        });
+    }
+    let now = now_seconds();
+    if now < edge.body().not_before() {
+        return Err(RunError::PolicyNotYetValid {
+            not_before: edge.body().not_before(),
+        });
+    }
+    if now >= edge.body().not_after() {
+        return Err(RunError::PolicyExpired {
+            not_after: edge.body().not_after(),
+        });
+    }
+
+    // The path the token names has to be the derived one, and the artifact has to be
+    // bound to it: two independent statements of the same address, one in the grant
+    // and one in the AAD (FR-034, FR-036).
+    let derived = crate::publication::PublicationPath::derive(
+        header.vault().clone(),
+        *header.user(),
+        selected.secret.clone(),
+        selected.version,
+    );
+    if edge.body().publication() != Some(derived.canonical().as_str()) {
+        return Err(RunError::PublicationNotDerived {
+            accepted: derived.canonical(),
+        });
+    }
+    let unreadable =
+        |error: crate::publication::PublicationError| RunError::PublicationUnreadable {
+            policy: policy.to_string(),
+            reason: error.to_string(),
+        };
+    let publication = crate::publication::load(layout, &derived).map_err(unreadable)?;
+    publication.verify_binding(&derived).map_err(unreadable)?;
+
+    // Opening with this agent's key is the binding check: an entry sealed to another
+    // agent does not open, so a grant written for the wrong agent fails here as well
+    // as at the target comparison above.
+    let (_name, value) = bundle
+        .with_recipient_secret(|secret| publication.open_for(policy.as_str(), secret))
+        .ok_or(RunError::Open)?;
+
+    let metadata = derived.metadata();
+    let request = RunRequest {
+        jti: header.jti().to_string(),
+        record_version: selected.version,
+        record_path: ksp_record::RecordPath::of(&metadata).to_string(),
+        argv: args
+            .child
+            .iter()
+            .map(|argument| argument.as_bytes().to_vec())
+            .collect(),
+        now: now_seconds(),
+    };
+    let preimage = PopPreimage::new(
+        request.jti.clone(),
+        request.record_version,
+        request.record_path.clone(),
+        &request.argv,
+        bucket_start(request.now),
+    )
+    .map_err(|_| RunError::Proof)?;
+
+    let plaintext = match args.env.as_deref() {
+        Some(_) => Some(value),
+        None if args.env_all => Some(value),
+        None => None,
+    };
+    // There is no agent-level copy, so the directory a consume would delete from is
+    // the publication's own — carried so the field has one meaning, and never read on
+    // a path that cannot consume.
+    //
+    // The confinement built from it grants **read only** (`ConfinementRule::read_only`),
+    // so the child can reach `granted/<secret>/` but cannot modify the publication
+    // there; and what it can read is the sealed blob, which it has no key to open. The
+    // value it receives still arrives through the environment, never through the file.
+    let level_directory = derived
+        .file(layout)
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or(RunError::Record)?;
+
+    Ok(Loaded {
+        verified,
+        request,
+        preimage,
+        bundle,
+        plaintext,
+        content_key: None,
+        agent: *header.agent(),
+        metadata,
+        // The grant's user, not the token header's. A policy token names the admin
+        // as its user because the publication is the admin's record and the store is
+        // located from that claim — but the delivery is about *her* secret, and the
+        // agent acts for her. The header's value is the admin's, so using it here put
+        // the agent's delivery record in the admin's chain: correct-looking on a
+        // single-account host, and a refusal with exit `7` on a two-account one, where
+        // the agent's account cannot write the admin's 0700 chain directory.
+        user: *edge.user(),
+        signing_key_id: header.agent_signing_key_id().clone(),
+        standing_note: None,
+        level_directory,
+    })
+}
 /// Reload, verify, open, read the record. Nothing is delivered here.
 pub(crate) fn load(args: &RunArgs, layout: &Layout) -> Result<Loaded, RunError> {
     // Before the token file, the anchor, the ledger and the key bundle: every
@@ -272,10 +473,23 @@ pub(crate) fn load(args: &RunArgs, layout: &Layout) -> Result<Loaded, RunError> 
     let bytes = std::fs::read(token_path).map_err(|_| RunError::Token)?;
     let artifact = DeliveryArtifact::from_bytes(&bytes).map_err(|_| RunError::TokenFormat)?;
 
-    // The key is pinned on this host, not taken from the artifact. A key inside
-    // the token is data, never an anchor — and the pin is the *user's* enrolled
-    // key, because she signed this lease (spec §3.7).
-    let signer = crate::deployment::user_verifying_key(layout).map_err(|_| RunError::Anchor)?;
+    // Which pinned key must have signed this is decided by what the token claims,
+    // and either answer is a key this host already holds: a copied record is signed
+    // by the user who owns it (spec §3.7), and a policy-bound one by the admin whose
+    // grant authorises it (CF-020, FR-020). A forged claim cannot downgrade the
+    // check, because the other key would have to sign it.
+    let policy_bound = artifact
+        .header()
+        .records()
+        .first()
+        .is_some_and(ksp_identity::SelectedRecord::is_policy_bound);
+    let signer = if policy_bound {
+        crate::keys::Anchor::load(&layout.admin_anchor_file())
+            .map_err(|_| RunError::Anchor)?
+            .key
+    } else {
+        crate::deployment::user_verifying_key(layout).map_err(|_| RunError::Anchor)?
+    };
     let verified = delivery::verify(&artifact, &signer).map_err(|_| RunError::Issuer)?;
 
     let header = verified.header().clone();
@@ -283,15 +497,60 @@ pub(crate) fn load(args: &RunArgs, layout: &Layout) -> Result<Loaded, RunError> 
     // The ledger this host holds decides whether the token may still be used.
     // Checked before the record is read or the key is used, so a revoked token
     // stops here rather than after it has produced a plaintext.
-    let standing = ksp_identity::IssuanceLedger::at(layout.issuance_ledger())
-        .standing(header.jti())
-        .map_err(|_| RunError::Ledger)?;
+    // A policy-bound delivery is not in the mint ledger: the admin issued it with the
+    // grant, and its standing is the grant's — a withdrawal removes the edge, which
+    // the policy check below refuses on. Asking the ledger would report "cannot
+    // judge" for every such run and teach an operator to ignore the note.
+    let standing = if policy_bound {
+        // Not consulted: a policy-bound token is not the ledger's to judge. The
+        // variant is the one `standing` returns for a token the ledger does not
+        // name, and `can_judge` is false for it only when no ledger exists — so
+        // `standing_note` is suppressed above rather than this being a live state.
+        ksp_identity::TokenStanding::Unknown {
+            ledger_present: true,
+        }
+    } else {
+        // No registry under this vault means no ledger on this host — an agent's host
+        // that was handed a token but never minted one. That is an absent ledger, and
+        // `standing_note` says so. A registry that exists and cannot be read is a
+        // different fact: it is CF-014's shape, and it refuses rather than reporting an
+        // unreadable history as an empty one.
+        // The anchor authenticates the registry, and it is the only trust this host
+        // holds for the store it reads. Without it the ledger cannot be told apart from
+        // one a principal planted, so the run reports what it can establish — that it
+        // cannot judge — rather than reading an unauthenticated file.
+        let anchor = crate::keys::Anchor::load(&layout.admin_anchor_file());
+        let discovered = match &anchor {
+            Ok(anchor) => crate::ledgers::LedgerPaths::discover(
+                layout,
+                header.vault(),
+                *header.user(),
+                anchor,
+            ),
+            Err(_) => Err(crate::ledgers::LedgerPathsError::NoRegistry {
+                vault: header.vault().as_str().to_string(),
+                path: layout.admin_anchor_file().display().to_string(),
+            }),
+        };
+        match discovered {
+            Ok(paths) => paths
+                .as_ledger()
+                .standing(header.jti())
+                .map_err(|_| RunError::Ledger)?,
+            Err(crate::ledgers::LedgerPathsError::NoRegistry { .. }) => {
+                ksp_identity::TokenStanding::Unknown {
+                    ledger_present: false,
+                }
+            }
+            Err(_) => return Err(RunError::Ledger),
+        }
+    };
     if standing.refuses_run() {
         return Err(RunError::Revoked);
     }
     // A token this host never minted is not an accusation, and a host with no
     // ledger cannot judge one. Both continue, and both say so.
-    let standing_note = (!standing.can_judge()).then(|| {
+    let standing_note = (!policy_bound && !standing.can_judge()).then(|| {
         format!(
             "token {} is not in this host's ledger, so this run cannot tell whether it was revoked",
             header.jti()
@@ -304,7 +563,9 @@ pub(crate) fn load(args: &RunArgs, layout: &Layout) -> Result<Loaded, RunError> 
     // user's own, and her signature over this artifact is its authority — reading
     // the policy for it would make her own secrets depend on a file they do not
     // need (FR-003).
-    check_policy(layout, &header)?;
+    if !policy_bound {
+        check_policy(layout, &header)?;
+    }
 
     let agent = *header.agent();
     let stored =
@@ -323,6 +584,10 @@ pub(crate) fn load(args: &RunArgs, layout: &Layout) -> Result<Loaded, RunError> 
         .load_agent(&stored.pin())
         .map_err(|_| RunError::Keys)?;
 
+    if policy_bound {
+        return policy_bound_loaded(args, layout, verified, header, bundle);
+    }
+
     // The only place this process touches a private half. The closure returns
     // the content keys; the borrowed bytes end with the call.
     let content = bundle
@@ -340,7 +605,7 @@ pub(crate) fn load(args: &RunArgs, layout: &Layout) -> Result<Loaded, RunError> 
     // Owned, because the consume path needs it after this function returns; the
     // selection itself ends here.
     let content_key = content
-        .get(&selected.secret, selected.version)
+        .content_key(&selected.secret, selected.version)
         .cloned()
         .ok_or(RunError::TokenFormat)?;
 
@@ -399,7 +664,7 @@ pub(crate) fn load(args: &RunArgs, layout: &Layout) -> Result<Loaded, RunError> 
         preimage,
         bundle,
         plaintext,
-        content_key,
+        content_key: Some(content_key),
         agent: *header.agent(),
         metadata: metadata.clone(),
         user: *header.user(),
@@ -644,7 +909,10 @@ pub(crate) fn refuse(error: &RunError) -> Outcome {
         | RunError::PolicyIssuer
         | RunError::PolicyExpired { .. }
         | RunError::PolicyNotYetValid { .. }
-        | RunError::PolicyGrant { .. } => {
+        | RunError::PolicyGrant { .. }
+        | RunError::ConsumePolicyBound { .. }
+        | RunError::PublicationNotDerived { .. }
+        | RunError::PublicationUnreadable { .. } => {
             let mut stderr = crate::output::Emitter::new(false, std::io::stderr());
             let _ = stderr.refusal(&error.to_string());
         }

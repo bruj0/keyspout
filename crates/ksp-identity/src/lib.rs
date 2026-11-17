@@ -34,6 +34,7 @@ pub mod issuance;
 pub mod key_bundle;
 pub mod mint;
 pub mod policy;
+pub mod policy_edge;
 pub mod pop;
 pub mod recovery;
 pub mod run;
@@ -63,8 +64,8 @@ pub use scope::{Caller, Request, Scope, ScopeRefusal, resolve};
 
 pub use checkpoint::{CheckpointError, CheckpointStore, MemoryCheckpointStore, TrustedCheckpoint};
 pub use delivery::{
-    DeliveryArtifact, DeliveryError, DownstreamCopy, SelectedContentKeys, VerifiedDelivery,
-    VerifiedRecipientKey, downstream_copy, open, seal, verify,
+    DeliveredKey, DeliveryArtifact, DeliveryError, DownstreamCopy, SelectedContentKeys,
+    VerifiedDelivery, VerifiedRecipientKey, downstream_copy, open, seal, verify,
 };
 pub use header::{DeliveryHeader, HEADER_VERSION, HeaderError, SelectedRecord};
 pub use issuance::{

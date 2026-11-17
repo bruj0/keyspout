@@ -284,12 +284,16 @@ Two files, one writer each:
 | File | Writer | Readers |
 |---|---|---|
 | `issuance.jsonl` | The principal | The admin |
-| `withdrawals.jsonl` | The admin | The principal's run |
+| `policy-events.jsonl` | The admin | The admin's next write, and every read surface that renders a withdrawal |
 
 Both are `0640` in the store's group. The argument for one writer each is in
 the mode: a ledger a third party can rewrite is a mint history that party can
 forge - appending a revocation is how a token stops working, and removing one
 is how it starts again.
+
+The withdrawal is recorded **before** the artifact is removed, and a delivery
+does not consult this file: a withdrawn grant's edge is gone, so the run stops
+at "no such grant" rather than decrypting first and asking afterwards.
 
 The ledger is opened `O_NOFOLLOW`. A torn tail makes appending refuse until
 it is repaired, because a revocation that reports success and does not

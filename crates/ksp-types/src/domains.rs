@@ -27,6 +27,14 @@ pub const DOMAIN_VAULT_AAD: &[u8] = b"keyspout-vault-aad-v1";
 /// signature is expected.
 pub const DOMAIN_POLICY: &[u8] = b"keyspout-policy-v1";
 
+/// Domain for the admin's signature over one policy edge.
+///
+/// Separate from [`DOMAIN_POLICY`] because the two artifacts say different
+/// things: a policy is a grant list, an edge is one `(user, secret, target)`
+/// tuple. Sharing a prefix would let a signature over a whole list be presented
+/// as a signature over one edge, which is the narrower claim.
+pub const DOMAIN_POLICY_EDGE: &[u8] = b"keyspout-policy-edge-v1";
+
 /// Domain for the issuer's signature over a delivery token.
 pub const DOMAIN_TOKEN: &[u8] = b"keyspout-token-v1";
 
@@ -85,6 +93,7 @@ mod tests {
             DOMAIN_ENROLMENT,
             DOMAIN_VAULT_AAD,
             DOMAIN_POLICY,
+            DOMAIN_POLICY_EDGE,
             DOMAIN_TOKEN,
             DOMAIN_POP,
             DOMAIN_DELETE_INTENT,
@@ -99,7 +108,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        assert_eq!(domains.len(), 13, "a domain string was reused");
+        assert_eq!(domains.len(), 14, "a domain string was reused");
     }
 
     #[test]

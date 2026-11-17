@@ -26,7 +26,7 @@ use ksp::config::Layout;
 use ksp::exit;
 use ksp::keys::{Anchor, StoredEnrolment};
 use ksp_identity::delivery::{self, VerifiedRecipientKey};
-use ksp_identity::{SelectedRecord, UnsignedEnrolment};
+use ksp_identity::{IssuanceLedger, SelectedRecord, UnsignedEnrolment};
 use ksp_posture::LANDLOCK_CONFINEMENT;
 use ksp_posture::adapters::ConfinementAdapter;
 use ksp_record::{ContentBlob, Record, RecordEnvelope, commit_version};
@@ -34,6 +34,25 @@ use ksp_types::{
     ActorId, AdapterAvailability, AdapterName, BoundMetadata, ContentKey, Level, OpaqueSecretId,
     RecordVersion, VaultId,
 };
+
+/// Every path under `root`, depth-first.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            found.push(path.clone());
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    found
+}
 
 /// A secret with a value nobody could guess by accident.
 const VALUE: &str = "correct-horse-battery-staple";
@@ -187,6 +206,7 @@ fn write_token(home: &Path, agent: ksp_types::AgentId) -> (PathBuf, String) {
     let selected = SelectedRecord {
         secret: metadata.secret_id.clone(),
         version: RecordVersion(1),
+        policy: None,
     };
     let header = ksp_identity::DeliveryHeader::new(
         metadata.vault_id.clone(),
@@ -208,8 +228,11 @@ fn write_token(home: &Path, agent: ksp_types::AgentId) -> (PathBuf, String) {
         "jti-surface-1".to_string(),
     )
     .unwrap();
-    let keys =
-        ksp_identity::SelectedContentKeys::new(&header, vec![(selected, content_key)]).unwrap();
+    let keys = ksp_identity::SelectedContentKeys::new(
+        &header,
+        vec![(selected, ksp_identity::DeliveredKey::Content(content_key))],
+    )
+    .unwrap();
     // Alice signs her own lease with the key her vault holds: a mint never uses
     // the admin's private half (spec §3.7 step 2).
     let unsealed = ksp::secret::unseal(&layout, PASSWORD.as_bytes()).unwrap();
@@ -660,6 +683,19 @@ fn an_inspection_of_a_token_this_host_does_not_trust_exits_two() {
 // The issuance ledger: what this host minted, and what it holds against a token
 // ---------------------------------------------------------------------------
 
+/// The ledger the commands read: the store path when this host has a deployment,
+/// and the home-local file when it does not.
+///
+/// A provisioned host resolves both files through `LedgerPaths`; a bare fixture has no
+/// record to name a vault or a principal, and `token list` reads the pre-move file for
+/// exactly that case.
+fn ledger_in(layout: &Layout) -> IssuanceLedger {
+    match ksp::deployment::Deployment::load(layout) {
+        Ok(recorded) => ksp::ledgers::LedgerPaths::for_deployment(layout, &recorded).as_ledger(),
+        Err(_) => IssuanceLedger::at(layout.issuance_ledger()),
+    }
+}
+
 /// Seed one row, so the readers below are tested with a ledger they control.
 ///
 /// `crates/ksp/tests/issuance.rs` covers the writer — a mint records through
@@ -668,7 +704,7 @@ fn an_inspection_of_a_token_this_host_does_not_trust_exits_two() {
 /// values the test chose, without a mint and a proof in the way.
 fn record_an_issuance(home: &Path, token_id: &str, agent: ksp_types::AgentId) {
     let layout = Layout::new(home);
-    let ledger = ksp_identity::IssuanceLedger::at(layout.issuance_ledger());
+    let ledger = ledger_in(&layout);
     ledger
         .publish_recorded(
             ksp_identity::Issuance {
@@ -771,7 +807,7 @@ fn revoking_an_identifier_this_host_never_minted_exits_two_and_changes_nothing()
     let home = tempfile::TempDir::new().unwrap();
     record_an_issuance(home.path(), "jti-1", some_agent());
     let layout = Layout::new(home.path());
-    let before = std::fs::read(layout.issuance_ledger()).unwrap();
+    let before = std::fs::read(ledger_in(&layout).path()).unwrap();
 
     let (code, output) = ksp_in(home.path(), &["token", "revoke", "minted-elsewhere"], None);
 
@@ -785,7 +821,7 @@ fn revoking_an_identifier_this_host_never_minted_exits_two_and_changes_nothing()
         "the refusal must not accuse the token: {output}"
     );
     assert_eq!(
-        std::fs::read(layout.issuance_ledger()).unwrap(),
+        std::fs::read(ledger_in(&layout).path()).unwrap(),
         before,
         "a refused mark must not touch the ledger"
     );
@@ -921,7 +957,38 @@ fn a_run_of_a_token_minted_under_a_withdrawn_grant_refuses_and_delivers_nothing(
     // exits 6 because the record is gone. The point of the check is that a
     // withdrawn token never reaches the store.
     let layout = Layout::new(home.path());
-    std::fs::remove_dir_all(layout.store_root()).unwrap();
+    // The record is removed, not the store: the registry is public material and
+    // its absence is the pre-014 layout, which the gate refuses before this
+    // question is reached. What this asserts is which of the two answers a run
+    // gives when the *record* is gone.
+    let deployment =
+        ksp::deployment::Deployment::load(&layout).expect("the deployment is recorded");
+    // The user's whole subtree, not the store: the registry lives under the
+    // admin's principal and is public material, so removing it would make this a
+    // pre-014 home and the gate would refuse before the ledger question is asked.
+    // The *records*, not the ledger: the ledger moved into this principal's directory
+    // in WP04, and removing the whole subtree would delete the withdrawal this test
+    // exists to have consulted. Everything else under the principal goes, whatever
+    // levels the deployment happens to hold.
+    let principal_dir = layout
+        .store_root()
+        .join(format!("p/{}/{}", deployment.vault, deployment.user));
+    for entry in std::fs::read_dir(&principal_dir)
+        .unwrap_or_else(|error| panic!("{}: {error}", principal_dir.display()))
+        .flatten()
+    {
+        if entry.file_name() == "issuance.jsonl" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        } else {
+            std::fs::remove_file(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        }
+    }
     let (code, output) = ksp_in(
         home.path(),
         &[
@@ -960,8 +1027,9 @@ fn a_host_with_no_ledger_runs_and_says_it_cannot_tell_whether_the_token_was_revo
     // passed because provisioning happened not to create the file would stop
     // covering it the moment provisioning changed.
     let layout = ksp::config::Layout::new(home.path().to_path_buf());
-    for path in [layout.issuance_ledger(), layout.withdrawals_ledger()] {
-        let _ = std::fs::remove_file(&path);
+    let ledger = ledger_in(&layout);
+    for path in [ledger.path(), ledger.policy_events_path()] {
+        let _ = std::fs::remove_file(path);
     }
 
     let (code, output) = ksp_in(
@@ -1132,9 +1200,26 @@ fn admin_put_refuses_when_the_recipient_public_key_was_never_recorded() {
         "the refusal must name what is missing: {output}"
     );
     let layout = Layout::new(home.path());
+    // `admin init` writes the principal registry and creates both ledgers, so `p/`
+    // exists before the put and those three files are expected. The claim is that the
+    // *put* wrote nothing: every path under the store is one `admin init` left, and a
+    // record would be a new one.
+    let records: Vec<_> = walk(&layout.store_root())
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name != "principals.cbor"
+                        && name != "issuance.jsonl"
+                        && name != "policy-events.jsonl"
+                })
+                && path.is_file()
+        })
+        .collect();
     assert!(
-        !layout.store_root().join("p").exists(),
-        "a refused put must not write a record"
+        records.is_empty(),
+        "a refused put must not write a record: {records:?}"
     );
 }
 

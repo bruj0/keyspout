@@ -180,6 +180,19 @@ fn lease(home: &Path, agent: AgentId, ttl: u64, out: &Path) -> (i32, String) {
 }
 
 /// The `jti` the token file carries.
+/// The issuance ledger the mint writes: the store path, resolved the way production
+/// resolves it.
+///
+/// A fixture that used the home path would be testing a file no command touches, and
+/// every one of these tests is about what happens to the file the mint appends to.
+fn deployment_ledger(home: &std::path::Path) -> std::path::PathBuf {
+    let layout = Layout::new(home.to_path_buf());
+    let deployment = ksp::deployment::Deployment::load(&layout).expect("a deployment record");
+    ksp::ledgers::LedgerPaths::for_deployment(&layout, &deployment)
+        .issuance()
+        .to_path_buf()
+}
+
 fn jti_of(home: &Path, token: &Path) -> String {
     let (code, output) = ksp_in(
         home,
@@ -284,7 +297,7 @@ fn a_second_mint_for_one_version_is_refused_and_records_nothing() {
     let (code, output) = lease(home.path(), agent, INTERVAL_SECS * 2, &first);
     assert_eq!(code, exit::SUCCESS, "the first lease was refused: {output}");
     let jti = jti_of(home.path(), &first);
-    let ledger = Layout::new(home.path().to_path_buf()).issuance_ledger();
+    let ledger = deployment_ledger(home.path());
     let before = std::fs::read(&ledger).expect("the first mint wrote the ledger");
 
     // A different `--ttl`, so the second intent's deadline differs and the bytes
@@ -318,7 +331,7 @@ fn a_second_mint_for_one_version_is_refused_and_records_nothing() {
 fn a_refused_mint_leaves_the_ledger_byte_identical() {
     let home = tempfile::tempdir().unwrap();
     let agent = proven_deployment(home.path());
-    let ledger = Layout::new(home.path().to_path_buf()).issuance_ledger();
+    let ledger = deployment_ledger(home.path());
 
     // One successful mint, so the file exists and has content to compare.
     let first = home.path().join("first.token");
@@ -361,8 +374,7 @@ fn a_refused_mint_leaves_the_ledger_byte_identical() {
 fn a_ledger_that_cannot_be_written_returns_no_token() {
     let home = tempfile::tempdir().unwrap();
     let agent = proven_deployment(home.path());
-    let layout = Layout::new(home.path().to_path_buf());
-    let ledger = layout.issuance_ledger();
+    let ledger = deployment_ledger(home.path());
     std::fs::remove_file(&ledger).expect("provisioning created the ledger");
     std::fs::create_dir_all(&ledger).expect("the ledger path is occupied by a directory");
 

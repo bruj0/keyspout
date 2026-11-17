@@ -281,23 +281,32 @@ pub enum Level {
     User,
     /// A specific agent's level.
     Agent(AgentId),
+    /// A publication the admin signed for one grant, at `granted/`.
+    ///
+    /// The fourth level is a *namespace*, not a share target: it is read by an
+    /// agent whose policy names it, written only by the admin, and never the
+    /// source or the target of a delivery. Sharing the admin's own level instead
+    /// would widen `admin/`, which is misfit E.
+    Granted,
 }
 
 impl Level {
     /// The path segment for this level.
     ///
-    /// `admin` and `user` are fixed words; an agent level is
+    /// `admin`, `user` and `granted` are fixed words; an agent level is
     /// `agent-<principal-uuid>`. The segment is what the record path is built
     /// from, so it must be stable and must never contain a path separator.
     pub fn path_segment(&self) -> String {
         match self {
             Self::Admin => "admin".to_string(),
             Self::User => "user".to_string(),
+            Self::Granted => "granted".to_string(),
             Self::Agent(id) => format!("agent-{id}"),
         }
     }
 
-    /// Parse one path segment: `admin`, `user` or `agent-<principal-uuid>`.
+    /// Parse one path segment: `admin`, `user`, `granted` or
+    /// `agent-<principal-uuid>`.
     ///
     /// An `agent-` segment whose remainder is not a canonical UUID is refused:
     /// a display name is not an agent identity, and accepting one here would
@@ -306,6 +315,7 @@ impl Level {
         match segment {
             "admin" => Ok(Self::Admin),
             "user" => Ok(Self::User),
+            "granted" => Ok(Self::Granted),
             _ => match segment.strip_prefix("agent-") {
                 Some(agent) => AgentId::parse(agent)
                     .map(Self::Agent)
@@ -319,8 +329,8 @@ impl Level {
 /// Why a level segment could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LevelError {
-    /// The segment is not one of the three level words.
-    #[error("a level segment is 'admin', 'user' or 'agent-<principal-uuid>'; got '{0}'")]
+    /// The segment is not one of the four level words.
+    #[error("a level segment is 'admin', 'user', 'granted' or 'agent-<principal-uuid>'; got '{0}'")]
     Unknown(String),
     /// The agent id after `agent-` is not a canonical UUID.
     #[error(

@@ -158,6 +158,7 @@ fn provision(home: &std::path::Path, agent: AgentId) -> (std::path::PathBuf, Bou
     let selected = ksp_identity::SelectedRecord {
         secret: meta.secret_id.clone(),
         version: RecordVersion(1),
+        policy: None,
     };
     let header = ksp_identity::DeliveryHeader::new(
         meta.vault_id.clone(),
@@ -176,8 +177,11 @@ fn provision(home: &std::path::Path, agent: AgentId) -> (std::path::PathBuf, Bou
         "jti-confinement-1".to_string(),
     )
     .unwrap();
-    let keys =
-        ksp_identity::SelectedContentKeys::new(&header, vec![(selected, content_key)]).unwrap();
+    let keys = ksp_identity::SelectedContentKeys::new(
+        &header,
+        vec![(selected, ksp_identity::DeliveredKey::Content(content_key))],
+    )
+    .unwrap();
     // The lease is Alice's, so the host pins *her* enrolled public key: the run
     // path verifies a delivery against it and never against the admin's key.
     let user_signer = ksp_identity::SigningSecretKey::generate();
@@ -190,6 +194,9 @@ fn provision(home: &std::path::Path, agent: AgentId) -> (std::path::PathBuf, Bou
         user_name: Some("alice".to_string()),
         user_account: None,
         admin_key_id: KeyId::new("admin-2026"),
+        admin_vault_signing_key_id: None,
+        admin_vault_recipient_key_id: None,
+        admin_vault_recipient_key: None,
         user_signing_key_id: Some(KeyId::new("alice-ed25519-1")),
         user_signing_key: Some(user_signer.verifying_public()),
         user_recipient_key_id: None,

@@ -990,3 +990,39 @@ fn a_policy_whose_validity_interval_is_inverted_is_refused_at_construction() {
         PolicyRefusal::ValidityInterval { .. }
     ));
 }
+
+#[test]
+fn a_publication_level_is_never_a_delivery_target() {
+    // The fourth level exists so a publication does not have to widen `admin/`.
+    // It is a read namespace: a delivery *into* it, or *from* it, would make the
+    // publication a share target and put the admin's own level back in play.
+    let admin = AdminSigningKey::generate();
+    let policy = signed(&admin, 5);
+
+    for (source, target) in [
+        (Level::User, Level::Granted),
+        (Level::Granted, Level::Agent(agent_seven())),
+        (Level::Granted, Level::Granted),
+    ] {
+        let mut refused_request = request();
+        refused_request.source = source.clone();
+        refused_request.target = target.clone();
+        refused_request.scope = target.path_segment();
+        refused_request.path = format!(
+            "p/vault-1/6f5a1c8e-3b2d-4f7a-9c1e-0a2b3c4d5e6f/{}/secret-1/1",
+            target.path_segment()
+        );
+        let refusal =
+            assert_refused(verifier(&admin, None).verify(&policy, &refused_request, DURING));
+        let message = refusal.to_string();
+        assert!(
+            matches!(refusal, PolicyRefusal::LevelPair { .. })
+                || matches!(refusal, PolicyRefusal::NotADeliveryTarget { .. }),
+            "{source} -> {target} is refused as a level refusal: {message}"
+        );
+        assert!(
+            message.contains("agent-<principal-uuid>"),
+            "the refusal names the accepted target: {message}"
+        );
+    }
+}

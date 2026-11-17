@@ -15,6 +15,22 @@ codes, the output shapes and the rules about what may be printed.
 
 ## Language
 
+**Agent Index**:
+The public half of an agent's enrolment, published at
+`p/<vault>/<owner>/agents/<agent>.cbor` so a principal that cannot read the owner's
+home can still resolve the agent. It holds the principal, both public keys, both key
+IDs and the fingerprint — no private half and no secret.
+_Avoid_: agent registry, agent document, agent pin
+_Subsystems_: Keyspout Command-Line Interface
+_Files_: crates/ksp/src/agent_index.rs, crates/ksp/src/agent.rs
+_Relates to_: Principal Registry (is the agent-side analogue of), Stored Enrolment (is published from), Publication (is what an edge names)
+_History_:
+- 2026-11-16 (014-policy-scoped-sharing): Term introduced. The home-local pin stays
+  the reload anchor; the index answers "does this agent exist for this user", which
+  the admin needs because it signs the edge in a different home (CF-011). Rotation
+  rewrites both in the same step, because a stale index names a key the agent no
+  longer has.
+
 **Command Surface**:
 The complete tree of subcommands the binary exposes. It is fixed by the
 design specification, and extended only by an authorised feature specification —
@@ -33,6 +49,15 @@ _History_:
   FR-047…FR-054 and US8. It reads the same log as `ksp audit` and answers a
   different question: the view projects what is there, verification checks who
   wrote it.
+- 2026-11-17 (014-policy-scoped-sharing): `admin seal-vault`, `admin put --own`,
+  `admin policy create`, `admin policy update`, `admin policy delete` and
+  `secret share --policy` join the surface. The write side had no entry point
+  before them: a grant could be read but not made, and the admin vault every
+  publication seals its content key to had no verb at all. `admin put --own` is
+  the transfer verb with one flag, and the flag decides which key seals the
+  record — the admin's own vault, or the user's. `secret share --policy` is the
+  export that reads no vault, so it takes none of `--name`, `--uses`, `--ttl` or
+  `--passphrase-file`.
 
 **Exit Code**:
 The integer a run returns to its caller, carrying the outcome category.

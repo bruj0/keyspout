@@ -181,6 +181,7 @@ fn write_token(home: &Path, agent: ksp_types::AgentId) -> PathBuf {
     let selected = SelectedRecord {
         secret: metadata.secret_id.clone(),
         version: RecordVersion(1),
+        policy: None,
     };
     let header = ksp_identity::DeliveryHeader::new(
         metadata.vault_id.clone(),
@@ -202,8 +203,11 @@ fn write_token(home: &Path, agent: ksp_types::AgentId) -> PathBuf {
         "jti-scenario-1".to_string(),
     )
     .unwrap();
-    let keys =
-        ksp_identity::SelectedContentKeys::new(&header, vec![(selected, content_key)]).unwrap();
+    let keys = ksp_identity::SelectedContentKeys::new(
+        &header,
+        vec![(selected, ksp_identity::DeliveredKey::Content(content_key))],
+    )
+    .unwrap();
     // Alice signs her own lease, with the key her vault holds: the mint never
     // touches the admin's half (spec §3.7 step 2).
     let unsealed = ksp::secret::unseal(&layout, PASSWORD.as_bytes()).unwrap();

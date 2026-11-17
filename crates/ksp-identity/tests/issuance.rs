@@ -29,17 +29,24 @@ use ksp_identity::issuance::{
     Withdrawal, admin_revoke, ledger_scope,
 };
 use ksp_identity::{
-    AdminSigningKey, DeliveryArtifact, EnrollmentRecord, EnrolmentFingerprint, FingerprintSubject,
-    KeyId, MintBinding, MintRequest, Policy, PolicyBody, PolicyRefusal, PolicyRequest,
-    RecipientPublicKey, SelectedContentKeys, SelectedRecord, SigningSecretKey, TrustAnchors,
-    TrustedEnrolmentKeys, UnsignedEnrolment, VerifiedRecipientKey, VerifyingPublicKey, mint, open,
-    seal, verify,
+    AdminSigningKey, DeliveredKey, DeliveryArtifact, EnrollmentRecord, EnrolmentFingerprint,
+    FingerprintSubject, KeyId, MintBinding, MintRequest, Policy, PolicyBody, PolicyRefusal,
+    PolicyRequest, RecipientPublicKey, SelectedContentKeys, SelectedRecord, SigningSecretKey,
+    TrustAnchors, TrustedEnrolmentKeys, UnsignedEnrolment, VerifiedRecipientKey,
+    VerifyingPublicKey, mint, open, seal, verify,
 };
 use ksp_types::evidence::DeletionIntent;
 use ksp_types::{ActorId, AgentId, ContentKey, Level, OpaqueSecretId, RecordVersion, VaultId};
 use tempfile::TempDir;
 
 const ADMIN_ID: &str = "admin-1";
+
+/// Every fixture in this file is a plain record, so its entry carries a key.
+fn delivered(keys: Vec<(SelectedRecord, ContentKey)>) -> Vec<(SelectedRecord, DeliveredKey)> {
+    keys.into_iter()
+        .map(|(record, key)| (record, DeliveredKey::Content(key)))
+        .collect()
+}
 const NOT_BEFORE: u64 = 1_000;
 const NOT_AFTER: u64 = 2_000;
 const DURING: u64 = 1_500;
@@ -273,6 +280,7 @@ fn sealed() -> Sealed {
         vec![SelectedRecord {
             secret: OpaqueSecretId::new("secret-1"),
             version: RecordVersion(1),
+            policy: None,
         }],
         500,
         "jti-1".to_string(),
@@ -283,7 +291,7 @@ fn sealed() -> Sealed {
         .iter()
         .map(|record| (record.clone(), ContentKey::generate()))
         .collect();
-    let selection = SelectedContentKeys::new(&head, keys.clone()).unwrap();
+    let selection = SelectedContentKeys::new(&head, delivered(keys.clone())).unwrap();
     let artifact = seal(&signer, &head, &selection, &recipient).unwrap();
 
     Sealed {
@@ -570,7 +578,7 @@ fn a_copy_taken_before_the_revocation_still_opens_with_the_agents_key() {
     for (record, key) in &sealed.keys {
         assert_eq!(
             opened
-                .get(&record.secret, record.version)
+                .content_key(&record.secret, record.version)
                 .map(|k| k.as_bytes()),
             Some(key.as_bytes()),
             "a revocation must not reach a copy the holder already has"
@@ -1100,7 +1108,7 @@ fn retrying_admin_revoke_after_a_lost_policy_write_repeats_one_record() {
     // The withdrawal is the admin's decision, so it lands in the admin's file and
     // not in the principal's. Reading `path()` here would pass on a single-file
     // ledger and prove nothing about the split.
-    let withdrawn = std::fs::read_to_string(ledger.withdrawals_path()).unwrap();
+    let withdrawn = std::fs::read_to_string(ledger.policy_events_path()).unwrap();
     assert_eq!(
         withdrawn.matches("\"grant_withdrawn\"").count(),
         1,
