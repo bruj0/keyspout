@@ -18,7 +18,7 @@ edit_uri: blob/main/site/docs/
 use_directory_urls: false
 copyright: >-
   Keyspout is MIT licensed. This documentation is generated from the project
-  tree and published by GitHub Pages.
+  tree and published on GitHub Pages and GitLab Pages.
 
 theme:
   name: material

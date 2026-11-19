@@ -1,0 +1,108 @@
+# GitLab Pages, publishing the same site GitHub Pages publishes.
+#
+# This file is **authored downstream**: it lives only in the public repository
+# and a sync neither copies nor deletes it. `scripts/public/sync.json` names it
+# in `authored` for that reason, and `docs/adr/0001-upstream-downstream-split.md`
+# says why. Edit it here, never upstream.
+#
+# The site is not at `docs/`. It is `site/docs/`, the config is
+# `site/mkdocs.yml`, and the reference section must be assembled from the tree
+# before the build — see `scripts/site/prepare-docs.py`. The commands below are
+# the same ones `.github/workflows/pages.yml` runs, minus the two that need a
+# Chromium render.
+#
+# # Why this pipeline is not a copy of the GitHub one
+#
+# `check-mermaid.py` and `stack-subgraphs.py --check` both shell out to `mmdc`,
+# which needs Node and a headless Chromium. GitHub owns those two checks. A
+# second render gate here would cost about three minutes per pipeline and catch
+# nothing the first one did not, because both pipelines build the same bytes.
+#
+# That is safe because of the direction the content flows: a change reaches this
+# repository through the sync from the private tree, so GitHub Actions has
+# always seen a commit before this pipeline publishes it. The rule that keeps it
+# safe is therefore "one check has one owner", not "GitLab runs less".
+#
+# # Why `site_url` is left alone
+#
+# `site/mkdocs.yml` points `site_url` at GitHub Pages. It drives the canonical
+# link, the sitemap and `edit_uri`. There is one canonical home for a document
+# even when two hosts serve it, and a per-host override would make the two
+# copies disagree about which one is canonical.
+
+default:
+  # A newer push supersedes an older one. `interruptible` on the build only: the
+  # publish job is short and cheap to finish.
+  interruptible: true
+
+stages:
+  - build
+  - pages
+
+variables:
+  # Kept in step with `.github/workflows/pages.yml`. Two pipelines that install
+  # different MkDocs versions can render different sites from one commit, and
+  # nothing reports the difference.
+  MKDOCS_MATERIAL_VERSION: "9.6.14"
+  MARKDOWN_VERSION: "3.9"
+  # The build writes here. `site/build` is gitignored, so a stale directory can
+  # only come from this job's own earlier run.
+  SITE_DIR: site/build
+
+build-site:
+  stage: build
+  image: python:3.13-slim-bookworm
+  before_script:
+    - python -m pip install --upgrade pip
+    - python -m pip install "mkdocs-material==${MKDOCS_MATERIAL_VERSION}" "markdown==${MARKDOWN_VERSION}"
+  script:
+    # The reference section is generated, not tracked. Without this the build
+    # fails on 21 missing nav targets, which reads as a broken site rather than
+    # a missing step.
+    - python3 scripts/site/prepare-docs.py --source .
+
+    # The checks GitLab owns. `check-links` reads `site/docs/`, so it runs after
+    # the reference section exists — a link into `reference/` is broken only
+    # when the file is not there yet, and that is worth catching in the job that
+    # produces the file.
+    - python3 scripts/site/check-links.py --root site/docs
+    - python3 scripts/site/check-assets.py
+
+    # The site directory is absolute on purpose. MkDocs resolves a relative
+    # `--site-dir` against the configuration file's directory, so
+    # `--site-dir site/build` with `-f site/mkdocs.yml` writes to
+    # `site/site/build` and the artifact holds the site one level too deep.
+    - mkdocs build --strict --site-dir "$CI_PROJECT_DIR/$SITE_DIR" -f site/mkdocs.yml
+
+    # The upload takes the *contents* of the path it is given and Pages serves
+    # the artifact's root, so an `index.html` one directory down is a 404 on
+    # every page — and the deployment still reports success. Check the shape
+    # here, where a mistake is a red job.
+    - test -f "$SITE_DIR/index.html"
+  artifacts:
+    paths:
+      - site/build
+    expire_in: 1 day
+
+pages:
+  stage: pages
+  image: alpine:3.20
+  needs:
+    - job: build-site
+      artifacts: true
+  script:
+    # GitLab Pages serves the contents of `public/`. Rename rather than set
+    # `site_dir: public` in `mkdocs.yml`: that would make a local
+    # `mkdocs serve` publish into the source tree.
+    - rm -rf public
+    - mv site/build public
+    - test -f public/index.html
+    - echo "pages: $CI_PAGES_URL"
+  artifacts:
+    paths:
+      - public
+    expire_in: 1 day
+  rules:
+    # Publish from the default branch only. A merge request runs `build-site`
+    # and stops, which is the same split the GitHub workflow makes.
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
