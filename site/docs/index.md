@@ -95,6 +95,11 @@ Two workspace-wide lint decisions shape the code more than any dependency:
 - **Durable arming before publication.** A lease's deletion intent is signed
   and written to the store *before* the token is published. There is no
   distributed transaction, and no token is ever minted on an uncertain arming.
+- **Policy-scoped sharing without a copy.** The second delivery shape: the admin
+  publishes one sealed entry and signs a grant naming it, and what the user
+  exports is a reference with no content key in it. Nothing is handed to the
+  agent that would open the value, and a withdrawal is recorded before the
+  artifact stops existing, so the decision and the tree cannot disagree.
 - **Evidence-based admission.** A lease is admitted only when the backend has
   *proven* it can clean up. A declared cadence is a configuration; a signed,
   fresh sweep proof is evidence. The `file` backend admits nothing until the
@@ -114,7 +119,7 @@ Two workspace-wide lint decisions shape the code more than any dependency:
 ```text
 keyspout/
 ├── crates/
-│   ├── ksp/                 the CLI and the application layer (39 modules)
+│   ├── ksp/                 the CLI and the application layer (38 modules)
 │   ├── ksp-identity/        enrolment, keys, PoP, policy, sealed delivery
 │   ├── ksp-backend/         the three storage backends, admission, arming, sweep
 │   ├── ksp-posture/         confinement and memory-barrier adapters, posture
@@ -231,7 +236,7 @@ views. See [Architecture Overview](architecture/overview.md).
 | Document | What it answers |
 |---|---|
 | [Architecture Overview](architecture/overview.md) | How the zones, containers and crates fit together |
-| [Workflow Overview](workflows/overview.md) | What happens, step by step, in the seven core workflows |
+| [Workflow Overview](workflows/overview.md) | What happens, step by step, in the eight core workflows |
 | [Deep Dives](components/ksp-cli.md) | How each crate works, in detail |
 | [Design specification](reference/design-spec.md) | The authoritative design, with its status markers |
 | [Known defects](reference/known-defects.md) | What does not work yet, stated plainly |

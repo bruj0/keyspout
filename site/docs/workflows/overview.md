@@ -1,6 +1,6 @@
 ---
 title: Workflow Overview
-description: The seven core workflows of Keyspout, step by step, with the sequence diagrams.
+description: The eight core workflows of Keyspout, step by step, with the sequence diagrams.
 ---
 
 # Workflow Overview
@@ -334,6 +334,91 @@ sequenceDiagram
    did not verify, which is distinct from `8`, which means a proof of
    possession was invalid.
 
+### Workflow 8: Create, revise and withdraw a grant
+
+The admin's side of the policy lifecycle. Workflow 4 runs the delivery once a
+grant exists; this is how the grant comes to exist, how it is narrowed, and how
+it stops existing. Four verbs, and every one of them writes the decision before
+it writes the thing the decision is about.
+
+```mermaid
+sequenceDiagram
+  participant Admin as Admin principal
+  participant Ksp as ksp binary
+  participant Ledger as policy-events.jsonl
+  participant Store as Sealed store
+
+  Admin->>Ksp: ksp admin policy create --user U --secret S --agent A
+  Ksp->>Ledger: append the decision (created, revision 1)
+  Ksp->>Store: write the signed edge
+  Ksp->>Store: seal the publication entry to A's recipient key
+  Ksp->>Store: write the token beside the edge
+  Ksp-->>Admin: the joined view, and where the token went
+
+  Admin->>Ksp: ksp admin policy update ID --expires-at T
+  Ksp->>Ledger: append the decision (updated, revision 2)
+  Ksp->>Store: replace the edge at revision 2
+
+  Admin->>Ksp: ksp admin policy delete ID
+  Ksp->>Ledger: append the decision (withdrawn)
+  Ksp->>Store: remove the edge artifact
+  Ksp->>Store: release the publication entry
+
+  Admin->>Ksp: ksp admin policy list --state dangling
+  Ksp-->>Admin: rows in a fixed order, with the unprinted total
+```
+
+**Steps:**
+
+1. **`admin policy create`** signs one grant and is the only verb that mints a
+   token. It stages the artifact, records the decision in `policy-events.jsonl`,
+   and only then publishes — so a crash after the append leaves a grant a retry
+   completes, and a crash before it leaves a tree and a ledger that agree. The
+   publication is written last because its entry is keyed by the policy id, and a
+   publication written first could not know the id the grant would carry.
+2. **The grant needs no password to be signed.** The admin key is her enrolled
+   signing key, and a grant is public material. A publication *does* need one,
+   because the plaintext comes from the admin's own `--own` record — so a
+   `--any` cooperative grant writes no publication, issues no token, and
+   therefore reads no password it would not use.
+3. **`admin policy update`** re-signs at the next revision. Naming a target
+   re-publishes, because the old entry is sealed to a key that must no longer
+   open it; moving only the window does not, because the entry is unchanged. The
+   artifact's content key, name and value are carried over rather than
+   regenerated, since regenerating them would stop every entry already made from
+   opening. A window that has already passed is refused rather than written.
+4. **`admin policy delete`** is a withdrawal, and it is one decision with three
+   effects in a fixed order: **ledger, artifact, publication**. Any other order
+   turns the ledger into a description of what happened rather than a control
+   over what may happen. Each step asks what is already true before acting, so a
+   crash anywhere is completable: the append is idempotent, removing an absent
+   artifact succeeds because the aim is its absence, and releasing a released
+   reference writes nothing.
+5. **A withdrawal does not delete the publication.** Releasing the last
+   reference leaves the entry where it is, because an artifact that vanishes
+   before its entry is written is a change nobody can account for. Removing it is
+   a separate decision with its own record, not a side effect of a count reaching
+   zero.
+6. **`admin policy list` and `show` read one join.** Both go through the same
+   projection, so a read cannot disagree with the write. The sort key is user,
+   then secret, then version, then identifier: two runs over one tree print the
+   same rows in the same order, so `--limit` cuts a prefix of a fixed order and
+   the header can report the total before the bound.
+7. **A policy is in one of five states**, and the precedence is what makes the
+   state useful rather than decorative: `unverified` first (the signature does
+   not verify against the pinned anchor, or the artifact's digest is not the one
+   the ledger recorded for its revision, so nothing it says is evidence),
+   then `withdrawn` (the decision stands even if what it named has since gone),
+   then `dangling` (the edge names a user, agent or secret version that is not
+   there), then `expired` (the window has passed), and `active` otherwise.
+
+Two properties make this surface checkable rather than merely plausible. A
+`show` for another principal's policy is reported **absent**, not forbidden, so
+the answer does not confirm that someone else holds one. And an artifact whose
+digest no longer matches its recorded revision reads `unverified` even though
+its signature verifies against the anchor — the admin signed *something*, and it
+is not what the ledger decided.
+
 ## Data Flow
 
 The path a secret takes, from the operator's keystroke to the child's
@@ -376,7 +461,8 @@ Three things this diagram is designed to make visible:
 ## State Management
 
 There is no in-memory session state that outlives a command, and no cache of
-an unsealed vault. The state lives in four places, all on disk:
+an unsealed vault. Every piece of state is a file, and each one has a single
+writer:
 
 | State | Where | Written by |
 |---|---|---|

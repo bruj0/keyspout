@@ -391,6 +391,12 @@ process cannot change what the next run will enforce.
 | `sweep.rs`, `arm.rs`, `install.rs` | The sweep, the arming, the launchd installer |
 | `audit.rs`, `audit_view.rs`, `audit_verify.rs` | Appending, viewing and verifying the chain |
 | `storegroup/` | Resolving the store group and joining the account to it |
+| `lifecycle.rs` | The order a withdrawal happens in, held in one place: ledger, artifact, publication |
+| `registry.rs` | The principal registry - who belongs to this deployment, and which account is who |
+| `agent_index.rs` | The public half of each agent's enrolment, where the admin can read it |
+| `admission.rs` | The one place a recorded schedule and a proof become a capability |
+| `deployment.rs` | The three identifiers every record path and every policy names |
+| `keys.rs` | What this host pinned, and what a later process reloads against |
 
 ## Design Decisions
 

@@ -564,6 +564,6 @@ Two rows deserve attention:
 
 ## See Also
 
-- [Workflow Overview](../workflows/overview.md) - the seven workflows, step by step
+- [Workflow Overview](../workflows/overview.md) - the eight workflows, step by step
 - [Deep Dive: ksp - the command-line interface](../components/ksp-cli.md)
 - [Design specification](../reference/design-spec.md)
