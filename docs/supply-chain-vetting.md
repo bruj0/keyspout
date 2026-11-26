@@ -1,20 +1,25 @@
 # Dependency review — `cargo-vet`
 
-**Status:** configured and enforced. **No crate has been audited yet.**
+**Status:** configured and enforced. **Three crates are audited, and none of
+those reviews is ours.**
 
 ```
 $ cargo vet --locked
-Vetting Succeeded (314 exempted)
+Vetting Succeeded (3 fully audited, 311 exempted)
 
 $ grep -c '^\[\[exemptions\.' supply-chain/config.toml
-314
+311
 
 $ grep -c '^\[\[audits\.' supply-chain/audits.toml
 0
 ```
 
-Read those two numbers together. **314 exempted, 0 audited** means the ledger
-exists and enforces something, and that nothing in it is a review.
+Read those three numbers together. **The local ledger holds no audit**, because
+`supply-chain/audits.toml` is empty. The three that count as audited are covered
+by the **imported Google audit set** (`[imports.google]`) — a real review by
+someone else, which `cargo vet` accepts and which this repository did not
+perform. So 311 exemptions and 0 local audits is the honest reading: the ledger
+enforces that a new crate needs a decision, and nothing more.
 
 ## What it is
 
@@ -52,6 +57,20 @@ still does something useful with it:
   The gate refused the upgrade until someone moved the exemption. That is the
   behaviour the work package wanted: a dependency change cannot happen without a
   recorded decision.
+
+  It happened again on 2026-11-26, to `url` 2.5.8 → 2.5.9 and its transitive
+  `form_urlencoded` 1.2.2 → 1.2.3, both bumped for `RUSTSEC-2026-0592`:
+
+  ```
+  $ cargo vet --locked
+  2 unvetted dependencies:
+    form_urlencoded:1.2.3 missing ["safe-to-deploy"]
+    url:2.5.9 missing ["safe-to-deploy"]
+  ```
+
+  `cargo audit` was satisfied by the bump and `cargo vet` was not, which is the
+  point of having both: one asks whether a crate is known-bad, the other asks
+  whether anyone decided. The exemptions moved in the same commit as the bump.
 
 What it does **not** do is review anything. The 314 exemptions are the size of the
 backlog, not a measure of coverage, and the gate prints both numbers on every run
