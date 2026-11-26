@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "ksp"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "ksp-backend"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "aws-sdk-s3",
  "ciborium",
@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "ksp-deletion"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "ksp-identity"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "ksp-key-lifecycle"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "ksp-identity",
  "ksp-types",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "ksp-posture"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "ksp-types",
  "landlock",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "ksp-record"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chacha20poly1305",
  "ciborium",
@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "ksp-types"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "ciborium",
  "rand",
