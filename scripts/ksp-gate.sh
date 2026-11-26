@@ -417,12 +417,20 @@ vm_part() {
             echo "       Run this gate inside the VM, or grant passwordless sudo." >&2
             exit 69
         fi
+        # The account names MUST be forwarded: `sudo -n env` takes an
+        # explicit list, so anything absent is unset in the child, and the
+        # suite refuses rather than skipping when they are absent. Measured
+        # on PR #30: CI provisioned both accounts and exported the names, and
+        # the run still failed because this list dropped them. `${VAR:-}`
+        # because an unset expansion must not shift the argument list.
         sudo -n env \
             HOME="$HOME" \
             PATH="$HOME/.cargo/bin:$PATH" \
             RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
             CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
             CARGO_TARGET_DIR="$root_target" \
+            KSP_TEST_ADMIN_USER="${KSP_TEST_ADMIN_USER:-}" \
+            KSP_TEST_USER="${KSP_TEST_USER:-}" \
             cargo test -p ksp --test principals --no-fail-fast
     fi
 }
@@ -726,12 +734,20 @@ ci_part() {
                 echo "       A GitHub runner has passwordless sudo; a local run needs it granted." >&2
                 exit 69
             fi
+            # The account names MUST be forwarded: `sudo -n env` takes an
+            # explicit list, so anything absent is unset in the child, and the
+            # suite refuses rather than skipping when they are absent. Measured
+            # on PR #30: CI provisioned both accounts and exported the names, and
+            # the run still failed because this list dropped them. `${VAR:-}`
+            # because an unset expansion must not shift the argument list.
             sudo -n env \
                 HOME="$HOME" \
                 PATH="$HOME/.cargo/bin:$PATH" \
                 RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
                 CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
                 CARGO_TARGET_DIR="$root_target" \
+                KSP_TEST_ADMIN_USER="${KSP_TEST_ADMIN_USER:-}" \
+                KSP_TEST_USER="${KSP_TEST_USER:-}" \
                 cargo test -p ksp --test principals --no-fail-fast \
                 || failed+=("ksp:principals")
         fi
