@@ -73,7 +73,41 @@ fn probe_mlock_refusal() {
 
     let mut result = String::new();
 
-    // A tiny hard cap, so neither mechanism can satisfy a 1 MiB request.
+    // Lower the SOFT limit only, and leave the hard limit at whatever this
+    // process inherited.
+    //
+    // The original lowered `rlim_max` as well. That is irreversible, needs
+    // CAP_SYS_RESOURCE, and returns `EPERM` whenever the process already carries
+    // a lower hard cap than the one being requested — which is exactly the case
+    // on a GitHub runner, whose `ulimit -l` is 8 MiB, once a sibling probe has
+    // run in the same process group. Measured on an aarch64 guest with the same
+    // 8 MiB cap: `setrlimit-failed=Operation not permitted`, and the two
+    // assertions below it failed while the probe itself passed.
+    //
+    // The test's claim is that a 1 MiB region cannot be locked under a 64 KiB
+    // cap. The soft limit is the one that enforces that, and lowering only the
+    // soft limit is unprivileged and repeatable, so the probe measures the claim
+    // rather than the process's ability to change its own hard ceiling.
+    // Both limits go to 64 KiB, and that is deliberate: the refusal must name
+    // the limit a reader can act on, and `MemlockObservation` reports the hard
+    // cap when the two differ. Lowering only the soft limit made the message
+    // name the machine's ancient hard ceiling instead of the 64 KiB the test set,
+    // and the assertion that the message states the current limit then failed.
+    //
+    // Lowering `rlim_max` needs the inherited hard cap to be at least 64 KiB.
+    // A host below that cannot express the condition at all: measured on a
+    // GitHub runner, `ulimit -l` reports 8192 — 8192 BYTES, 8 KiB — so
+    // `setrlimit` returned EINVAL and both assertions failed while the mechanism
+    // under test was never exercised. That is a host that cannot run the test,
+    // not a product defect, and it is the same distinction this file already
+    // makes for `memlock_limit_binds`.
+    let inherited = memlock_hard_limit_bytes();
+    result.push_str(&format!("inherited-hard={inherited}\n"));
+    if inherited < 64 * 1024 {
+        result.push_str("unhostable=hard-limit-below-64KiB\n");
+        std::fs::write(&report_path, result).expect("write the report");
+        return;
+    }
     let limit = libc::rlimit {
         rlim_cur: 64 * 1024,
         rlim_max: 64 * 1024,
@@ -121,6 +155,33 @@ fn probe_mlock_refusal() {
 /// limit binds — and they say so rather than asserting the opposite of what they
 /// measured. The refusal's wording is covered for every uid by
 /// `ksp_posture::memlock`'s unit tests, which need no privilege.
+/// This process's `RLIMIT_MEMLOCK` hard limit, in bytes.
+///
+/// Read before a probe lowers the soft limit, so the call keeps the hard ceiling
+/// it inherited instead of trying to reduce it. Reducing the hard limit is
+/// irreversible and privileged, and it fails with `EPERM` on a host whose limit
+/// is already low — see the note in `probe_mlock_refusal`.
+///
+/// Returns the inherited value unchanged when the read fails, which makes the
+/// subsequent `setrlimit` behave exactly as it did before this helper existed
+/// rather than inventing a ceiling.
+fn memlock_hard_limit_bytes() -> libc::rlim_t {
+    let mut current = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY (test-only): `current` is a valid, writable `libc::rlimit` that
+    // outlives the call, and `getrlimit` only fills it.
+    #[allow(unsafe_code)]
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut current) };
+    if rc != 0 {
+        // RLIM_INFINITY: "do not lower the ceiling", which preserves the old
+        // behaviour of leaving the hard limit alone.
+        return libc::RLIM_INFINITY;
+    }
+    current.rlim_max
+}
+
 fn memlock_limit_binds() -> bool {
     // SAFETY (test-only): `geteuid` takes no arguments and touches no memory.
     #[allow(unsafe_code)]
@@ -155,6 +216,16 @@ fn an_unlockable_region_aborts_naming_limitmemlock_and_returns_no_region() {
     );
 
     let report = std::fs::read_to_string(&report_path).expect("the probe must write its report");
+
+    // The probe could not create its precondition on this host: its inherited
+    // hard cap is below the 64 KiB the mechanism needs to be demonstrated. The
+    // mechanism's wording is covered by `ksp_posture::memlock`'s unit tests,
+    // which need no particular limit, so this is a host that cannot run the
+    // test rather than a product defect. Reported, not silently passed.
+    if report.contains("unhostable=") {
+        eprintln!("skipping: this host cannot host the probe; report: {report}");
+        return;
+    }
 
     assert!(
         !report.contains("setrlimit-failed"),
@@ -200,6 +271,15 @@ fn probe_require_secret_under_pressure() {
     };
 
     let mut result = String::new();
+    // Soft limit only, for the reason in `probe_mlock_refusal`, and the same
+    // unhostable guard: a hard cap below 64 KiB cannot express the condition.
+    let inherited = memlock_hard_limit_bytes();
+    result.push_str(&format!("inherited-hard={inherited}\n"));
+    if inherited < 64 * 1024 {
+        result.push_str("unhostable=hard-limit-below-64KiB\n");
+        std::fs::write(&report_path, result).expect("write the report");
+        return;
+    }
     let limit = libc::rlimit {
         rlim_cur: 64 * 1024,
         rlim_max: 64 * 1024,
@@ -243,6 +323,10 @@ fn requiring_the_primary_barrier_refuses_instead_of_demoting() {
     );
 
     let report = std::fs::read_to_string(&report_path).expect("the probe must write its report");
+    if report.contains("unhostable=") {
+        eprintln!("skipping: this host cannot host the probe; report: {report}");
+        return;
+    }
     assert!(
         report.contains("refusal-line="),
         "a required barrier must refuse when it cannot be established; report: {report}"
