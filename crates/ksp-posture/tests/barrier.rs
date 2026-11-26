@@ -223,7 +223,11 @@ fn an_unlockable_region_aborts_naming_limitmemlock_and_returns_no_region() {
     // which need no particular limit, so this is a host that cannot run the
     // test rather than a product defect. Reported, not silently passed.
     if report.contains("unhostable=") {
-        eprintln!("skipping: this host cannot host the probe; report: {report}");
+        // Silent, like the `memlock_limit_binds()` guard above: a test that
+        // cannot run on this host returns rather than printing, because the
+        // workspace denies both `print_stdout` and `print_stderr` under
+        // `-D warnings`. The reason is in the probe's own report for anyone who
+        // goes looking, and the guard's name says it.
         return;
     }
 
@@ -324,7 +328,11 @@ fn requiring_the_primary_barrier_refuses_instead_of_demoting() {
 
     let report = std::fs::read_to_string(&report_path).expect("the probe must write its report");
     if report.contains("unhostable=") {
-        eprintln!("skipping: this host cannot host the probe; report: {report}");
+        // Silent, like the `memlock_limit_binds()` guard above: a test that
+        // cannot run on this host returns rather than printing, because the
+        // workspace denies both `print_stdout` and `print_stderr` under
+        // `-D warnings`. The reason is in the probe's own report for anyone who
+        // goes looking, and the guard's name says it.
         return;
     }
     assert!(
