@@ -40,18 +40,46 @@ pub enum SecretError {
     /// that the refusal names what is wrong.
     #[error("{0}")]
     Vault(crate::vault::VaultError),
-    /// The value could not be read from stdin.
+    /// The value could not be read from stdin. Deliberately names no flag.
     ///
-    /// The message names the accepted form, because the common cause is a
-    /// pipeline that fed the password and the value to one stream: the password
-    /// reader consumes all of it, so the value arrives empty. `--passphrase-file`
-    /// is the way to supply the password separately, and a refusal that did not
-    /// say so left the caller retrying the same broken pipeline.
+    /// The sentence cannot be written here, because the two callers accept
+    /// different options. `secret set` has `--passphrase-file` and must name it;
+    /// `admin put` has no password at all — `--own` seals to the admin's public
+    /// recipient key — so naming a flag sent its caller to an argument clap
+    /// rejects with `error: unexpected argument '--passphrase-file' found`, and
+    /// described a password the command does not take (D5).
+    ///
+    /// It says what went wrong instead: the reader got no value from stdin.
+    ///
+    /// This is the *empty* case only. A stream the process could not read is
+    /// [`Self::ValueUnreadable`], because a sentence about missing input is a
+    /// claim about the caller's pipeline and it was false for a `read` that
+    /// failed.
+    #[error("the value could not be read from the input: stdin carried no value")]
+    Value,
+
+    /// The value could not be read because the read itself failed.
+    ///
+    /// Separate from [`Self::Value`] because the two states have different fixes
+    /// and one sentence cannot describe both. An empty stdin means the caller's
+    /// pipeline sent nothing; an unreadable one — a directory, a closed
+    /// descriptor, a device error — means the stream could not be read at all,
+    /// and telling that caller it "carried no value" sends it to inspect input
+    /// that is not the problem.
+    #[error("the value could not be read from the input: the input stream could not be read")]
+    ValueUnreadable,
+
+    /// [`Self::Value`], for the caller that does accept `--passphrase-file`.
+    ///
+    /// `secret set` renders this one. The common cause is a pipeline that fed
+    /// the password and the value to one stream: the password reader consumes
+    /// all of it, so the value arrives empty, and `--passphrase-file` is how the
+    /// caller supplies the password separately.
     #[error(
         "the value could not be read from the input: the value comes from stdin, \
          and the password comes from --passphrase-file when stdin carries a value"
     )]
-    Value,
+    ValueNeedsPasswordFlag,
     /// The record could not be read back.
     #[error("the stored record is not readable")]
     Record,
@@ -100,7 +128,11 @@ impl SecretError {
             // An empty value is the caller's pipeline, not a bug in this tool.
             // A write that failed is not: the caller did nothing wrong and the
             // record may still be absent, so it keeps `INTERNAL`.
-            Self::Value => exit::USAGE,
+            //
+            // Both value forms keep `USAGE`, because they describe the same
+            // fault: the caller supplied no value. Only the advice differs, and
+            // the advice is not the class.
+            Self::Value | Self::ValueNeedsPasswordFlag | Self::ValueUnreadable => exit::USAGE,
             Self::Write => exit::INTERNAL,
             // A policy refusal: the operation was refused by the host, and the
             // operator has one more step to run. `CAPABILITY_REFUSAL` would say
@@ -476,7 +508,9 @@ pub fn read_value<R: Read>(reader: &mut R) -> Result<Vec<u8>, SecretError> {
     let mut buffer = Vec::new();
     reader
         .read_to_end(&mut buffer)
-        .map_err(|_| SecretError::Value)?;
+        // Not `Value`: the read failing and the read succeeding with nothing are
+        // different faults, and only the second is about the caller's pipeline.
+        .map_err(|_| SecretError::ValueUnreadable)?;
     if buffer.last() == Some(&b'\n') {
         buffer.pop();
     }
@@ -598,7 +632,13 @@ pub fn run<W: std::io::Write>(
                         version: *version,
                     })
                     .collect();
-                match emitter.report(&Report::Records { records }) {
+                // Empty by construction: `secret ls` lists one level the caller
+                // owns and never meets a directory it cannot read. The field is
+                // skipped when empty, so this command's JSON is unchanged.
+                match emitter.report(&Report::Records {
+                    records,
+                    unreadable: Vec::new(),
+                }) {
                     Ok(()) => Outcome::Success,
                     Err(_) => Outcome::Failed(exit::INTERNAL),
                 }

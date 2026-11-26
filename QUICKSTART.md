@@ -286,6 +286,36 @@ Leave it at `0600` and the user's first command fails with
 A second `ksp init` changes nothing and exits `0`. Re-probing is
 `ksp config init --force`.
 
+### Where the store goes — and why you set no variable
+
+The store is **inside the home**, at `$KSP_HOME/store`, created by `ksp` itself
+on the first command that needs it. There is nothing to configure and no second
+copy to keep in sync.
+
+`KSP_STORE` still exists and still works, but **do not set it**. A configured
+store root is *opened, never created*: point it at a directory that is not there
+and the command refuses instead of quietly making an empty store that reads as
+"no records". Measured:
+
+```
+ksp: the configured store root at /tmp/example is not a readable directory:
+     create or mount it, or unset KSP_STORE to use this home's own store
+ksp: refused (exit 7: the backend or the host layout cannot admit this lease)
+```
+
+Leave it unset and the store follows the home, which is what both steps 7 and 8
+assume.
+
+One more reason to leave it alone: a suite or a script that inherits an exported
+`KSP_STORE` writes its records into whichever store that names. A run that
+suddenly fails with paths escaping the root, or with `permission denied` on a
+directory nobody in this session created, is usually this variable arriving from
+a shell profile.
+
+```bash
+echo "${KSP_STORE:-unset}"     # must print `unset` before you go on
+```
+
 ---
 
 ## 3. Initialise the deployment
@@ -387,6 +417,22 @@ admin user add: principal=a1716261-f3c8-4f70-be0b-7f2f5081c559
 > `alice-ed25519-1` and `alice-x25519-1`, which are **not** derived from
 > `--user`. They are labels that appear in the policy, in `token inspect` and in
 > the audit chain head.
+
+**The principal printed here is the one to keep.** For the *first* enrolment it
+equals the `user=` UUID step 3 printed — `admin user add` adopts the provisional
+principal rather than minting a second one, which is why the two match in the
+run above. Every enrolment after the first gets a **new** principal, and the
+deployment record keeps naming the first one, so `admin init`'s value is right
+only until a second principal exists.
+
+Either way the rule is the same: take the UUID from **this** command, and use it
+wherever a grant or a scope names the user. Passing a principal the deployment
+does not hold is refused by name:
+
+```
+ksp: the policy edge names user <uuid>, which this deployment does not hold: enrol her first
+ksp: refused (exit 2: policy denied the operation)
+```
 
 Check it — the binding is what makes the two accounts real:
 

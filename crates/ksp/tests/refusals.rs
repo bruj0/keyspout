@@ -376,3 +376,170 @@ fn a_deployment_with_no_binding_is_unaffected() {
         "a `file` backend refuses a lease until a proof exists: {output}"
     );
 }
+
+/// D5: `admin put` names no password flag, because it accepts none.
+///
+/// `admin put` and `secret set` share `secret::read_value`, and the refusal that
+/// reader raised named `--passphrase-file`. `admin put` has no such flag: it
+/// seals to the admin's public recipient key and takes no password at all, so
+/// the sentence sent its caller to an argument clap rejects with
+/// `error: unexpected argument '--passphrase-file' found`. The defect is the
+/// sentence, not the command.
+#[test]
+fn admin_put_names_no_password_flag_when_stdin_carries_no_value() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+
+    let (code, output) = ksp_in(
+        home.path(),
+        &["admin", "put", "s1", "--name", "db_password"],
+        Some(""),
+    );
+    assert_eq!(
+        code,
+        exit::USAGE,
+        "admin put keeps its usage code for an empty value: {output}"
+    );
+    assert!(
+        !output.contains("--passphrase-file"),
+        "admin put accepts no password flag, so its refusal must not name one: {output}"
+    );
+    // TE-017: it says what was wrong instead.
+    assert!(
+        output.contains("stdin carried no value"),
+        "the refusal says stdin carried no value: {output}"
+    );
+}
+
+/// D5: the two commands must not share a sentence.
+///
+/// Reading them one at a time cannot show a defect that is a *divergence*: each
+/// sentence reads correctly on its own. Only comparing them does.
+#[test]
+fn admin_put_and_secret_set_give_different_refusals() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+
+    let (put_code, put) = ksp_in(
+        home.path(),
+        &["admin", "put", "s1", "--name", "db_password"],
+        Some(""),
+    );
+    // `secret set` reads the password from stdin when no `--passphrase-file` is
+    // given, so an empty stdin fails at the *password* read and never reaches
+    // the value read — a different refusal with a different exit code. A
+    // password on stdin is what makes both commands fail at the value read,
+    // which is the comparison this test is about. The precedent test
+    // `secret_set_keeps_thirteen_and_its_own_message` drives it the same way.
+    let (set_code, set) = ksp_in(
+        home.path(),
+        &["secret", "set", "s1", "--name", "db_password"],
+        Some("correct-horse\n"),
+    );
+
+    assert_eq!(put_code, exit::USAGE, "admin put: {put}");
+    assert_eq!(set_code, exit::USAGE, "secret set: {set}");
+    // `secret set` has the flag, so its sentence must keep naming it; that is
+    // TE-018 and it is the reason the neutral form cannot be used here too.
+    assert!(
+        set.contains("--passphrase-file"),
+        "secret set accepts --passphrase-file, so its refusal must name it: {set}"
+    );
+    assert_ne!(
+        put, set,
+        "the two commands accept different options, so they cannot share a sentence"
+    );
+}
+
+/// TE-020: the success path is not bought by breaking the refusal's sibling.
+///
+/// A value on stdin still seals. The refusal and the write go through the same
+/// reader, so a change that only silenced the message would leave this passing;
+/// a change that broke the reader would fail here.
+#[test]
+fn admin_put_still_seals_a_value_supplied_on_stdin() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+
+    let (code, output) = ksp_in(
+        home.path(),
+        &["admin", "put", "s1", "--name", "db_password"],
+        Some("a-real-value\n"),
+    );
+    assert_eq!(
+        code,
+        exit::SUCCESS,
+        "a value on stdin still seals through admin put: {output}"
+    );
+    let (code, listing) = ksp_in(home.path(), &["admin", "list"], None);
+    assert_eq!(code, exit::SUCCESS, "admin list: {listing}");
+    assert!(
+        listing.contains("s1"),
+        "the record the put wrote is listed: {listing}"
+    );
+}
+
+/// A stdin that cannot be read is not a stdin that carried nothing.
+///
+/// `read_value` mapped both `read_to_end`'s failure and an empty buffer to the
+/// same variant, so a stream the process could not read — a directory, a closed
+/// descriptor, a device error — was reported as *"stdin carried no value"*. The
+/// caller then removes a pipe that was never the problem. The sentence is a
+/// claim about the input, and it was false.
+///
+/// A directory on stdin is the portable way to make the read itself fail: the
+/// open succeeds, so this exercises `read_to_end` rather than the spawn.
+#[test]
+fn an_unreadable_stdin_is_not_reported_as_an_empty_one() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+
+    let directory = tempfile::tempdir().unwrap();
+    let file = std::fs::File::open(directory.path()).expect("a directory opens");
+    let mut command = Command::new(ksp());
+    command
+        .env("KSP_HOME", home.path())
+        .env("LC_ALL", "C")
+        .args(["admin", "put", "s1", "--name", "db_password"])
+        .stdin(Stdio::from(file))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = command.output().expect("the binary finishes");
+    let text = String::from_utf8_lossy(&output.stdout).to_string()
+        + &String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        exit::USAGE,
+        "an unreadable stdin keeps the usage class: {text}"
+    );
+    assert!(
+        !text.contains("carried no value"),
+        "the stream failed to read; it did not carry nothing: {text}"
+    );
+    assert!(
+        text.contains("could not be read"),
+        "the refusal says the read failed: {text}"
+    );
+}
+
+/// The empty-input sentence stays accurate for input that really was empty.
+///
+/// Paired with the test above so the two states cannot collapse back into one
+/// variant without failing here.
+#[test]
+fn an_empty_stdin_still_says_it_carried_no_value() {
+    let home = tempfile::tempdir().unwrap();
+    provision_vault(home.path());
+
+    let (code, text) = ksp_in(
+        home.path(),
+        &["admin", "put", "s1", "--name", "db_password"],
+        Some(""),
+    );
+    assert_eq!(code, exit::USAGE, "an empty stdin: {text}");
+    assert!(
+        text.contains("carried no value"),
+        "an empty stream says so: {text}"
+    );
+}

@@ -1228,6 +1228,16 @@ fn admin_put_refuses_when_the_recipient_public_key_was_never_recorded() {
 /// Rewriting the persisted principal UUID must not make the old principal's
 /// directory read as the new one's. The lookup fails loudly — it finds nothing —
 /// rather than adopting records that belong to somebody else.
+///
+/// **Which operation carries this invariant is `secret ls`, not `admin list`.**
+/// `secret ls` is scoped by the *binding*: it builds its prefix from
+/// `deployment.user` (`secret.rs:507`), so a moved binding must find nothing.
+/// `admin list` is scoped by the *registry* — it enumerates every enrolled
+/// principal, including the admin, and must not depend on the binding at all.
+/// Asserting the invariant against `admin list` would have pinned D4 in place:
+/// a listing that hides a record whenever the binding is rewritten is a listing
+/// that silently omits principals. Both halves are asserted below so neither can
+/// drift back.
 #[test]
 fn moving_the_persisted_principal_does_not_read_the_old_principals_records() {
     let home = tempfile::TempDir::new().unwrap();
@@ -1251,11 +1261,24 @@ fn moving_the_persisted_principal_does_not_read_the_old_principals_records() {
     deployment.save(&layout).unwrap();
     assert_ne!(deployment.user, old);
 
-    let (code, output) = ksp_in(home.path(), &["admin", "list"], None);
+    // The binding-keyed read finds nothing: the old principal's records are not
+    // adopted by the new principal.
+    let (code, output) = ksp_in(home.path(), &["secret", "ls"], None);
     assert_eq!(code, exit::SUCCESS, "{output}");
     assert!(
         !output.contains("db_password"),
         "a moved binding read the old principal's records: {output}"
+    );
+
+    // The registry-keyed listing still names it. It reports what the store
+    // holds across every principal, which is its whole job; rewriting one field
+    // of the deployment record does not stop the store holding that record, and
+    // a listing that hid it would be the omission D4 is about.
+    let (code, output) = ksp_in(home.path(), &["admin", "list"], None);
+    assert_eq!(code, exit::SUCCESS, "{output}");
+    assert!(
+        output.contains("db_password"),
+        "the listing enumerates the registry, not the binding: {output}"
     );
 }
 

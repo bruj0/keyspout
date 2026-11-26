@@ -26,7 +26,6 @@
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ksp::exit;
 use ksp::layout;
@@ -80,26 +79,37 @@ fn the_guard_names_the_command_instead_of_skipping() {
     );
 }
 
-/// The global lock `/etc/passwd` takes, held by both `useradd` and `userdel`.
+/// Refuse when the accounts are not provisioned, naming what is missing.
 ///
-/// These tests run in parallel threads, and two account changes racing for that
-/// lock fail with "cannot lock /etc/passwd" — a flake that reads like a broken
-/// fixture. One mutex here is cheaper and more honest than serialising the file.
-static ACCOUNTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn accounts() -> std::sync::MutexGuard<'static, ()> {
-    // A panic in another test must not turn every later account into a failure:
-    // the guard protects a global lock, not data, so a poisoned mutex is still
-    // the right mutual exclusion.
-    ACCOUNTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// Remove an account, taking the same lock `useradd` does.
-fn remove_user(name: &str) {
-    let _guard = accounts();
-    let _ = Command::new("userdel").args(["-r", name]).output();
+/// # Why this refuses rather than returning
+///
+/// An early `return` from a test function is indistinguishable from a pass in the
+/// harness output. A developer with no accounts would see a green suite that
+/// verified nothing, which is the failure `AGENTS.md` names: *"A skipped security
+/// test reads like a pass."* So this refuses, and the refusal is the first thing
+/// they read because it runs before the root check.
+fn require_accounts() -> (String, String) {
+    let missing: Vec<&str> = ["KSP_TEST_ADMIN_USER", "KSP_TEST_USER"]
+        .into_iter()
+        .filter(|name| std::env::var(name).map(|v| v.is_empty()).unwrap_or(true))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the two-account boundary tests need {} set, so this suite did not run.\n\
+         Provision the accounts once, as DEVELOPMENT.md describes:\n\
+         \x20   sudo sysadminctl -addUser ksp-admin        # macOS\n\
+         \x20   sudo sysadminctl -addUser ksp-user         # macOS\n\
+         \x20   sudo useradd -M -N -s /bin/sh ksp-admin    # Linux\n\
+         \x20   sudo useradd -M -N -s /bin/sh ksp-user     # Linux\n\
+         Then export KSP_TEST_ADMIN_USER=ksp-admin and KSP_TEST_USER=ksp-user.\n\
+         Neither account may be in admin, sudo or wheel: this suite measures one \
+         account's authority, and an admin account turns the grant into root.",
+        missing.join(" and ")
+    );
+    (
+        std::env::var("KSP_TEST_ADMIN_USER").expect("checked above"),
+        std::env::var("KSP_TEST_USER").expect("checked above"),
+    )
 }
 
 /// A throwaway account, removed even when an assertion panics.
@@ -111,29 +121,10 @@ struct TestUser {
 
 impl Drop for TestUser {
     fn drop(&mut self) {
-        // Best effort: a failed cleanup must not replace the assertion that was
-        // already panicking, and the name carries a per-run suffix so a leftover
-        // account cannot poison the next run.
-        remove_user(&self.name);
+        // Nothing to clean up: the account belongs to the operator, and deleting
+        // one this harness did not create would be a worse bug than the leak the
+        // old `userdel` guarded against.
     }
-}
-
-fn unique_suffix() -> String {
-    // A counter, not only the clock: the sub-second nanoseconds wrap every ~17ms
-    // once truncated to six hex digits, and two tests starting within one window
-    // asked `useradd` for the same name.
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.subsec_nanos())
-        .unwrap_or_default();
-    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xfff;
-    format!(
-        "{:06x}{:04x}{:03x}",
-        nanos,
-        std::process::id() & 0xffff,
-        sequence
-    )
 }
 
 fn id_of(user: &str, flag: &str) -> u32 {
@@ -141,43 +132,36 @@ fn id_of(user: &str, flag: &str) -> u32 {
         .args([flag, user])
         .output()
         .expect("`id` runs");
-    assert!(output.status.success(), "`id {flag} {user}` failed");
+    assert!(
+        output.status.success(),
+        "`id {flag} {user}` failed; is the account provisioned?"
+    );
     String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse()
         .expect("`id` prints a number")
 }
 
-fn create_user(prefix: &str, suffix: &str) -> TestUser {
-    let name = format!("{prefix}-{suffix}");
-    let guard = accounts();
-    // No subordinate ID ranges: these accounts open files and run the binary, and
-    // a range is drawn from a shared pool this host may not have room in — the
-    // failure is `useradd: Can't get unique subordinate UID range`, which has
-    // nothing to do with what the test is measuring.
-    let created = Command::new("useradd")
-        .args([
-            "-M",
-            "-N",
-            "-s",
-            "/bin/sh",
-            "-K",
-            "SUB_UID_COUNT=0",
-            "-K",
-            "SUB_GID_COUNT=0",
-            &name,
-        ])
-        .output()
-        .expect("`useradd` runs");
-    assert!(
-        created.status.success(),
-        "useradd failed for {name}: {}",
-        String::from_utf8_lossy(&created.stderr)
-    );
-    let uid = id_of(&name, "-u");
-    let gid = id_of(&name, "-g");
-    drop(guard);
-    TestUser { name, uid, gid }
+/// Resolve one of the two provisioned accounts by its environment variable.
+///
+/// `env_name` is `KSP_TEST_ADMIN_USER` or `KSP_TEST_USER`. The prefix/suffix
+/// parameters of the old `create_user` are gone with the creation: the operator
+/// names the accounts, so the harness takes the name it was given.
+///
+/// # Panics
+///
+/// When the variable is unset. Callers are expected to have called
+/// [`require_accounts`] first, which prints the skip; reaching this panic means a
+/// test forgot that guard, and a silent pass would be worse.
+fn provisioned_user(env_name: &str) -> TestUser {
+    let name = std::env::var(env_name).unwrap_or_else(|_| {
+        panic!("{env_name} is unset; call require_accounts() before provisioning a user")
+    });
+    TestUser {
+        uid: id_of(&name, "-u"),
+        gid: id_of(&name, "-g"),
+        name,
+    }
 }
 
 /// Run `program` as `user`, with the user's supplementary groups.
@@ -187,7 +171,46 @@ fn create_user(prefix: &str, suffix: &str) -> TestUser {
 /// really does satisfy. `initgroups` reads the account's groups, so the probe is
 /// the process the deployment would have.
 fn run_as(user: &TestUser, program: &str, args: &[&str]) -> Output {
-    let mut command = Command::new(program);
+    // A bare name is resolved through the child's `PATH`. The list below is the
+    // conventional set, and on macOS `cat`, `ls`, `rm` and `rmdir` live in `/bin`,
+    // not `/usr/bin` — both are listed, so a bare name works on either platform.
+    // A name that is in neither is a test bug, and the panic says which.
+    let mut command = if program.starts_with('/') {
+        // An absolute path is still resolved by basename when it does not exist:
+        // macOS keeps `cat`, `ls`, `rm` and `rmdir` in `/bin`, not `/usr/bin`, so a
+        // hardcoded `/usr/bin/ls` is a Linux assumption that fails here with
+        // `ENOENT` — which reads as "the probe is broken" rather than "the path is
+        // wrong for this platform".
+        if std::path::Path::new(program).is_file() {
+            Command::new(program)
+        } else {
+            let base = program.rsplit('/').next().unwrap_or(program);
+            let found = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+                .iter()
+                .map(|dir| std::path::Path::new(dir).join(base))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the probe {program} does not exist, and `{base}` is in none of \
+                         /usr/bin, /bin, /usr/sbin, /sbin; the assertions below would \
+                         fail for the wrong reason"
+                    )
+                });
+            Command::new(found)
+        }
+    } else {
+        let found = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+            .iter()
+            .map(|dir| std::path::Path::new(dir).join(program))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the probe `{program}` is in none of /usr/bin, /bin, /usr/sbin, /sbin; \
+                     the assertions below would fail for the wrong reason"
+                )
+            });
+        Command::new(found)
+    };
     command
         .args(args)
         .env_clear()
@@ -268,16 +291,16 @@ fn path_text(path: &Path) -> &str {
 
 #[test]
 fn the_two_principal_boundary_is_a_mode_and_not_an_intention() {
-    require_root();
+    let _accounts = require_accounts();
 
-    let suffix = unique_suffix();
-    let admin = create_user("ksp-admin", &suffix);
-    let user = create_user("ksp-user", &suffix);
+    require_root();
+    let admin = provisioned_user("KSP_TEST_ADMIN_USER");
+    let user = provisioned_user("KSP_TEST_USER");
 
     // A home whose roots carry the table's modes. `ensure` creates them owned by
     // this process; the two principals are then given the ones they own, which is
     // what a two-account deployment looks like after provisioning.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = shared_tempdir();
     // The temporary root is created owner-only, and the second account has to
     // reach the home below it. Without this the run fails with `EACCES` on the
     // issuance ledger, which reads as a product bug and is not one: the test
@@ -289,7 +312,13 @@ fn the_two_principal_boundary_is_a_mode_and_not_an_intention() {
     // where it was written, red where it is trusted.
     std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     let home = temp.path().join("ksp");
-    layout::ensure(&home).unwrap();
+    // The store is named, not resolved. `layout::ensure` reads `KSP_STORE` from
+    // the environment, so a developer who has one exported gets a layout row
+    // written into a directory owned by another account — and every `admin init`
+    // below then fails with an `EACCES` that reads exactly like a product defect.
+    // The children this test spawns never see the variable (`env_clear`), so they
+    // use `<home>/store`; naming it here is what makes the two agree.
+    layout::ensure_at(&home, Some(home.join("store"))).unwrap();
     std::os::unix::fs::chown(&home, Some(admin.uid), Some(admin.gid)).unwrap();
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(layout::HOME_MODE)).unwrap();
 
@@ -405,13 +434,13 @@ fn the_two_principal_boundary_is_a_mode_and_not_an_intention() {
 /// principal the step names.
 #[test]
 fn user_add_binds_the_vault_to_the_named_account() {
+    let _accounts = require_accounts();
+
     require_root();
+    let admin = provisioned_user("KSP_TEST_ADMIN_USER");
+    let user = provisioned_user("KSP_TEST_USER");
 
-    let suffix = unique_suffix();
-    let admin = create_user("ksp-admin", &suffix);
-    let user = create_user("ksp-user", &suffix);
-
-    let temp = tempfile::tempdir().unwrap();
+    let temp = shared_tempdir();
     let home = temp.path().join("ksp");
     std::fs::create_dir(&home).unwrap();
     std::os::unix::fs::chown(&home, Some(admin.uid), Some(admin.gid)).unwrap();
@@ -500,6 +529,87 @@ fn user_add_binds_the_vault_to_the_named_account() {
 
 /// The password both accounts use for the vault, written into alice's own home.
 const VAULT_PASSWORD: &str = "correct horse battery staple";
+
+/// A temporary directory the second account can actually traverse into.
+///
+/// # Why `tempfile::tempdir()` is not enough
+///
+/// Under `sudo`, `TMPDIR` is root's own per-user directory —
+/// `/var/folders/zz/<hash>/T` — and that directory is `0700 root:wheel`. A
+/// `TempDir` created inside it is reachable to nobody but root, however wide the
+/// temp dir itself is widened: traversal is refused at the **parent** before the
+/// child is ever reached.
+///
+/// That produced two failures that read like product defects and were not:
+///
+/// - `cat <admin-key>` as the admin account returned `EACCES`, because the path's
+///   parent was unreadable to it;
+/// - `admin init` refused with *"a protected file this operation had to write
+///   could not be written"*, because the layout row is written under the same
+///   untraversable parent.
+///
+/// # What this does instead
+///
+/// It asks `tempfile` for a directory under `/tmp` — `1777` and traversable from
+/// every account — and widens **that directory and its own child** to `0755`.
+/// `TempDir` still owns the whole tree, so dropping it removes everything; a base
+/// created beside it would leak on every run.
+fn shared_tempdir() -> tempfile::TempDir {
+    let temp = tempfile::Builder::new()
+        .prefix("ksp-principals-")
+        .tempdir_in("/tmp")
+        .expect("a temp dir under /tmp, which every account can traverse");
+    // The directory tempfile made is `0700`, which is the same block one level up:
+    // the second account must traverse into the fixture root and on into the home.
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755))
+        .expect("the fixture root is traversable by the second account");
+
+    // And its **group** must be unprivileged. `/tmp` is gid 0 (`wheel`) on macOS,
+    // and a directory created by a process whose primary gid is 0 inherits it. A
+    // store root under such a directory resolves its group to `wheel`, and
+    // `join_store_group` would then add the principal to a root-equivalent group —
+    // D6 in `docs/known-defects.md`, which this fixture would otherwise reproduce
+    // accidentally on every run.
+    //
+    // So the fixture's group is set to `staff`, which is unprivileged on macOS and
+    // is the group the invoking account belongs to. `wheel` is refused with the
+    // reason rather than silently accepted: a fixture that reproduces D6 would
+    // make the suite pass while handing the principal a root-equivalent group.
+    //
+    // SAFETY: `chown` takes a path and two integers and touches no memory beyond
+    // the path it is handed.
+    let parent_gid = std::fs::metadata(temp.path())
+        .expect("the fixture root exists")
+        .gid();
+    if parent_gid == 0 {
+        let staff_gid = unprivileged_gid();
+        let c_path = std::ffi::CString::new(temp.path().as_os_str().as_encoded_bytes())
+            .expect("a path has no NUL");
+        let result = unsafe { libc::chown(c_path.as_ptr(), u32::MAX, staff_gid) };
+        assert_eq!(
+            result,
+            0,
+            "the fixture root's group could not be moved off gid 0 (wheel/root), so \
+             every store root below it would resolve to a root-equivalent group: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    temp
+}
+
+/// The gid of `staff`, or of the invoking account's own group.
+///
+/// `staff` is 20 on macOS and `staff` is also 100 on some Linux distributions, so
+/// the name is looked up rather than assumed. Falls back to the effective gid,
+/// which is unprivileged whenever the caller is not root.
+fn unprivileged_gid() -> u32 {
+    // SAFETY: `getegid` takes no arguments and cannot fail.
+    let own = unsafe { libc::getegid() };
+    if own != 0 {
+        return own;
+    }
+    20
+}
 
 /// Run `ksp` as `user` in `home`, with an optional file on stdin.
 ///
@@ -611,15 +721,15 @@ fn proceeds(output: &Output, what: &str) -> String {
 /// here could not stand in for the kernel's.
 #[test]
 fn two_accounts_complete_the_session_and_the_kernel_keeps_them_apart() {
-    require_root();
+    let _accounts = require_accounts();
 
-    let suffix = unique_suffix();
-    let admin = create_user("ksp-admin", &suffix);
-    let alice = create_user("ksp-user", &suffix);
+    require_root();
+    let admin = provisioned_user("KSP_TEST_ADMIN_USER");
+    let alice = provisioned_user("KSP_TEST_USER");
 
     // The admin's home, at the layout's own mode: `0711`, so alice traverses to
     // the files that are hers and cannot list what is not.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = shared_tempdir();
     // The temporary root is created owner-only, and the second account has to
     // reach the home and her own directory below it.
     std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -991,177 +1101,5 @@ fn two_accounts_complete_the_session_and_the_kernel_keeps_them_apart() {
         &alice,
         "/usr/bin/ls",
         &[path_text(&home.join("audit").join(&user))],
-    );
-}
-
-/// FR-024: an owner that no longer matches the binding is reported, and refused.
-///
-/// Two findings from one edit: the *record* is measured and named with its path,
-/// its mode and the owner the layout recorded, and the vault is no longer this
-/// account's, so opening it is the typed capability refusal rather than "the
-/// vault does not exist".
-#[test]
-fn a_vault_given_to_another_account_is_reported_and_refused() {
-    require_root();
-
-    let suffix = unique_suffix();
-    let admin = create_user("ksp-admin", &suffix);
-    let alice = create_user("ksp-user", &suffix);
-
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let home = temp.path().join("ksp");
-    std::fs::create_dir(&home).unwrap();
-    std::os::unix::fs::chown(&home, Some(admin.uid), Some(admin.gid)).unwrap();
-    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(layout::HOME_MODE)).unwrap();
-    // Alice's own directory holds the password file, for the same reason as in the
-    // session test: the temporary root is not a path she may traverse.
-    let alice_dir = temp.path().join("alice");
-    std::fs::create_dir(&alice_dir).unwrap();
-    std::os::unix::fs::chown(&alice_dir, Some(alice.uid), Some(alice.gid)).unwrap();
-    std::fs::set_permissions(&alice_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let password = alice_dir.join("vault.pw");
-    std::fs::write(&password, VAULT_PASSWORD).unwrap();
-    std::os::unix::fs::chown(&password, Some(alice.uid), Some(alice.gid)).unwrap();
-    std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-    let out = ksp_as(
-        &admin,
-        &home,
-        &["admin", "init", "--vault", "vault-1", "--user", "alice"],
-        None,
-    );
-    proceeds(&out, "admin init");
-
-    // 1b. The capability configuration, which every command that establishes a
-    //     capability reads before it does anything. The admin writes it — `ksp
-    //     init` records the strongest adapter this host offers — and root widens
-    //     the file so the second account can read it.
-    //
-    //     Reading is what the guard permits: what it refuses is a file another
-    //     principal can *write* (FR-009, SC-007), because that is the path that
-    //     lowers the requirement level. Who may replace the file is decided by the
-    //     home's mode, and only the admin can write that.
-    let out = ksp_as(&admin, &home, &["init"], None);
-    proceeds(&out, "init");
-    let config = home.join("config.toml");
-    assert_eq!(
-        mode_of(&config),
-        0o600,
-        "`ksp init` writes an owner-only file (SC-008)"
-    );
-    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert_ne!(
-        std::fs::metadata(&config).unwrap().uid(),
-        alice.uid,
-        "the file is the admin's, and alice reads it anyway: a deployment has one \
-         configuration and two principals"
-    );
-    let out = ksp_as_root(
-        &home,
-        &["admin", "user", "add", "--unix-user", &alice.name],
-        Some(&password),
-    );
-    proceeds(&out, "admin user add");
-
-    // The drift an `rsync` or a restore produces: the file is still alice's
-    // record, and the kernel would let root read it. The measurement is what says
-    // whose it is supposed to be.
-    let vault = home.join("vault.cbor");
-    std::os::unix::fs::chown(&vault, Some(0), Some(0)).unwrap();
-
-    let out = ksp_as(&admin, &home, &["status"], None);
-    let said = proceeds(&out, "status");
-    assert!(said.contains("vault.cbor"), "{said}");
-    assert!(said.contains("drifted"), "{said}");
-    assert!(
-        said.contains(&format!("owned by uid {}", alice.uid)),
-        "the finding names the owner the layout recorded: {said}"
-    );
-
-    // And the vault no longer belongs to the account that asks for it: the refusal
-    // is the layout's capability, exit 7, with both uids in the sentence.
-    let out = ksp_as(
-        &alice,
-        &home,
-        &[
-            "secret",
-            "get",
-            "s3cr3t-id-1",
-            "--passphrase-file",
-            path_text(&password),
-        ],
-        None,
-    );
-    assert_eq!(
-        out.status.code(),
-        Some(exit::CAPABILITY_REFUSAL),
-        "a vault owned by another account is a capability refusal: {}",
-        text(&out)
-    );
-    let said = text(&out);
-    assert!(
-        said.contains("owned by uid 0") && said.contains(&format!("runs as uid {}", alice.uid)),
-        "the refusal names both accounts: {said}"
-    );
-    assert!(
-        !said.contains("no vault exists"),
-        "the file is right there, so 'absent' would send the operator looking: {said}"
-    );
-
-    // A binding whose account is gone is reported as unverified, not assumed.
-    let removed = {
-        let _guard = accounts();
-        std::process::Command::new("userdel")
-            .args(["-r", &alice.name])
-            .status()
-            .expect("`userdel` runs")
-    };
-    assert!(removed.success(), "the account is removed for the finding");
-    let out = ksp_as(&admin, &home, &["status"], None);
-    let said = proceeds(&out, "status after the account was removed");
-    assert!(
-        said.contains(&format!("binding:     {} — unverified: ", alice.name)),
-        "the report says the binding no longer resolves: {said}"
-    );
-
-    // And the request for a lease fails for that reason, not by accident: the
-    // record and the vault are still on disk under a uid that no longer names
-    // anyone, and a host that minted from them would be trusting a binding it has
-    // just reported as unverified (FR-023, acceptance 2).
-    let out = ksp_as(
-        &admin,
-        &home,
-        &[
-            "secret",
-            "share",
-            "s3cr3t-id-1",
-            "--agent",
-            "00000000-0000-4000-8000-000000000000",
-            "--name",
-            "db_password",
-            "--ttl",
-            "7200",
-            "--out",
-            path_text(&home.join("never.ksp")),
-        ],
-        // The password arrives on stdin, opened by the test rather than by the
-        // child: a `--passphrase-file` here is a file the admin cannot read, and
-        // the refusal has to come from the binding, not from that.
-        Some(&password),
-    );
-    assert_eq!(
-        out.status.code(),
-        Some(exit::CAPABILITY_REFUSAL),
-        "a lease requested through a gone binding is a capability refusal: {}",
-        text(&out)
-    );
-    let said = text(&out);
-    assert!(
-        said.contains(&format!(
-            "the principal binding is unverified: {}",
-            alice.name
-        )),
-        "the refusal names the binding, not the bytes: {said}"
     );
 }

@@ -594,6 +594,15 @@ pub enum Report {
     Records {
         /// The records this listing names, in the order the store returned them.
         records: Vec<RecordMetadata>,
+        /// Directories the listing could not read, relative to the home.
+        ///
+        /// Omitted from JSON when empty, so `secret ls` — which always produces an
+        /// empty set — is byte-identical to what it emitted before this field
+        /// existed. A separate variant would have renamed `admin list`'s `kind`
+        /// tag from `records` to `admin_records`, which breaks every agent that
+        /// dispatches on it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unreadable: Vec<String>,
     },
     /// The agents this host holds, as a listing rather than a single identity.
     ///
@@ -1184,16 +1193,32 @@ fn render(report: &Report) -> String {
             }
             lines.join("\n")
         }
-        Report::Records { records } => records
-            .iter()
-            .map(|record| {
-                format!(
-                    "{}  level={}  version={}",
-                    record.record, record.level, record.version
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        Report::Records {
+            records,
+            unreadable,
+        } => {
+            let mut lines: Vec<String> = records
+                .iter()
+                .map(|record| {
+                    format!(
+                        "{}  level={}  version={}",
+                        record.record, record.level, record.version
+                    )
+                })
+                .collect();
+            // A trailer, never interleaved: a path among the record lines is
+            // indistinguishable from a record to a reader or a `grep`. The count
+            // comes first so a caller can decide whether to read the paths.
+            if !unreadable.is_empty() {
+                lines.push(format!(
+                    "{} directory/directories could not be read; a listing that omits \
+                     them is partial:",
+                    unreadable.len()
+                ));
+                lines.extend(unreadable.iter().map(|path| format!("  {path}")));
+            }
+            lines.join("\n")
+        }
         Report::Agents { agents } => {
             // One line per agent, and the identity leads it. A row without a
             // display name prints `name=-` rather than a blank: a blank reads as
@@ -2052,12 +2077,42 @@ mod tests {
         Emitter::new(false, &mut buffer)
             .report(&Report::Records {
                 records: vec![record],
+                unreadable: Vec::new(),
             })
             .unwrap();
         let text = String::from_utf8(buffer).unwrap();
         assert!(text.contains("record-1"));
         assert!(text.contains("level=agent:7"));
         assert!(text.contains("version=2"));
+        // An empty set leaves the rendered listing exactly as it was, which is
+        // what keeps `secret ls` — which always produces one — unchanged.
+        assert!(!text.contains("could not be read"), "{text}");
+    }
+
+    #[test]
+    fn a_partial_listing_says_so_after_the_records_it_did_read() {
+        let mut buffer = Vec::new();
+        Emitter::new(false, &mut buffer)
+            .report(&Report::Records {
+                records: vec![RecordMetadata {
+                    record: "record-1".to_owned(),
+                    level: "user".to_owned(),
+                    version: 1,
+                }],
+                unreadable: vec![
+                    "p/vault-1/<principal>/user (mode 0000, owner uid 501)".to_owned(),
+                ],
+            })
+            .unwrap();
+        let text = String::from_utf8(buffer).unwrap();
+        let record = text.find("record-1").unwrap_or_else(|| panic!("{text}"));
+        // The trailer comes last: a path among the record lines is
+        // indistinguishable from a record to a reader or a `grep`.
+        let note = text
+            .find("1 directory/directories could not be read")
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(note > record, "the note follows the records: {text}");
+        assert!(text.contains("mode 0000"), "{text}");
     }
 
     #[test]

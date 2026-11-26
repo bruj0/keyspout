@@ -27,6 +27,74 @@ const MACHINERY: &str = ".ksp-machinery";
 /// layout table reads it rather than restating it.
 pub const STORE_ROOT_MODE: u32 = 0o755;
 
+/// The result of a listing that tolerates a directory it cannot read.
+///
+/// `paths` is what the walk reached; `unreadable` is what it could not enter. The
+/// two are separate because they answer different questions, and a caller that
+/// collapsed them would report a partial listing as complete — which is D4's
+/// defect in another form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LenientListing {
+    /// Every blob path the walk reached, relative to the store root, sorted.
+    pub paths: Vec<String>,
+    /// Directories the walk could not read, named by path, mode and owner.
+    pub unreadable: Vec<UnreadableDirectory>,
+}
+
+/// A directory a listing could not enter.
+///
+/// The mode and owner are carried because a refusal that says only "unreadable"
+/// sends the operator to `ls` with no idea what to look for. `0711` traversable
+/// and `0700` readable-by-owner-only are different situations with different
+/// fixes, and the caller cannot tell them apart from a path alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableDirectory {
+    /// The path, relative to the store root.
+    pub path: String,
+    /// The directory's mode, masked to the permission bits.
+    pub mode: u32,
+    /// The uid that owns it.
+    pub owner: u32,
+    /// The filesystem's own reason, in its own words.
+    ///
+    /// Carried rather than dropped: `EACCES` is a permission this caller lacks,
+    /// `ENOTDIR` is a path that is not a directory at all and `ELOOP` is a
+    /// symlink cycle, and the three have different fixes. A mode and an owner
+    /// describe the state but not the failure, and this is a report *about the
+    /// failure*.
+    pub reason: String,
+}
+
+impl UnreadableDirectory {
+    /// Describe the directory at `target` relative to `root`.
+    ///
+    /// `error` is the filesystem's own words and is kept: it names the failure,
+    /// where the mode and owner describe the state. Both are needed, because a
+    /// `0700` on a directory this account owns is not the same problem as a
+    /// `0700` on one it does not.
+    ///
+    /// The metadata is read defensively — a directory that cannot be listed is
+    /// usually one whose metadata still can be — so an unreadable mode is
+    /// reported as `0` rather than failing the whole listing.
+    fn describe(root: &Path, target: &Path, error: &std::io::Error) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        let relative = target
+            .strip_prefix(root)
+            .unwrap_or(target)
+            .to_string_lossy()
+            .to_string();
+        let (mode, owner) = std::fs::metadata(target)
+            .map(|meta| (meta.mode() & 0o7777, meta.uid()))
+            .unwrap_or((0, 0));
+        Self {
+            path: relative,
+            mode,
+            owner,
+            reason: error.to_string(),
+        }
+    }
+}
+
 /// Local opaque blob storage, confined to a caller-selected root.
 #[derive(Debug)]
 pub struct FileStore {
@@ -174,6 +242,89 @@ impl FileStore {
         file.lock()
             .map_err(|_| StoreError::Backend("file lock unavailable".into()))?;
         Ok(file)
+    }
+
+    /// Every blob path under `prefix`, plus the directories the walk could not
+    /// read.
+    ///
+    /// [`BlobStore::list`] fails the whole walk on the first unreadable directory.
+    /// A caller that may *name* a level is not necessarily one that may *enumerate*
+    /// it: the Level Parent is `0711` and the Level Directory `0700`, so an admin
+    /// traverses another principal's directory and cannot list it. Collecting the
+    /// failure is the honest answer; widening a mode is not.
+    ///
+    /// # Why this is inherent and not on the trait
+    ///
+    /// `EACCES` on a directory is a filesystem fact. S3 and Valkey have no
+    /// directory permission to report and cannot model one, so putting this on
+    /// `BlobStore` would make two backends carry a concept they do not have.
+    /// `open_file_store` returns this concrete type, so an inherent method reaches
+    /// the CLI without touching the swappable-integration boundary.
+    pub fn list_lenient(&self, prefix: &str) -> Result<LenientListing, StoreError> {
+        let mut found = Vec::new();
+        let mut unreadable = Vec::new();
+        validate_prefix(prefix)?;
+        let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
+
+        fn visit(
+            root: &Path,
+            dir: &Path,
+            prefix: &str,
+            found: &mut Vec<String>,
+            unreadable: &mut Vec<UnreadableDirectory>,
+        ) {
+            let entries = match fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    // The directory the request reached and could not read. Named
+                    // with its mode and owner, because "unreadable" alone sends an
+                    // operator to `ls` with no idea what to look for.
+                    unreadable.push(UnreadableDirectory::describe(root, dir, &error));
+                    return;
+                }
+            };
+            for item in entries.flatten() {
+                let Ok(kind) = item.file_type() else { continue };
+                if item.file_name() == std::ffi::OsStr::new(MACHINERY) {
+                    continue;
+                }
+                let path = item.path();
+                let Ok(relative) = path.strip_prefix(root) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().to_string();
+                if kind.is_dir() {
+                    // Both directions, as `list` does: walk down to a prefix that
+                    // starts with this directory, and below one that names a
+                    // directory. Dropping the second made `admin list` print
+                    // nothing on a store full of records.
+                    if prefix.is_empty()
+                        || prefix.starts_with(&relative)
+                        || relative.starts_with(prefix)
+                    {
+                        let before = unreadable.len();
+                        visit(root, &path, prefix, found, unreadable);
+                        // A directory the request never reached is not the caller's
+                        // finding to report; only the ones on the way count.
+                        if unreadable.len() > before
+                            && !(prefix.starts_with(&relative) || relative.starts_with(prefix))
+                        {
+                            unreadable.truncate(before);
+                        }
+                    }
+                } else if kind.is_file() && relative.starts_with(prefix) {
+                    found.push(relative);
+                }
+            }
+        }
+
+        visit(&self.root, &self.root, prefix, &mut found, &mut unreadable);
+        found.sort();
+        unreadable.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(LenientListing {
+            paths: found,
+            unreadable,
+        })
     }
 }
 
