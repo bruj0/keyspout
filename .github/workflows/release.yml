@@ -131,8 +131,8 @@ jobs:
   # tests, where one run should name every broken target. It is wrong for a
   # precondition.
   #
-  # Three checks, about 3 seconds in total, each of which means "this tree cannot
-  # be released":
+  # Three checks, 5 seconds end to end once the tools are installed, each of
+  # which means "this tree cannot be released":
   #
   #   fmt    the tree is not formatted, so a later commit will rewrite it
   #   audit  a dependency is known-vulnerable
@@ -144,10 +144,11 @@ jobs:
   # it was. A job called `preconditions` that fails on `cargo vet` says so in the
   # checks list.
   #
-  # This costs about 40s of duplicated setup — checkout, Rust, registry index —
-  # which is the price of a status check that names its failing step. The
-  # alternative, aborting the gate early, saves that 40s and reports one opaque
-  # failure; decide by which you would rather read at 03:00.
+  # Measured on run 45835989932: this job takes 22s wall clock, of which 7s is
+  # `rustup toolchain install` and 6s is the prebuilt audit/vet binaries. That is
+  # the price of a status check that names its failing step. Aborting the gate
+  # early saves the 22s and reports one opaque failure; decide by which you would
+  # rather read at 03:00.
   # ---------------------------------------------------------------------------
   preconditions:
     needs:
