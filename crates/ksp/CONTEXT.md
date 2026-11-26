@@ -335,21 +335,29 @@ _History_:
   than a convention, so there is no field a passphrase could be written into.
 
 **Mode and Owner Guard**:
-The check a file must pass before its content is parsed: it is owned by the
-invoking principal, and no other principal can write it. The file is the downgrade
-path — a principal who can rewrite it demotes a required capability to an optional
-one and every command keeps working — so the guard runs **before** the read, and
-it measures the open **descriptor** rather than the path, because the path can be
-repointed between the check and the read.
+The check a file must pass before its content is parsed: **no principal other than
+its owner can write it**. The file is the downgrade path — a principal who can
+rewrite it demotes a required capability to an optional one and every command keeps
+working — so the guard runs **before** the read, and it measures the open
+**descriptor** rather than the path, because the path can be repointed between the
+check and the read. Ownership by the *reader* is deliberately not required: a
+deployment has more than one principal that must read one configuration, and who
+may replace the file is decided by the home's mode, which only the admin can write.
 _Avoid_: permission check, ownership validation, security check
 _Subsystems_: Keyspout Command-Line Interface
 _Files_: crates/ksp/src/capability_config.rs
 _Relates to_: Capability Configuration (guards), Configuration Refusal (refuses
 with `NotPrivate`), Protected Root (is the different question of what a directory
-is created with)
+is created with), Provisioning Handover (writes the file at `0644` for this reason)
 _History_:
 - 2026-10-30 (004-os-capability-adapters): Term introduced. Permission to read the
   file is not the hazard — permission to change what the host may establish is.
+- 2026-11-24 (015-known-defect-fixes): The entry said the file must also be *owned
+  by the invoking principal*. The code never checked that, and it cannot: the
+  handover writes the configuration into a second principal's home for her to read,
+  so requiring ownership by the reader would refuse the file the delivery depends
+  on. The condition was removed from the guard in 004 for that reason, and the
+  entry now says what the check actually is.
 
 **Configuration Refusal**:
 The outcome in which `config.toml` exists but cannot be trusted, and the run

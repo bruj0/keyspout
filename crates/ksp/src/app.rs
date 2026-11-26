@@ -370,13 +370,23 @@ fn run_admin<W: Write>(
                 unix_user.as_deref(),
                 target_home.as_deref(),
             ) {
-                Ok(principal) => report_or_internal(
-                    emitter,
-                    &Report::PrincipalIssued {
-                        operation: "admin user add".to_string(),
-                        principal: principal.to_string(),
-                    },
-                ),
+                Ok((principal, notice)) => {
+                    // stderr, not the report sink: stdout is a report an agent
+                    // parses, and in `--json` mode a `ksp:` line among JSON is a
+                    // document that no longer parses. `main.rs` builds a stderr
+                    // emitter for the same reason.
+                    if let Some(notice) = notice {
+                        let mut stderr = Emitter::new(false, std::io::stderr());
+                        let _ = stderr.refusal(&notice);
+                    }
+                    report_or_internal(
+                        emitter,
+                        &Report::PrincipalIssued {
+                            operation: "admin user add".to_string(),
+                            principal: principal.to_string(),
+                        },
+                    )
+                }
                 Err(error) => {
                     // The typed message, not only the class: FR-023 and FR-024
                     // refuse for reasons an operator has to read, and a code
@@ -393,6 +403,10 @@ fn run_admin<W: Write>(
                 Err(error) => {
                     // The typed message names the accepted form; a code alone
                     // told the caller nothing about its own pipeline.
+                    //
+                    // The neutral form, unchanged: this command accepts no
+                    // password flag, so a sentence naming `--passphrase-file`
+                    // would send its caller to an argument clap rejects.
                     let _ = emitter.refusal(&error.to_string());
                     return Outcome::Failed(error.exit_code());
                 }
@@ -478,7 +492,13 @@ fn run_admin<W: Write>(
             }
         }
         AdminCommand::List => match crate::admin::list(layout) {
-            Ok(records) => report_or_internal(emitter, &Report::Records { records }),
+            Ok((records, unreadable)) => report_or_internal(
+                emitter,
+                &Report::Records {
+                    records,
+                    unreadable,
+                },
+            ),
             Err(error) => {
                 let _ = emitter.refusal(&error.to_string());
                 Outcome::Failed(error.exit_code())
@@ -1276,6 +1296,19 @@ fn run_secret<W: Write>(
                     // The typed message names the accepted form, and an empty
                     // value came back as "unexpected internal failure" with no
                     // reason at all.
+                    //
+                    // This command has `--passphrase-file`, so it renders the
+                    // form that names it: the common cause is a pipeline that
+                    // fed the password and the value to one stream, and that is
+                    // the sentence which tells the caller how to fix it. The
+                    // reader cannot say this itself, because `admin put` takes
+                    // no password and must not be told to use a flag it lacks.
+                    let error = match error {
+                        crate::secret::SecretError::Value => {
+                            crate::secret::SecretError::ValueNeedsPasswordFlag
+                        }
+                        other => other,
+                    };
                     let _ = emitter.refusal(&error.to_string());
                     return Outcome::Failed(error.exit_code());
                 }

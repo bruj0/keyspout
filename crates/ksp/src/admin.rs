@@ -69,6 +69,27 @@ pub enum AdminError {
     /// file. Where the specific file is known, a specific variant is raised.
     #[error("a protected file this operation had to write could not be written")]
     Write,
+    /// A listing could not read the store, and the failure was not one it could
+    /// tolerate.
+    ///
+    /// Its own variant because the listing is a **read**. The generic
+    /// [`Self::Write`] told an operator whose `admin list` hit `EACCES` that "a
+    /// protected file this operation had to write could not be written" — a
+    /// sentence about a write, raised by a command that writes nothing, naming
+    /// no file (D3).
+    ///
+    /// **Not reachable today, and kept because it is the right sentence.** The
+    /// tolerant walk collects every unreadable directory and returns `Ok`, and
+    /// the only failure `list_lenient` still has is a malformed prefix, which
+    /// `admin::list` builds from a vault id and a principal id and cannot
+    /// produce. So no input currently reaches this variant.
+    ///
+    /// It is here rather than left as [`Self::Write`] because the sentence a
+    /// read command gives for a read failure should already be a read sentence
+    /// if the walk ever gains a failure mode. A comment saying "this is a write
+    /// error" on a listing is the trap; an unreachable read sentence is not.
+    #[error("the record store could not be read, so this listing is unavailable")]
+    Read,
     /// A password could not be read.
     ///
     /// The sentence names `--passphrase-file`, because a caller that cannot type
@@ -289,6 +310,24 @@ pub enum AdminError {
         /// The account the vault was to belong to.
         account: String,
     },
+    /// The Capability Configuration could not be handed to a named home.
+    ///
+    /// Distinct from [`Write`](Self::Write) because it names the file: the common
+    /// cause is a configuration in the admin's home that the admin's own reader
+    /// refuses, and a sentence that said only "a protected file could not be
+    /// written" would send the operator to the destination when the problem is at
+    /// the source.
+    #[error(
+        "the capability configuration at {path} could not be handed over: {reason}; run \
+         `ksp init` in the admin's home to write a readable one, then repeat this step"
+    )]
+    ConfigurationUnwritable {
+        /// The configuration that could not be read, or the target it could not be
+        /// written to.
+        path: String,
+        /// Why, in the reader's or the filesystem's own words.
+        reason: String,
+    },
     /// The account could not be added to the group that owns the store.
     ///
     /// Distinct from [`Binding`](Self::Binding), which names the `chown`. Both
@@ -391,6 +430,7 @@ impl AdminError {
             Self::Keys(_)
             | Self::Pin(_)
             | Self::Write
+            | Self::Read
             | Self::PolicyWrite
             | Self::AlreadyInitialised { .. }
             | Self::AdminVaultExists { .. } => exit::INTERNAL,
@@ -419,6 +459,7 @@ impl AdminError {
             | Self::GroupUnreadable { .. }
             | Self::MembershipRefused { .. }
             | Self::Binding { .. }
+            | Self::ConfigurationUnwritable { .. }
             | Self::GroupJoin { .. }
             | Self::GroupToolSaid { .. }
             | Self::Owners(_)
@@ -658,7 +699,7 @@ pub fn user_add(
     recipient_key_id: KeyId,
     account: Option<&str>,
     target_home: Option<&std::path::Path>,
-) -> Result<PrincipalId, AdminError> {
+) -> Result<(PrincipalId, Option<String>), AdminError> {
     let (deployment, anchor) = crate::deployment::require(layout)?;
     let admin = load_admin(layout, &anchor)?;
     // One deployment has one store and N principals, each with its own home. The
@@ -743,9 +784,33 @@ pub fn user_add(
     // give it to her is to say which account she is (FR-037's binding).
     if let Some(account) = account {
         let owner = unix_account(account)?;
+        // The admin's key root belongs to the admin, so its owner is the account
+        // that writes `policy-events.jsonl`. `target`'s copy is a directory this
+        // handover just created and is owned by whoever ran it — asking it for the
+        // ledger's owner chowned the admin's own ledger to `root`, and the admin
+        // could never append to it again (D2).
+        // A deployment whose admin key root cannot be read is one this step
+        // cannot provision correctly, so it refuses rather than guessing an
+        // owner: a guessed owner on the admin's own ledger is the defect.
+        let admin_owner = admin_root_owner(layout)?;
         bind_vault(&target, owner, account)?;
-        bind_principal_roots(&target, &recorded, owner, account)?;
+        bind_principal_roots(&target, &recorded, owner, Some(admin_owner), account)?;
         recorded.user_account = Some(account.to_string());
+    }
+    // The target home has to leave the next command able to run. `ksp run` reads
+    // the Capability Configuration from the invoking home before it does anything
+    // else, so a home without one refuses at exit 7 — the code for "this host
+    // cannot admit the lease" — naming a file the principal cannot create (D1).
+    //
+    // It runs before `recorded.save(&target)` on purpose: the configuration is
+    // what the principal's *first* command reads, and a record that names her
+    // before her home is usable is a home that looks provisioned and is not.
+    // Kept rather than dropped: an omission the operator cannot see is the defect
+    // this returns it for. It travels to the emitter, which is the one place this
+    // crate writes.
+    let mut handover_notice = None;
+    if target_home.is_some() {
+        handover_notice = hand_over_capability_configuration(layout, &target)?;
     }
     // Written after the vault is bound, so the deployment that names the account
     // never exists before the account's ownership of the vault does.
@@ -819,7 +884,7 @@ pub fn user_add(
     // Reported so the operator sees which principal her keys belong to. In the
     // single-home layout this is the UUID `admin init` issued; a named target home
     // mints its own, because it is a second principal and not the same one.
-    Ok(principal_of_this_enrolment)
+    Ok((principal_of_this_enrolment, handover_notice))
 }
 
 /// The uid and gid a named UNIX account has, or a refusal naming it.
@@ -874,9 +939,143 @@ fn bind_vault(layout: &Layout, owner: (u32, u32), account: &str) -> Result<(), A
     Ok(())
 }
 
-/// Give the user principal the roots it writes, and only those.
+/// Copy the invocation's Capability Configuration into a named target home.
 ///
-/// `agent/` holds *her* agents' protected keys and `enrolments/` the signed pins
+/// `ksp run` reads the configuration from the invoking `KSP_HOME` before it does
+/// anything else, so a home without one refuses at exit 7 — *"this host cannot
+/// admit this lease"* — and names a file the principal cannot create, because the
+/// home is `0711` and belongs to the provisioning account. The handover is the
+/// step that is already privileged and already provisioning the home, so it is the
+/// step that has to leave the home usable (D1).
+///
+/// # Three outcomes, not two
+///
+/// `capability_config::read` distinguishes absence from a refusal, and collapsing
+/// the two is the defect this function exists to avoid:
+///
+/// - `Ok(Some(config))` — the admin configured this deployment: copy it verbatim.
+///   The bytes are the admin's, because a handover that re-rendered the document
+///   could disagree with the configuration the deployment actually runs under.
+/// - `Ok(None)` — absent is *"the unconfigured state rather than a failure"*: write
+///   nothing and do **not** refuse. It is the operator's omission, not the
+///   handover's, and `admin user add` is not the command that probes a host.
+/// - `Err(refusal)` — present but untrustworthy: refuse, naming the configuration.
+///
+/// # Why `0644` and not `0600`
+///
+/// The second principal is the one who must read it, so owner-only would defeat
+/// the purpose. The guard refuses a file another principal can *write*
+/// (`0o022`), and read is not the hazard — permission to change what the host may
+/// establish is. The mode is set after creation rather than through `open(2)`,
+/// because a creation mode is masked by the caller's `umask`.
+fn hand_over_capability_configuration(
+    admin_layout: &Layout,
+    target: &Layout,
+) -> Result<Option<String>, AdminError> {
+    let source = admin_layout.capability_config_file();
+    match crate::capability_config::read(admin_layout) {
+        // Validated by `read`, which is the point: the copy below is bytes, and
+        // these bytes have been through the reader the principal's own command
+        // will use.
+        Ok(Some(_)) => {}
+        // Unconfigured is not unreadable, and it is not this command's job to
+        // invent a configuration the operator never asked for.
+        //
+        // It is, however, this command's job to say so. The principal's `ksp run`
+        // will refuse at exit 7 without a configuration, and that sentence is
+        // about confinement rather than about provisioning, so the operator meets
+        // it at a later command with no way to connect it to this step.
+        Ok(None) => {
+            // The outcome does not change (CF-001): the handover invents nothing
+            // and succeeds. It returns the omission instead, so the caller can put
+            // it through the emitter — the one place this crate writes.
+            return Ok(Some(format!(
+                "this home has no capability configuration because {} does not exist; run \
+                 `ksp init` in the admin's home and repeat this step, or the principal's \
+                 first `ksp run` will report a confinement failure instead",
+                source.display()
+            )));
+        }
+        Err(refusal) => {
+            return Err(AdminError::ConfigurationUnwritable {
+                path: source.display().to_string(),
+                reason: refusal.to_string(),
+            });
+        }
+    }
+
+    let destination = target.capability_config_file();
+    // `symlink_metadata`, not `exists`: `exists` follows a symlink and answers
+    // `false` for a dangling one, which would make the handover write *through* a
+    // link the operator placed. "Something is placed here" is the question.
+    if std::fs::symlink_metadata(&destination).is_ok() {
+        // The operator may have configured this host deliberately, and a mode or
+        // requirement that silently changed underneath her is the downgrade path
+        // the guard exists to prevent.
+        //
+        // Reported rather than silent: a handover that says nothing is one the
+        // operator cannot tell from a copy, and the two outcomes imply different
+        // things about whose configuration the home will run under.
+        return Ok(Some(format!(
+            "{} already holds a capability configuration; it was left as it is, and \
+             this home will run under that one rather than the admin's",
+            destination.display()
+        )));
+    }
+
+    // The bytes are copied rather than re-rendered. `read` has already validated
+    // the document, so it is known-good; re-rendering it from the parsed type would
+    // give a semantically equal file whose bytes differ from the one the admin's
+    // own commands run under, and "the same configuration" is easier to defend than
+    // "an equivalent one".
+    let document = std::fs::read(&source).map_err(|error| AdminError::ConfigurationUnwritable {
+        path: source.display().to_string(),
+        reason: error.to_string(),
+    })?;
+
+    crate::layout::ensure(target.root()).map_err(|_| AdminError::Write)?;
+    write_handed_over_configuration(&destination, &document)?;
+    // No owner record is written for the file: `record_file_owner` refuses a path
+    // outside the layout table, and a configuration has no row. The row is what a
+    // later run compares against, and this home was created by this very step.
+    Ok(None)
+}
+
+/// Write a handed-over configuration at `0644` and sync it.
+///
+/// The mode is set on the descriptor after creation, never asked of `open(2)`:
+/// a creation mode is masked by the caller's `umask`, which is how `enrolments/`
+/// once became `0775` while the layout said otherwise.
+fn write_handed_over_configuration(
+    path: &std::path::Path,
+    document: &[u8],
+) -> Result<(), AdminError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let unwritable = |reason: String| AdminError::ConfigurationUnwritable {
+        path: path.display().to_string(),
+        reason,
+    };
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(crate::layout::HANDOVER_CONFIGURATION_MODE)
+        .open(path)
+        .map_err(|error| unwritable(error.to_string()))?;
+    file.write_all(document)
+        .map_err(|error| unwritable(error.to_string()))?;
+    file.set_permissions(std::fs::Permissions::from_mode(
+        crate::layout::HANDOVER_CONFIGURATION_MODE,
+    ))
+    .map_err(|error| unwritable(error.to_string()))?;
+    // A configuration that reached the page cache and not the disk is one a crash
+    // silently reverts, and the principal's next command is the one that reads it.
+    file.sync_all()
+        .map_err(|error| unwritable(error.to_string()))?;
+    Ok(())
+}
 /// for them: both are hers to write, and neither is somewhere the admin needs to
 /// write. The audit root is different — it stays a parent every principal
 /// traverses — so the handover is her own chain directory, `0700` and hers, which
@@ -889,6 +1088,7 @@ fn bind_principal_roots(
     layout: &Layout,
     deployment: &Deployment,
     owner: (u32, u32),
+    admin_owner: Option<(u32, u32)>,
     account: &str,
 ) -> Result<(), AdminError> {
     for path in [layout.agent_key_root(), layout.enrolments_dir()] {
@@ -977,7 +1177,13 @@ fn bind_principal_roots(
     // again. `0640` gives each account read of the other's file — which `run` and
     // `audit verify` both need — and write of only its own.
     let ledger_paths = crate::ledgers::LedgerPaths::for_deployment(layout, deployment);
-    let admin_owner = admin_root_owner(layout).unwrap_or(owner);
+    // The caller resolved the admin's owner from the admin's key root. This
+    // function's `layout` is the *target* home, whose `admin/` was created by this
+    // handover and is owned by whoever ran it — so resolving the admin here reads
+    // the wrong directory and chowns the admin's ledger to `root` (D2). The
+    // fallback is the principal's own ids, which is what a single-account
+    // deployment wants and is the only case where the two coincide.
+    let admin_owner = admin_owner.unwrap_or(owner);
     ledger_paths.prepare(
         layout,
         &deployment.vault,
@@ -1562,37 +1768,85 @@ pub fn open_admin_vault(
 /// Paths, not values: the store names what it has and cannot open any of it, and
 /// a listing that tried would need the user's key for her records and each
 /// agent's key for theirs.
-pub fn list(layout: &Layout) -> Result<Vec<crate::output::RecordMetadata>, AdminError> {
+pub fn list(
+    layout: &Layout,
+) -> Result<(Vec<crate::output::RecordMetadata>, Vec<String>), AdminError> {
     let (recorded, _anchor) = crate::deployment::require(layout)?;
     let store = crate::config::open_file_store(layout).map_err(|_| AdminError::Write)?;
-    let prefix = ksp_record::RecordPath::directory(&recorded.vault, recorded.user, None);
-    let paths =
-        ksp_record::version::BlobStore::list(&store, &prefix).map_err(|_| AdminError::Write)?;
 
-    let mut found = Vec::new();
-    for path in paths {
-        // `p/<vault>/<user>/<level>/<id>/<version>`, and anything else is not a
-        // record this crate wrote, so it is skipped rather than guessed at.
-        let parts: Vec<&str> = path.split('/').collect();
-        let [_, _, _, level, id, version] = parts.as_slice() else {
-            continue;
-        };
-        let Ok(version) = version.parse::<u32>() else {
-            continue;
-        };
-        found.push(crate::output::RecordMetadata {
-            record: (*id).to_string(),
-            level: (*level).to_string(),
-            version,
-        });
+    // Enumerate the principals the **registry** names, which is the canonical list.
+    //
+    // The deployment record's `user` field is one field wide and holds the first
+    // enrolled principal only, so a prefix built from it silently omitted every
+    // later principal (D4). A registry that cannot be read refuses rather than
+    // falling back to that field: a fallback would re-enter the same defect through
+    // a different door, presenting a partial list as complete.
+    let registry = crate::registry::PrincipalRegistry::load(layout)?;
+
+    // Keyed by the store path, because that is the only unique value here.
+    //
+    // `RecordMetadata` carries a record id, a level and a version — and no
+    // principal. Two principals may hold the same identifier at the same level
+    // and version, so a dedup on the projection silently drops one of them and
+    // says nothing: D4's omission reached through the set operation rather than
+    // through the prefix.
+    let mut found: Vec<(String, crate::output::RecordMetadata)> = Vec::new();
+    let mut unreadable = Vec::new();
+    for entry in &registry.entries {
+        let prefix = ksp_record::RecordPath::directory(&recorded.vault, entry.principal, None);
+        // The tolerant listing: a principal's level is `0700` and the directory
+        // above it `0711`, so the admin may name a level and not enumerate it. The
+        // strict `list` fails the whole walk there, which is D3.
+        let listing = store.list_lenient(&prefix).map_err(|_| AdminError::Read)?;
+        for path in listing.paths {
+            // `p/<vault>/<user>/<level>/<id>/<version>`, and anything else is not a
+            // record this crate wrote, so it is skipped rather than guessed at.
+            let parts: Vec<&str> = path.split('/').collect();
+            let [_, _, _, level, id, version] = parts.as_slice() else {
+                continue;
+            };
+            let Ok(version) = version.parse::<u32>() else {
+                continue;
+            };
+            found.push((
+                path.clone(),
+                crate::output::RecordMetadata {
+                    record: (*id).to_string(),
+                    level: (*level).to_string(),
+                    version,
+                },
+            ));
+        }
+        for directory in listing.unreadable {
+            // Named with its mode and owner, because the only fix for `0700` is to
+            // run as the account that owns it, and the only fix for a genuinely
+            // missing directory is different again.
+            unreadable.push(format!(
+                "{} (mode {:04o}, owner uid {}): {}",
+                directory.path, directory.mode, directory.owner, directory.reason
+            ));
+        }
     }
-    found.sort_by(|left, right| {
+    // Dedup on the path, which is what is unique. `dedup` only removes
+    // consecutive duplicates, so it needs the same key it is deduping on.
+    found.sort_by(|(left, _), (right, _)| left.cmp(right));
+    found.dedup_by(|(left, _), (right, _)| left == right);
+    // Then the order a reader expects: by record, level, version.
+    found.sort_by(|(left_path, left), (right_path, right)| {
         left.record
             .cmp(&right.record)
             .then(left.level.cmp(&right.level))
             .then(left.version.cmp(&right.version))
+            // A stable tiebreak, so two principals' copies of one identifier
+            // keep a fixed order across runs.
+            .then(left_path.cmp(right_path))
     });
-    Ok(found)
+    unreadable.sort();
+    unreadable.dedup();
+    Ok((
+        found.into_iter().map(|(_, metadata)| metadata).collect(),
+        unreadable,
+    ))
 }
 
 /// Whether this host can verify a report's signature, against whom.
@@ -2047,6 +2301,28 @@ mod tests {
     /// enrolment must not be replaced, and an interrupted one must not be a dead
     /// end. The condition is the deployment's record of her keys, because that is
     /// what `admin put` seals to — no key recorded, nothing sealed.
+    /// TE-011: the listing's refusal says *read*, never *write*.
+    ///
+    /// Asserted on the sentence rather than through a run, because the sentence
+    /// is the defect. This variant is not reachable today — see its doc comment
+    /// — and a test that drove a command to produce it would have to invent the
+    /// failure. What a reviewer can check is that the variant says the right
+    /// thing and is not the write sentence wearing a different name.
+    #[test]
+    fn the_listing_refusal_says_read_and_never_write() {
+        let read = AdminError::Read.to_string();
+        assert!(read.contains("read"), "the sentence names the read: {read}");
+        assert!(
+            !read.to_lowercase().contains("write"),
+            "the sentence must not describe a write: {read}"
+        );
+        assert_ne!(
+            read,
+            AdminError::Write.to_string(),
+            "a read failure must not reuse the write sentence"
+        );
+    }
+
     #[test]
     fn a_vault_left_by_an_interrupted_enrolment_is_recoverable_and_a_finished_one_is_not() {
         let (_dir, layout) = initialised();

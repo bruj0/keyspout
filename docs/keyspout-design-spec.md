@@ -3106,9 +3106,8 @@ the code states it. `REVOCATION_REACH` is the sentence every surface prints:
    `run` and `token list` cannot disagree about what a mark means.
 5. **Keep the mode at `0640` and the check at `0o022`.** Widening it to
    group-write to make a third account work is the change that turns the ledger
-   into a forgeable history; `docs/known-defects.md` D1 records the remaining
-   case where a third account cannot append, and why the answer is a clearer
-   refusal rather than a wider mode.
+   into a forgeable history; the answer to the remaining case where a third
+   account cannot append is a clearer refusal rather than a wider mode.
 
 
 

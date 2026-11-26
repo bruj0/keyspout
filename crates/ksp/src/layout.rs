@@ -44,6 +44,16 @@ use crate::config::Layout;
 /// levels it sweeps — and a non-owner cannot enumerate what is there.
 pub const HOME_MODE: u32 = 0o711;
 
+/// The mode a handed-over Capability Configuration carries.
+///
+/// The second principal must be able to read it and must not be able to write it.
+/// The Mode and Owner Guard refuses a file another principal can *write* (`0o022`),
+/// because that is the path that lowers a requirement level; read is not the hazard,
+/// and the deployment's admin is the trust anchor. `0600` — what `ksp init` writes in
+/// the admin's own home — would defeat the handover: the principal whose deliveries
+/// depend on it could not open it.
+pub const HANDOVER_CONFIGURATION_MODE: u32 = 0o644;
+
 /// The admin key root. Only the admin principal reads it (FR-015).
 pub const ADMIN_KEY_MODE: u32 = 0o700;
 
@@ -245,7 +255,23 @@ pub struct RootSpec {
 /// `ISSUANCE_LEDGER_MODE` — and the boundary is one writer per file under the
 /// principal that appends to it.
 pub fn table(root: &Path) -> Vec<RootSpec> {
-    let layout = Layout::new(root.to_path_buf());
+    table_at(
+        root,
+        Layout::new(root.to_path_buf())
+            .configured_store()
+            .map(std::path::Path::to_path_buf),
+    )
+}
+
+/// The layout table for `root`, with the store root named rather than resolved.
+///
+/// [`table`] resolves the store from `KSP_STORE`, which is right for a command and
+/// wrong for a test: a suite that builds its own homes must not inherit the
+/// developer's configured store, or its `admin init` writes the layout row into a
+/// directory owned by whoever that store belongs to and fails with an `EACCES`
+/// that reads exactly like a product defect.
+pub fn table_at(root: &Path, store: Option<std::path::PathBuf>) -> Vec<RootSpec> {
+    let layout = Layout::with_store(root.to_path_buf(), store);
     vec![
         RootSpec {
             path: layout.root().to_path_buf(),
@@ -591,17 +617,31 @@ fn staged_uid(path: &Path) -> u32 {
 /// Only the store root is re-grouped. Every other root is `0700` or `0711` and
 /// its group is irrelevant to the boundary, which is mode and owner bits.
 pub fn ensure(root: &Path) -> Result<(), LayoutError> {
+    ensure_at(
+        root,
+        Layout::new(root.to_path_buf())
+            .configured_store()
+            .map(std::path::Path::to_path_buf),
+    )
+}
+
+/// Create the protected roots for `root`, with the store root named.
+///
+/// The store-naming counterpart of [`ensure`], for a caller that must not inherit
+/// the developer's `KSP_STORE`. See [`table_at`] for why that matters.
+pub fn ensure_at(root: &Path, store: Option<std::path::PathBuf>) -> Result<(), LayoutError> {
     let mut record = read_record(root);
     let mut created = false;
+    let store_root = Layout::with_store(root.to_path_buf(), store.clone()).store_root();
 
-    for spec in table(root) {
+    for spec in table_at(root, store) {
         if spec.kind == RootKind::File {
             // The command that writes the file owns its mode; creating an empty
             // one here would replace "absent" with "corrupt".
             continue;
         }
         let made = create_missing(&spec, &mut record)?;
-        if made && spec.path == Layout::new(root.to_path_buf()).store_root() {
+        if made && spec.path == store_root {
             set_store_group(&spec.path)?;
         }
         created |= made;

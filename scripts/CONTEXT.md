@@ -3,7 +3,7 @@ context_name: "Developer Test Environment"
 version: "1"
 subsystem: "scripts"
 created: "2026-11-17T10:45:00+00:00"
-updated: "2026-11-17T10:45:00+00:00"
+updated: "2026-11-24T20:45:00+00:00"
 ---
 
 # Developer Test Environment
@@ -64,8 +64,32 @@ _Subsystems_: Developer Test Environment
 _Files_: scripts/ksp-vm.sh
 _Relates to_: Status Report (composes), Linux VM (runs them)
 
+**Privilege Ticket**:
+The time-boxed sudoers *rule* a human authorises once, which lets an agent act as
+the `keyspout` admin account without a sudo password. It is not a file the tool
+owns: it is `/etc/sudoers.d/privilege-ticket`, carrying `NOTAFTER`, so **sudo
+itself** enforces the expiry. Written by `privilege-ticket grant` (password),
+reported by `status` (read from `sudo -n -l`, no password), removed by `revoke`
+(password). It never grants root: the runas target is `(keyspout)`.
+_Avoid_: sudo rule, passwordless sudo, root access, ticket file
+_Subsystems_: Developer Test Environment
+_Files_: tools/privilege-ticket (planned), DEVELOPMENT.md §4.2
+_Relates to_: Privilege Ceiling (is bounded by)
+
+**Privilege Ceiling**:
+The statement that a **Privilege Ticket** reaches the `keyspout` account and
+stops there, which holds only while that account is not itself an admin.
+`grant` refuses to install a rule for an account in `admin`/`sudo`/`wheel`.
+Two steps sit above the ceiling and stay human with a `sudo` password:
+`admin user add --unix-user` (it chowns a vault to another account) and the
+privileged half of the workspace gate (DEVELOPMENT.md §7.7).
+_Avoid_: scope, permission level
+_Subsystems_: Developer Test Environment
+_Relates to_: Privilege Ticket (bounds)
+
 ## Relationships
 
 - A **VM Guard** refusal precedes every **Provisioning** and every VM-run target
 - A **Status Report** is a list of **Service Probe** answers plus the facts only the guest can report
 - **Provisioning** is verified by a second run of itself and by a **Status Report**
+- A **Privilege Ticket** is bounded by a **Privilege Ceiling**, and deleting the ticket revokes the grant

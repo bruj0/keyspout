@@ -82,7 +82,8 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 #   ksp:confinement             asserts the Landlock ruleset refused a path
 #   ksp:sc008_consume           ditto, through the consume sequence
 #   ksp:sc019_separate_process  ditto, across two processes
-#   ksp:principals              two UNIX accounts, and root to create them
+#   ksp:principals              root to run it, and two operator-provisioned accounts
+#                               (KSP_TEST_ADMIN_USER, KSP_TEST_USER; see DEVELOPMENT.md 7.7)
 VM_TARGETS=(
     ksp-backend:valkey_durability
     ksp:confinement
@@ -320,6 +321,45 @@ host_part() {
         printf '   %s\n' "${failed[@]}" >&2
         return 1
     fi
+
+    # Last, because it is independent of everything above and a failure here
+    # should not stop the product's tests from reporting.
+    tools_part
+}
+
+# Every nested workspace under `tools/`, tested from its own directory.
+#
+# These are deliberately *not* members of the root workspace: `tools/agent-do`
+# must be extractable with `git subtree split`, so it keeps its own Cargo.toml,
+# Cargo.lock and lints. The cost of that independence is that the root cargo
+# commands cannot see it at all — `cargo build --workspace`,
+# `cargo test --workspace`, `cargo clippy --workspace --all-targets` and even
+# `cargo fmt --all --check` all exit 0 with the crate deliberately broken.
+# Verified. This part is the only thing that notices.
+#
+# Run in a subshell so the `cd` cannot leak into the rest of the gate, and with
+# `&&` rather than separate `step`s so a compile failure does not then produce
+# four unrelated failures.
+tools_part() {
+    local dir found=0
+    for dir in tools/*/; do
+        # A tools/ entry that is not a workspace (a README, a scratch dir) is
+        # skipped rather than failing the gate.
+        [ -f "${dir}Cargo.toml" ] || continue
+        found=1
+        step "tools: ${dir%/} (nested workspace)"
+        if ! (
+            cd "$dir" || exit 1
+            cargo test --lib --bins --no-fail-fast &&
+            cargo test --doc --no-fail-fast &&
+            cargo clippy --all-targets -- -D warnings &&
+            cargo fmt --all --check
+        ); then
+            return 1
+        fi
+    done
+    [ "$found" -eq 1 ] || printf '\n== tools: no nested workspace present; nothing to run\n'
+    return 0
 }
 
 vm_part() {
@@ -334,6 +374,11 @@ vm_part() {
     # `cfg(target_os = "linux")` branches compiled and linted at all.
     step "vm: cargo clippy --all-targets -- -D warnings"
     cargo clippy --all-targets -- -D warnings
+
+    # The nested workspaces again, because this is the only place they are
+    # built for Linux. `vm_guard` has already refused a run on the host, so this
+    # is a real second platform for the portability claim.
+    tools_part || return 1
 
     # Every VM target except the privileged one, and a check that each named
     # target still exists — a name that has rotted would otherwise skip a test
@@ -372,12 +417,20 @@ vm_part() {
             echo "       Run this gate inside the VM, or grant passwordless sudo." >&2
             exit 69
         fi
+        # The account names MUST be forwarded: `sudo -n env` takes an
+        # explicit list, so anything absent is unset in the child, and the
+        # suite refuses rather than skipping when they are absent. Measured
+        # on PR #30: CI provisioned both accounts and exported the names, and
+        # the run still failed because this list dropped them. `${VAR:-}`
+        # because an unset expansion must not shift the argument list.
         sudo -n env \
             HOME="$HOME" \
             PATH="$HOME/.cargo/bin:$PATH" \
             RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
             CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
             CARGO_TARGET_DIR="$root_target" \
+            KSP_TEST_ADMIN_USER="${KSP_TEST_ADMIN_USER:-}" \
+            KSP_TEST_USER="${KSP_TEST_USER:-}" \
             cargo test -p ksp --test principals --no-fail-fast
     fi
 }
@@ -563,11 +616,17 @@ ci_part() {
     # named in VM_TARGETS whose file has vanished fails here rather than being
     # skipped, for the same reason the vm part checks it.
     #
-    # `ksp:principals` is excluded on purpose: it asserts `geteuid() == 0`
-    # and refuses to run otherwise, so running it here would fail every time. It
-    # runs once, under sudo, in the step below. The other VM targets are excluded
-    # because they need a Linux mechanism this host may not have; the `vm` and
-    # `ci` parts run them where the mechanism exists.
+    # `ksp:principals` is excluded on purpose: it asserts `geteuid() == 0` and
+    # refuses to run otherwise, and this part never invokes `sudo`. It runs once,
+    # under sudo, in the step below.
+    #
+    # It is no longer a *Linux* target. It used to create its two accounts with
+    # `useradd`, which does not exist on macOS, so it could not run here at all.
+    # Since WP05 of feature 015 the accounts are provisioned by the operator and
+    # the suite consumes `KSP_TEST_ADMIN_USER`/`KSP_TEST_USER`, so the reason it
+    # stays in `VM_TARGETS` is the missing sudo step, not the platform. The other
+    # VM targets really do need a Linux mechanism this host may not have; the `vm`
+    # and `ci` parts run them where the mechanism exists.
     #
     # ONE `cargo test` PER PACKAGE, not one for the whole workspace.
     #
@@ -675,12 +734,20 @@ ci_part() {
                 echo "       A GitHub runner has passwordless sudo; a local run needs it granted." >&2
                 exit 69
             fi
+            # The account names MUST be forwarded: `sudo -n env` takes an
+            # explicit list, so anything absent is unset in the child, and the
+            # suite refuses rather than skipping when they are absent. Measured
+            # on PR #30: CI provisioned both accounts and exported the names, and
+            # the run still failed because this list dropped them. `${VAR:-}`
+            # because an unset expansion must not shift the argument list.
             sudo -n env \
                 HOME="$HOME" \
                 PATH="$HOME/.cargo/bin:$PATH" \
                 RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
                 CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
                 CARGO_TARGET_DIR="$root_target" \
+                KSP_TEST_ADMIN_USER="${KSP_TEST_ADMIN_USER:-}" \
+                KSP_TEST_USER="${KSP_TEST_USER:-}" \
                 cargo test -p ksp --test principals --no-fail-fast \
                 || failed+=("ksp:principals")
         fi
@@ -700,7 +767,11 @@ host)
     host_part
     phase_summary "host"
     printf '\n== host part passed\n'
-    printf 'the VM part has not run: run scripts/ksp-gate.sh for the whole gate.\n'
+    # The VM part is deprecated while the product stabilises on macOS, so this
+    # message points at the reason rather than implying the run was incomplete by
+    # mistake. See AGENTS.md, "Linux support is deprecated".
+    printf 'the VM part has not run. It is deprecated: run scripts/ksp-gate.sh vm\n'
+    printf 'only when changing the Linux adapters or when Linux returns to scope.\n'
     ;;
 vm)
     vm_part
