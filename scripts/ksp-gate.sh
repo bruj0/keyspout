@@ -110,11 +110,15 @@ part="${1:-}"
 # gate is. `--scope full` is the behaviour every part had before the flag
 # existed, and it is the default whenever the scope is not stated.
 #
-#   docs   prose only: markers, fmt, actionlint. A docs change can still make the
-#          documentation claim a control that does not exist, which is why
-#          ksp-markers.sh stays in this scope.
-#   code   the product: everything except the VM-only targets and principals.
-#   full   everything this part can run.
+#   docs     prose only: markers, fmt, actionlint. A docs change can still make
+#            the documentation claim a control that does not exist, which is why
+#            ksp-markers.sh stays in this scope.
+#   manifest the workspace version and nothing else. It still builds, lints,
+#            scans and checks postconditions, because a changed version does
+#            reach `ksp version` through `env!("CARGO_PKG_VERSION")` — but it
+#            skips the test battery. See the note at the test phase.
+#   code     the product: everything except the VM-only targets and principals.
+#   full     everything this part can run.
 #
 # The scope is never widened by this script. A caller that passes `docs` for a
 # code change gets a gate that did not check the code, and that is the caller's
@@ -122,12 +126,12 @@ part="${1:-}"
 # classifies and which refuses to narrow on an empty diff.
 scope="full"
 if [ "${2:-}" = "--scope" ]; then
-    scope="${3:?--scope needs a value: docs, code, or full}"
+    scope="${3:?--scope needs a value: docs, manifest, code, or full}"
 fi
 case "$scope" in
-    docs|code|full) ;;
+    docs|manifest|code|full) ;;
     *)
-        echo "error: unknown scope '$scope'; use docs, code, or full." >&2
+        echo "error: unknown scope '$scope'; use docs, manifest, code, or full." >&2
         exit 64
         ;;
 esac
@@ -227,7 +231,89 @@ all_targets() {
 
 run_target() {
     local pair="$1" crate="${1%%:*}" name="${1##*:}"
-    cargo test -p "$crate" --test "$name" --no-fail-fast
+    # Through the runner helper, so the host and vm loops get the same process
+    # isolation the CI loop does. It is defined below; bash resolves a function
+    # at call time, not at definition time, so the order here does not matter.
+    run_integration_tests "$crate" --test "$name"
+}
+
+# Whether `cargo nextest` can run the tests, decided once.
+#
+# Measured on this workspace, 2026-11-26:
+#
+#   cargo test    the local unit phase blocked past 60s on a test that nextest
+#                 finished in 2.1s, and CI spent 159s on the integration targets
+#   nextest       446 unit tests in 6s wall, 879 integration tests in 41s
+#
+# The speed is a side effect of the model, not the reason for the switch. `cargo
+# test` runs every test in a binary as threads of ONE process, so a test that
+# changes process-wide state changes it for its neighbours. This workspace has
+# exactly that: `crates/ksp-posture/tests/barrier.rs` lowers `RLIMIT_MEMLOCK` to
+# 64 KiB in a probe and is a `#[test]` in the same binary as the two tests that
+# assert the refusal. On macOS `ulimit -l` is unlimited, so the probe's own
+# allocation still succeeds and the suite passes; on the Ubuntu runner the limit
+# is finite, a concurrent test's 1 MiB allocation fails, the child dies, and the
+# parent reports `the probe must exit cleanly; stderr:` with nothing after it.
+# That blocked four CI runs, two of them reruns of the same commit.
+#
+# nextest gives every test its own process, so the lowered limit cannot escape
+# the probe. Verified: 7/7 pass under nextest, and `cargo test` fails the same
+# binary on the runner.
+#
+# Doctests are NOT included: nextest has no `--doc`, so `cargo test --doc` stays
+# for that phase. A missing nextest falls back to `cargo test` rather than
+# failing, because a gate that cannot run is not a gate that failed — the same
+# rule the actionlint and OSV-Scanner steps follow. Set `KSP_GATE_FORCE_CARGO_TEST=1`
+# to reproduce the old behaviour deliberately.
+test_runner() {
+    if [ "${KSP_GATE_FORCE_CARGO_TEST:-0}" = "1" ]; then
+        echo "cargo-test"
+        return
+    fi
+    if command -v cargo-nextest > /dev/null 2>&1; then
+        echo "nextest"
+        return
+    fi
+    echo "cargo-test"
+}
+
+# The unit and binary tests of one package, through whichever runner is available.
+#
+# Exit 4 from nextest means "no tests to run": a package with no `#[test]` in its
+# `--lib` target is not a defect, and `cargo test` reports it as 0 passed and
+# exits 0. Measured: `cargo nextest run -p ksp-key-lifecycle --lib` exits 4 while
+# `cargo test -p ksp-key-lifecycle --lib` exits 0, so switching runners without
+# this would fail the gate on a crate that has no unit tests — which is the case
+# for `ksp-key-lifecycle` today.
+#
+# `--no-fail-fast` is accepted by nextest and is already its behaviour; passing it
+# keeps the two invocations textually identical so a reader can compare them.
+run_unit_tests() {
+    local code
+    if [ "$(test_runner)" = "nextest" ]; then
+        cargo nextest run -p "$1" --lib --bins --no-fail-fast
+        code=$?
+    else
+        cargo test -p "$1" --lib --bins --no-fail-fast
+        code=$?
+    fi
+    # 4 is "nothing to run", which is not a failure. Every other non-zero is.
+    [ "$code" -eq 0 ] || [ "$code" -eq 4 ]
+}
+
+# The named integration targets of one package.
+run_integration_tests() {
+    local crate="$1"
+    shift
+    local code
+    if [ "$(test_runner)" = "nextest" ]; then
+        cargo nextest run -p "$crate" "$@" --no-fail-fast
+        code=$?
+    else
+        cargo test -p "$crate" "$@" --no-fail-fast
+        code=$?
+    fi
+    [ "$code" -eq 0 ] || [ "$code" -eq 4 ]
 }
 
 host_part() {
@@ -290,11 +376,12 @@ host_part() {
     local -a failed=()
     for crate_dir in crates/*/; do
         crate="$(basename "$crate_dir")"
-        if ! cargo test -p "$crate" --lib --bins --no-fail-fast; then
+        if ! run_unit_tests "$crate"; then
             failed+=("$crate:lib")
         fi
     done
     step "host: tests: doc targets (--no-fail-fast)"
+    # Not nextest: it has no `--doc`. See `test_runner`.
     for crate_dir in crates/*/; do
         crate="$(basename "$crate_dir")"
         if ! cargo test -p "$crate" --doc --no-fail-fast; then
@@ -500,6 +587,27 @@ ci_part() {
         return 0
     fi
 
+    # `manifest` does NOT stop here, and that is deliberate.
+    #
+    # The version is not inert: `ksp version` prints `env!("CARGO_PKG_VERSION")`,
+    # which is baked in by the compiler, so a changed version produces a
+    # different binary. Everything above this line — the markers check, fmt,
+    # actionlint, and the build that clippy performs — runs and would catch a
+    # version that breaks compilation or a postcondition.
+    #
+    # What it skips is the test battery, and the reason is narrower than "the
+    # tests do not care": no test asserts a version string. Verified by grepping
+    # every crate for `CARGO_PKG_VERSION` and for a literal version — the only
+    # reader is `crates/ksp/src/app.rs`'s `version` arm, and no test invokes that
+    # command. A release bump is the only diff that reaches this scope, it is
+    # always followed by a tag, and the tag runs the `full` scope.
+    #
+    # That last clause is what makes this safe rather than a way to skip a gate:
+    # the narrow scope is on a pull request, and scripts/ksp-gate-scope.sh forces
+    # `full` for any non-pull-request event, so the release itself is still
+    # tested. If a test ever starts asserting the version, this comment is wrong
+    # and the skip must go.
+
     # This is the copy of clippy that matters: only on Linux are the
     # `cfg(target_os = "linux")` branches compiled and linted at all.
     step "ci: cargo clippy --all-targets -- -D warnings"
@@ -603,13 +711,29 @@ ci_part() {
     # each target inside it. The per-target detail is still in the log, in the
     # `error: N target failed:` block cargo prints.
     step "ci: tests: unit targets (--no-fail-fast)"
-    if ! cargo test --workspace --lib --bins --no-fail-fast; then
-        failed+=("workspace:unit")
+    # The `manifest` scope stops before the tests, and the note below says why.
+    if [ "$scope" = "manifest" ]; then
+        printf '\n== ci: scope manifest — version-only; the test battery is skipped\n'
+    else
+        if [ "$(test_runner)" = "nextest" ]; then
+            if ! cargo nextest run --workspace --lib --bins --no-fail-fast; then
+                failed+=("workspace:unit")
+            fi
+        else
+            if ! cargo test --workspace --lib --bins --no-fail-fast; then
+                failed+=("workspace:unit")
+            fi
+        fi
     fi
 
+    # Doctests, through `cargo test` in every scope: nextest has no `--doc`.
     step "ci: tests: doc targets (--no-fail-fast)"
-    if ! cargo test --workspace --doc --no-fail-fast; then
-        failed+=("workspace:doc")
+    if [ "$scope" = "manifest" ]; then
+        echo "scope manifest: skipping doctests with the rest of the battery"
+    else
+        if ! cargo test --workspace --doc --no-fail-fast; then
+            failed+=("workspace:doc")
+        fi
     fi
 
     # Every integration target, including the ones the host part skips. A target
@@ -650,6 +774,10 @@ ci_part() {
     # done by asking `all_targets` for each package's targets in turn, which is
     # also easier to read than a map.
     step "ci: tests: integration targets (--no-fail-fast)"
+    # `manifest` skips the battery; see the note above the `docs` return.
+    if [ "$scope" = "manifest" ]; then
+        printf '\n== ci: scope manifest — integration targets skipped with the battery\n'
+    else
     local -a packages=()
     while IFS= read -r pair; do
         if [ "$pair" = "ksp:principals" ]; then
@@ -709,10 +837,11 @@ ci_part() {
             continue
         fi
         printf '\n-- %s: %s\n' "$crate" "${#crate_tests[@]} arg(s)"
-        if ! cargo test -p "$crate" "${crate_tests[@]}" --no-fail-fast; then
+        if ! run_integration_tests "$crate" "${crate_tests[@]}"; then
             failed+=("$crate:integration")
         fi
     done
+    fi
 
     # The two-account boundary, under sudo with its own target directory. A
     # root-owned `target/` breaks every later non-root build, which is why the
@@ -721,8 +850,8 @@ ci_part() {
     # Skipped in the `code` scope for the same reason the VM targets are: it
     # needs root, and it is the slowest thing in the gate because the separate
     # target directory is a second full compile. `main` and every tag run it.
-    if [ "$scope" = "code" ]; then
-        printf '\n== ci: scope code — skipping the two-account boundary (needs root; runs on main and tags)\n'
+    if [ "$scope" = "code" ] || [ "$scope" = "manifest" ]; then
+        printf '\n== ci: scope %s — skipping the two-account boundary (needs root; runs on main and tags)\n' "$scope"
     else
         step "ci: tests: two-account boundary (root, principals.rs)"
         if [ "$(id -u)" -eq 0 ]; then

@@ -346,6 +346,34 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
           rustup default 1.99.1
 
+      - name: Install cargo-nextest
+        # Required, not optional, so that this runner and the operator's machine
+        # run the same test runner. `scripts/ksp-gate.sh` falls back to
+        # `cargo test` when nextest is absent, and that fallback is the reason
+        # this step exists: the barrier tests in `crates/ksp-posture` lower
+        # `RLIMIT_MEMLOCK` process-wide, and under `cargo test` they run as
+        # threads of one process, so the probe's lowered limit kills its
+        # neighbours. On macOS `ulimit -l` is unlimited and the suite passes; on
+        # this runner the limit is finite and it failed four times in a row.
+        #
+        # Pinned to the version `DEVELOPMENT.md` records, at the digest measured
+        # on 2026-11-26. `get.nexte.st/latest` would drift without a diff, which
+        # is the thing the other tool installs here avoid.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          version="0.9.149"
+          sha="32d1d8c0567b7a80bee2bad8bb09125c846da96bc009b2de11ec08557290c770"
+          curl -fsSL -o /tmp/cargo-nextest.tar.gz "https://get.nexte.st/${version}/linux"
+          actual=$(sha256sum /tmp/cargo-nextest.tar.gz | cut -d' ' -f1)
+          if [ "$actual" != "$sha" ]; then
+            echo "::error::cargo-nextest checksum mismatch — refusing to install it"
+            echo "expected: $sha"; echo "actual:   $actual"; exit 1
+          fi
+          tar xzf /tmp/cargo-nextest.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/cargo-nextest /usr/local/bin/cargo-nextest
+          cargo-nextest nextest --version
+
       - name: Cache cargo registry and dependency builds
         if: needs.changes.outputs.scope != 'docs'
         # Measured: the gate's 5m22s is now almost entirely compilation. The tests
