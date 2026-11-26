@@ -462,6 +462,62 @@ jobs:
           echo "--- versioned (expect Enabled) ---"
           aws --endpoint-url "$ep" s3api get-bucket-versioning --bucket ksp-s3-versioned
 
+      - name: Provision the two test accounts
+        if: needs.changes.outputs.scope != 'docs'
+        timeout-minutes: 2
+        # `ksp:principals` measures the boundary between two UNIX accounts, and
+        # it **refuses** rather than skipping when they are absent — deliberately,
+        # because a skipped security test reads like a pass. So a runner that
+        # runs `full` has to create them, or the gate fails on a suite it never
+        # gave itself the means to run.
+        #
+        # `full` reaches `principals` because it is in `VM_TARGETS`: the `code`
+        # scope skips VM targets, and `full` is what `main` and every tag run.
+        # Before this step existed, `full` on a runner asserted an account state
+        # no runner has.
+        #
+        # `scripts/provision-test-accounts.sh` is not used here: it drives `dscl`
+        # and `sysadminctl` for a macOS operator, and it `exec`s into the suite
+        # rather than exporting variables for it.
+        #
+        # The group matters. `ksp` resolves the store's gid and makes the
+        # enrollee a member of it, so both accounts must share one; `-g` puts
+        # each in the other's group, which is the Linux counterpart of macOS's
+        # shared `staff`.
+        #
+        # `-K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0` avoids drawing from a
+        # subordinate-ID pool a runner may not have spare. It has nothing to do
+        # with what the deployment needs.
+        #
+        # Neither account may be in sudo/wheel: the suite asserts that the
+        # boundary is a mode and not an accident of privilege, so an account
+        # that could escalate would prove the wrong thing.
+        run: |
+          set -euo pipefail
+          # `staff` exists on the runner; use it so both accounts already share
+          # a group, matching what the suite expects on macOS.
+          GROUP="$(id -gn)"
+          for account in ksp-admin ksp-user; do
+            if id "$account" >/dev/null 2>&1; then
+              echo "$account already exists"
+              continue
+            fi
+            sudo useradd -M -N -s /bin/sh -g "$GROUP" \
+              -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 "$account"
+            echo "created $account"
+          done
+          for account in ksp-admin ksp-user; do
+            id "$account"
+            if id -Gn "$account" | tr ' ' '\n' | grep -qxE 'sudo|wheel|admin'; then
+              echo "::error::$account is in an admin group; the boundary suite needs an unprivileged account"
+              exit 1
+            fi
+          done
+          {
+            echo "KSP_TEST_ADMIN_USER=ksp-admin"
+            echo "KSP_TEST_USER=ksp-user"
+          } >> "$GITHUB_ENV"
+
       - name: Run the gate
         # Build into `./target` so the cache has a path it actually resolves.
         #
