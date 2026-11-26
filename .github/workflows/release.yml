@@ -726,6 +726,29 @@ jobs:
             echo "KSP_TEST_USER=ksp-user"
           } >> "$GITHUB_ENV"
 
+      - name: Diagnose the barrier probe (temporary)
+        # TEMPORARY. The barrier probe passes on macOS and on an aarch64 Linux
+        # guest, and fails only here, so the difference is this runner. This step
+        # runs the child the way the test does and prints everything that could
+        # change its exit status, so the log answers the question instead of a
+        # guess. Delete this step once the cause is written down.
+        run: |
+          set -uo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo nextest run -p ksp-posture --test barrier --no-run
+          BIN=$(ls -t target/debug/deps/barrier-* | grep -v '\.d$' | head -1)
+          echo "binary: $BIN"
+          echo "--- identity / limits ---"
+          id; uname -srm; ulimit -l; ulimit -a | head -20
+          echo "--- direct child run ---"
+          KSP_PROBE_REPORT=/tmp/probe-report.txt "$BIN" \
+            --exact probe_mlock_refusal --nocapture --test-threads=1
+          echo "child exit: $?"
+          echo "--- report ---"
+          cat /tmp/probe-report.txt 2>/dev/null || echo "(no report written)"
+          echo "--- same child under the runner's nextest env ---"
+          echo "NEXTEST env: $(env | grep -c NEXTEST || true) vars"
+
       - name: Run the gate
         # Build into `./target` so the cache has a path it actually resolves.
         #
