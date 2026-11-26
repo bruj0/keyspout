@@ -148,7 +148,9 @@ fn an_unlockable_region_aborts_naming_limitmemlock_and_returns_no_region() {
     );
     assert!(
         output.status.success(),
-        "the probe must exit cleanly; stderr: {}",
+        "the probe must exit cleanly; status: {:?}; stdout: {}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -234,7 +236,9 @@ fn requiring_the_primary_barrier_refuses_instead_of_demoting() {
     );
     assert!(
         output.status.success(),
-        "the probe must exit cleanly; stderr: {}",
+        "the probe must exit cleanly; status: {:?}; stdout: {}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
