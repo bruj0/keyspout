@@ -73,21 +73,6 @@ fn probe_mlock_refusal() {
 
     let mut result = String::new();
 
-    // Lower the SOFT limit only, and leave the hard limit at whatever this
-    // process inherited.
-    //
-    // The original lowered `rlim_max` as well. That is irreversible, needs
-    // CAP_SYS_RESOURCE, and returns `EPERM` whenever the process already carries
-    // a lower hard cap than the one being requested — which is exactly the case
-    // on a GitHub runner, whose `ulimit -l` is 8 MiB, once a sibling probe has
-    // run in the same process group. Measured on an aarch64 guest with the same
-    // 8 MiB cap: `setrlimit-failed=Operation not permitted`, and the two
-    // assertions below it failed while the probe itself passed.
-    //
-    // The test's claim is that a 1 MiB region cannot be locked under a 64 KiB
-    // cap. The soft limit is the one that enforces that, and lowering only the
-    // soft limit is unprivileged and repeatable, so the probe measures the claim
-    // rather than the process's ability to change its own hard ceiling.
     // Both limits go to 64 KiB, and that is deliberate: the refusal must name
     // the limit a reader can act on, and `MemlockObservation` reports the hard
     // cap when the two differ. Lowering only the soft limit made the message
@@ -207,9 +192,15 @@ fn an_unlockable_region_aborts_naming_limitmemlock_and_returns_no_region() {
         "probe_mlock_refusal",
         &[("KSP_PROBE_REPORT", &report_path.display().to_string())],
     );
+    // The report is read BEFORE the exit-status assertion, and included in the
+    // failure message. The child writes it and then may die (SIGBUS, measured on
+    // a GitHub runner), and the report is the only place its reason is written
+    // down — asserting on the status first discarded it and left four runs
+    // diagnosed from an empty string.
+    let report_so_far = std::fs::read_to_string(&report_path).unwrap_or_default();
     assert!(
         output.status.success(),
-        "the probe must exit cleanly; status: {:?}; stdout: {}; stderr: {}",
+        "the probe must exit cleanly; status: {:?}; report: {report_so_far}; stdout: {}; stderr: {}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -318,9 +309,15 @@ fn requiring_the_primary_barrier_refuses_instead_of_demoting() {
         "probe_require_secret_under_pressure",
         &[("KSP_PROBE_REPORT", &report_path.display().to_string())],
     );
+    // The report is read BEFORE the exit-status assertion, and included in the
+    // failure message. The child writes it and then may die (SIGBUS, measured on
+    // a GitHub runner), and the report is the only place its reason is written
+    // down — asserting on the status first discarded it and left four runs
+    // diagnosed from an empty string.
+    let report_so_far = std::fs::read_to_string(&report_path).unwrap_or_default();
     assert!(
         output.status.success(),
-        "the probe must exit cleanly; status: {:?}; stdout: {}; stderr: {}",
+        "the probe must exit cleanly; status: {:?}; report: {report_so_far}; stdout: {}; stderr: {}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
