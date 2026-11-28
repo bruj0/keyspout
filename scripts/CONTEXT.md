@@ -87,9 +87,58 @@ _Avoid_: scope, permission level
 _Subsystems_: Developer Test Environment
 _Relates to_: Privilege Ticket (bounds)
 
+**Scratch Layout**:
+The four directories on the guest's own disk that hold every path whose
+*ownership* a test asserts on: `KSP_HOME`, `TMPDIR`, `CARGO_TARGET_DIR` and
+`KSP_ROOT_TARGET_DIR`, all under `/mnt/lima-colima/ksp`. It exists because the
+host mount is not a POSIX filesystem for ownership purposes — measured, `chown`
+there returns 0 and the reported owner does not change.
+_Avoid_: temp dir, workdir, scratch space (each names one directory, not the set)
+_Subsystems_: Developer Test Environment
+_Files_: scripts/ksp-guest-scratch.sh, scripts/ksp-guest.sh
+_Relates to_: Scratch Guard (is enforced by), Guest Transport (is exported by)
+_History_:
+- 2026-11-27 (agent-sandbox): Term introduced, with the four variables.
+
+**Scratch Guard**:
+The predicate that refuses a path not on guest disk, because an ownership
+assertion there is answered by nothing while a `chmod` assertion beside it is
+answered correctly. It accepts an allow-list of real filesystems rather than
+rejecting a list of shares: the virtiofs mount reports `fuseblk` to
+`stat -f -c %T`, so a deny-list naming `virtiofs` accepts every path it exists
+to reject.
+_Avoid_: mount check, filesystem check
+_Subsystems_: Developer Test Environment
+_Files_: scripts/lib/scratch-guard.sh
+_Relates to_: Scratch Layout (guards), VM Guard (is a sibling of — both refuse rather than warn)
+
+**Guest Transport**:
+The one way a host command enters the Linux guest with the **Scratch Layout**
+exported and the guest's exit status preserved verbatim. It exists because
+`colima ssh` maps every non-zero guest status to 1, so a caller cannot tell a
+failing test (1) from a binary that did not start (101); the transport records
+the real status on guest disk and reads it back.
+_Avoid_: ssh wrapper, remote runner
+_Subsystems_: Developer Test Environment
+_Files_: scripts/ksp-guest.sh
+_Relates to_: Scratch Layout (exports), Linux VM (enters)
+
+**macOS Guest**:
+A disposable macOS VM the `ksp-op` walkthrough runs in, because `sysadminctl`,
+`dscl` and `launchctl` have no Linux equivalent. It is a **second** guest, not a
+replacement for the Linux VM: it proves the macOS half of `ksp-op` and nothing
+about Landlock. Apple's licence allows two per host.
+_Avoid_: the VM (that is the Linux one), sandbox
+_Subsystems_: Developer Test Environment
+_Files_: scripts/ksp-macos-vm.sh, docs/ksp-op-walkthrough.md
+_Relates to_: Linux VM (is a sibling of, not a replacement), ksp-op (hosts the walkthrough for)
+
 ## Relationships
 
 - A **VM Guard** refusal precedes every **Provisioning** and every VM-run target
 - A **Status Report** is a list of **Service Probe** answers plus the facts only the guest can report
 - **Provisioning** is verified by a second run of itself and by a **Status Report**
 - A **Privilege Ticket** is bounded by a **Privilege Ceiling**, and deleting the ticket revokes the grant
+- A **Scratch Guard** refusal precedes every target that asserts on file ownership
+- A **Guest Transport** exports the **Scratch Layout** and preserves the guest's exit status
+- A **macOS Guest** is independent of the **Linux VM**; neither substitutes for the other

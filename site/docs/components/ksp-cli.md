@@ -113,7 +113,7 @@ graph TB
 
 ## The Command Surface
 
-Forty-four public paths, plus one hidden internal command. The complete list is
+Forty-six public paths, plus one hidden internal command. The complete list is
 pinned by `the_command_surface_matches_the_design_specification`.
 
 ### Setup and status
@@ -195,6 +195,25 @@ pinned by `the_command_surface_matches_the_design_specification`.
 | `ksp backend arm-sweep --kind <kind> --interval <dur> --scope <scope> --credential <c> --grant <right>:<scope>... [--install]` | Record the cleanup schedule |
 | `ksp audit [--admin] [--principal <uuid>] [--limit N] [--since 30m\|1h\|7d]` | The scoped log view |
 | `ksp audit verify --head <64-hex>...` | Verify the chain against pinned public material |
+
+### Ingest
+
+| Command | What it does |
+|---|---|
+| `ksp import --from-file <path> [--format env\|json] (--own \| --to-principal <uuid>)` | Read a `.env` or JSON file and seal each value here |
+| `ksp import --from <name> --selector <s> (--own \| --to-principal <uuid>)` | Read a declared manager through `$KSP_HOME/integrations/<name>.toml` |
+| `ksp import --list-adapters` | Every declaration on this host, what each can do, and any file that failed to load |
+| `ksp import --schema` | The declaration contract, derived from the type the parser deserialises |
+| `ksp export <anything>` | Exists and **refuses** with exit `13` in every form |
+
+`--schema` and `--list-adapters` are flags rather than subcommands, so the
+surface guard sees one entry rather than three: a reader asking what shape a
+declaration takes does not need to know the command tree to find the answer, and
+neither flag reads any configuration or needs a deployment.
+
+The read path is untouched. `ksp run` opens the sealed store and nothing else; an
+import is a write that happens before any of this, and no adapter is reachable
+from a delivery.
 
 ### The hidden command
 

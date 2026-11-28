@@ -1,0 +1,50 @@
+# Bitwarden — the shipped adapter declaration.
+#
+# This is a working example, not a placeholder: copy it, change `name`, and it runs.
+# `ksp import --schema` prints the contract this file must satisfy, including the
+# accepted values for every enum and the keys that are refused.
+#
+# # Session handling
+#
+# `credential_env` names a **variable**, never a value. `bw` reads `BW_SESSION` from
+# its environment, so nothing secret is in this file, in `argv`, or in a log:
+#
+#     export BW_SESSION="$(bw unlock --raw)"
+#
+# `bw login --apikey` alone is not enough — the vault stays locked and every read
+# fails. Unlock is the step that produces a session.
+#
+# # Vaultwarden, and why this is `bw` rather than `bws`
+#
+# This declaration targets a self-hosted Vaultwarden. Vaultwarden does not ship
+# Secrets Manager — its maintainers declined because that code is commercially
+# licensed — so `bws` is not an option against that server, and `bw` with a
+# master-password unlock is the only path. Against bitwarden.com both exist.
+#
+# # Why `list` is `json_array` and `read` is `json`
+#
+# Measured against `bw 2026.10.0`: `bw list items --raw` returns a JSON **array** and
+# `bw get item <id>` returns a JSON **object**. The two shapes are separate values so
+# that a vendor change is refused rather than absorbed — a `read` that started
+# returning an array is a shape mismatch, not a value to parse.
+#
+# # Item ids, not names
+#
+# Item names in a real vault are neither unique nor well formed — one here is
+# literally `--`. `{key}` is therefore an item **id** (a UUID). Searching by name
+# also works because `bw` accepts a search term everywhere it accepts an id, but a
+# report that names the item it read is only trustworthy when the id is used.
+
+name = "bitwarden"
+kind = "cli"
+binary = "bw"
+credential_env = "BW_SESSION"
+
+[ops.list]
+argv = ["list", "items", "--search", "{selector}"]
+shape = "json_array"
+
+[ops.read]
+argv = ["get", "item", "{key}"]
+shape = "json"
+extract = "login.password"

@@ -426,14 +426,14 @@ fn an_unprovisioned_host_reports_missing_key_material_on_every_surface() {
 /// Both documents that publish the exit-code table name the new code.
 ///
 /// A code an agent must learn is useless if the two places a reader looks do not
-/// list it. The spec's table and `QUICKSTART.md` are those two places, and a
+/// list it. The spec's table and `USER_MANUAL.md` are those two places, and a
 /// change that updates one and not the other leaves a reader with a contract they
 /// cannot check.
 #[test]
 fn both_documents_publish_the_usage_code() {
     let root = repo_root();
     for (name, path) in [
-        ("QUICKSTART.md", root.join("QUICKSTART.md")),
+        ("USER_MANUAL.md", root.join("USER_MANUAL.md")),
         (
             "docs/keyspout-design-spec.md",
             root.join("docs/keyspout-design-spec.md"),

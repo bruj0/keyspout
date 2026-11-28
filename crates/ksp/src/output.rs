@@ -669,11 +669,56 @@ pub enum Report {
         /// The principal UUID, canonical form.
         principal: String,
     },
+    /// What one import wrote, and what became of every key in the source.
+    ///
+    /// A **struct variant with a `Vec` field**, following `Records`: `Report` is
+    /// internally tagged, and serde cannot tag a newtype variant that wraps a
+    /// sequence. The failure is silent — `to_value` returns `Err`, the emitter
+    /// substitutes a string, and every caller reads it as empty — which is the
+    /// bug `Records` documents at its own definition. Do not repeat it.
+    ///
+    /// The vault is carried because an operator with two deployments on one host
+    /// must see which one received the records without re-reading the command
+    /// they ran (misfit J's first form is a wrong `KSP_HOME`, which the command
+    /// no longer states).
+    Import {
+        /// The vault the records were written into, from the deployment record.
+        vault: String,
+        /// The canonical source identifier this import read.
+        source_id: String,
+        /// The selector the source was read with, printed beside the count so a
+        /// selector broader than intended is visible next to the success.
+        selector: String,
+        /// One entry per key, in the order the source named them.
+        rows: Vec<ImportRowView>,
+        /// How many records this import wrote.
+        records: usize,
+    },
     /// A confirmation with no payload beyond its own name.
     Confirmation {
         /// The operation that completed.
         operation: String,
     },
+}
+
+/// One key's outcome in an import report.
+///
+/// The disposition is a `String` rather than the import module's enum so this
+/// view can be built without `output.rs` reaching into that module's types, and
+/// because the two absent words are a rendering decision rather than a storage
+/// one. Its only producer is `Disposition::as_str`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportRowView {
+    /// The key name as the source wrote it.
+    pub key: String,
+    /// What became of it: `new`, `changed`, `unchanged`, or one of the two
+    /// `absent` words.
+    pub disposition: String,
+    /// The version this import wrote, when it wrote one.
+    pub version: Option<u32>,
+    /// The canonical source identifier, repeated per row so one row is
+    /// self-describing when a consumer fans the array out (NFR-005).
+    pub source_id: String,
 }
 
 /// What one `admin policy` write changed.
@@ -864,6 +909,31 @@ impl<W: Write> Emitter<W> {
             }
         }
         Ok(())
+    }
+
+    /// Print an arbitrary serialisable document, honouring `--json`.
+    ///
+    /// For a command whose answer has no route into [`Report`] — the adapter
+    /// contract and the adapter list are both read out of a deployment-less
+    /// state and describe data rather than an operation's result. The text
+    /// branch pretty-prints, because a human reading a contract wants the keys
+    /// one per line; the JSON branch is one object, so a consumer parses it the
+    /// same way it parses every other answer from this tool.
+    ///
+    /// A value that will not serialize is an error rather than a substitute
+    /// string, for the reason [`Self::report`] gives.
+    pub fn document<T: serde::Serialize>(&mut self, value: &T) -> std::io::Result<()> {
+        let rendered = serde_json::to_value(value)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if self.json {
+            writeln!(self.sink, "{rendered}")
+        } else {
+            writeln!(
+                self.sink,
+                "{}",
+                serde_json::to_string_pretty(&rendered).unwrap_or_default()
+            )
+        }
     }
 
     /// Print a refusal.
@@ -1474,6 +1544,33 @@ fn render(report: &Report) -> String {
             principal,
         } => format!("{operation}: principal={principal}"),
         Report::Confirmation { operation } => format!("{operation}: ok"),
+        // The vault is on the first line, before the rows: an operator with two
+        // deployments on one host reads it to confirm *which* store received the
+        // records, and a report that buried it would be read as the destination
+        // they assumed (misfit J). The two absent words are rendered verbatim, so
+        // the repair each implies is visible in the line that names it.
+        Report::Import {
+            vault,
+            source_id,
+            selector,
+            rows,
+            records,
+        } => {
+            let mut lines = vec![
+                format!("vault:     {vault}"),
+                format!("source:    {source_id}"),
+                format!("selector:  {selector}"),
+                format!("records:   {records} written"),
+            ];
+            for row in rows {
+                let version = match row.version {
+                    Some(version) => format!("  v{version}"),
+                    None => String::new(),
+                };
+                lines.push(format!("  {:<32} {}{version}", row.key, row.disposition));
+            }
+            lines.join("\n")
+        }
     }
 }
 

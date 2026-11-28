@@ -26,9 +26,12 @@ flowchart TD
     VK["Valkey<br/>a Redis-protocol server"]
     S3["S3-compatible object store"]
     SCHED["Scheduler<br/>launchd, cron or a timer unit<br/>runs the sweep"]
+    MGR["Secret manager<br/>Bitwarden/Vaultwarden and others<br/>keeps the team and group model"]
   end
 
   Admin -->|"enrols, publishes, signs and withdraws grants"| KEYSPOUT
+  Admin -->|"ingests from a file or a manager, one way"| KEYSPOUT
+  MGR -->|"values read through a declared adapter"| KEYSPOUT
   User -->|"reads her own records, exports a grant token"| KEYSPOUT
   Agent -->|"opens a publication, or consumes a leased copy"| KEYSPOUT
 
@@ -448,6 +451,40 @@ because the order between them is the control:
   the registry names principals and their public halves, never a private one.
 - **`ledgers.rs`** - the two ledgers and their owners: `issuance.jsonl` for the
   principal, `policy-events.jsonl` for the admin, each with one writer.
+
+The crate gained the ingest path in feature 018, and again the order is the
+control: `acquire → parse → resolve target → bind vault → seal → record →
+report`. The first four write nothing, so a refusal at any of them leaves the
+store untouched.
+
+- **`import/parse.rs`** - the `.env` subset and a JSON object reader. A refused
+  construct refuses the whole file and names every offending line, so
+  `ParseOutcome` has no "some keys" arm. Its sibling `import/target.rs` resolves
+  `--own` or `--to-principal` into one destination, and there is no vault flag: a
+  destination that can come from data is one the operator cannot see.
+- **`import/provenance.rs`** - `imports.jsonl` and reconciliation. A sealed blob
+  uses a random nonce, so the record cannot answer "is this the same value";
+  the ledger records a digest per key, and the next import reports `new`,
+  `changed`, `unchanged`, `absent (not in source)` or `absent (removed)` instead
+  of rewriting everything.
+- **`import/adapter/declaration.rs`** and **`validate.rs`** - an adapter is one
+  TOML file per manager. It is a capability, so it is validated and its binary
+  probed on every use, it can express no destination, and it carries a credential
+  variable *name* rather than a value.
+- **`import/adapter/runner.rs`** - an argv vector with no shell, with a
+  placeholder substituted inside one element. A `kind = "cli"` manager is reached
+  this way and no other.
+- **`import/adapter/http.rs`** - the `kind = "http"` arm: one request, a
+  credential in a header, and redirects **refused**, because following one would
+  carry that header to a host the declaration never named.
+- **`import/adapter/schema.rs`** - `ksp import --schema`, derived from the type
+  the parser deserialises so the contract cannot drift from the parser. It takes
+  no argument and needs no deployment, because an agent must be able to ask what
+  a declaration looks like before one exists.
+
+`ksp export` is a refusal in every form, and that is a decision rather than a gap:
+handing a plaintext value to a service the admin does not control spends the
+admin-zero-knowledge property the whole design rests on.
 
 ### `ksp-identity` - who is speaking
 

@@ -75,6 +75,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm-guard.sh
 . "${script_dir}/lib/vm-guard.sh"
 
+# The scratch guard decides whether a path carries real ownership. It is sourced
+# here so the privileged step below can refuse rather than assert on a share.
+# shellcheck source=lib/scratch-guard.sh
+. "${script_dir}/lib/scratch-guard.sh"
+
 # Test targets whose subject is a mechanism a non-Linux host cannot provide, or
 # that need root. Everything else is a host target.
 #
@@ -495,7 +500,22 @@ vm_part() {
 
     # The two-account boundary. It refuses to run unprivileged, so a missing sudo
     # is a failed gate, not a skipped one.
+    #
+    # The scratch guard runs first, and it is not decorative: measured 2026-11-27,
+    # `chown` on the virtiofs host mount returns 0 and the reported owner does not
+    # change. The suite asserts on owners, so on that path it would fail for a
+    # reason that has nothing to do with the product — or, for the assertions that
+    # read `chmod`, pass. The guard turns the first case into a message that names
+    # the fix.
     step "vm: tests: two-account boundary (root, principals.rs)"
+    if ! scratch_is_local "$root_target"; then
+        printf 'error: the boundary suite needs its scratch on guest disk.\n' >&2
+        printf '       %s is not, and the suite asserts on file ownership there.\n' \
+            "$root_target" >&2
+        printf '       Fix: scripts/ksp-guest-scratch.sh --apply, then point\n' >&2
+        printf '       KSP_ROOT_TARGET_DIR at /mnt/lima-colima/ksp/root-target.\n' >&2
+        return 1
+    fi
     if [ "$(id -u)" -eq 0 ]; then
         CARGO_TARGET_DIR="$root_target" cargo test -p ksp --test principals --no-fail-fast
     else

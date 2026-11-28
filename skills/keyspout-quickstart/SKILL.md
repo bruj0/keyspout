@@ -1,6 +1,6 @@
 ---
 name: keyspout-quickstart
-description: Set up Keyspout on this host for one operator with sane defaults, end to end. Use when the operator says "set up Keyspout", "install Keyspout", "get Keyspout working", "initialise the deployment", or asks to be walked through first-time setup. Stops at the first refusal and reports it rather than continuing.
+description: Set up Keyspout on this host for one operator with sane defaults, end to end. Use when the operator says "set up Keyspout", "install Keyspout", "get Keyspout working", "initialise the deployment", "run ksp-op setup", or asks to be walked through first-time setup. On a two-account host the work is one command, `ksp-op setup`, and the manual `ksp` steps are the fallback. Stops at the first refusal and reports it rather than continuing.
 ---
 
 # Keyspout quickstart
@@ -11,12 +11,55 @@ and end with a report of what is true now.
 **Read `keyspout-status` first if it is installed.** It tells you which steps are
 already done, and this skill assumes a host that has none of them.
 
+## Try `ksp-op setup` first
+
+On a **two-account host** — one admin account, one user account — `ksp-op` runs
+the whole deployment in one command, in the load-bearing order, as the right
+account. Do not hand-run the ten steps below unless it is unavailable or it
+refuses.
+
+```bash
+sudo ksp-op setup                    # eleven steps; asks for the passphrase twice
+ksp-op status                        # must report `binding: <the user>`
+```
+
+It needs **root**, because it creates the administrator's home and gives the tree
+to that account before anything writes inside it. Run as yourself it refuses at
+step 1 and names both fixes (`sudo`, or an `--admin-account` whose home you own).
+
+**Non-interactively**, supply the passphrase once on stdin. The file must be
+`0600`; there is no flag for it, measured — `--passphrase-file` is refused.
+
+```bash
+sudo ksp-op setup < /path/to/passphrase       # 0600
+```
+
+A terminal is prompted **twice** on purpose (two sealed steps), so a mistyped
+confirmation is caught at the step that needs it. A pipe is read once and the
+value reused for both.
+
+**A second run is a no-op.** Steps that create or seal report
+`skipped (already done)` and it exits 0, so it is safe to re-run after a partial
+failure. If it reports a refusal instead, the host has a half-built deployment
+from an older binary — see `docs/known-defects.md` D10, fixed 2026-11-27.
+
+Then confirm with `ksp-op status` and finish with `ksp-op home` to report the
+three paths to the operator. **Steps the tool does not perform** are the sweeper
+(`ksp backend arm-sweep` and one `ksp secret gc`) and the secret itself — do
+those below, from step 5.
+
+**When to use the manual steps instead:** a single-account host (`ksp-op` is for
+two), `ksp-op` missing from an older release (see below), or a refusal whose
+sentence you cannot act on. The steps below are also what a refusal refers to,
+so read them when one surprises you.
+
 ## What you are building
 
 One admin, one user, one agent, one secret, and a proven cleanup schedule. Every
-step below is a `ksp` command; none of them is a script.
+manual step below is a `ksp` command; `ksp-op setup` performs steps 1–4 and 6–8.
 
 ```
+ksp-op setup        steps 1-4 and 6-8 of the list below, in one run
 ksp init            probe the host, write its capability configuration
 ksp admin init      the admin signing key and the vault's identity
 ksp admin user add  the user's sealed vault, bound to her UNIX account

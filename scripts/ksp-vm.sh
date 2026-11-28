@@ -215,7 +215,9 @@ vm_status_report() {
         printf 'disk:      clean a previous root target first: sudo rm -rf /tmp/ksp-gate-root-target\n'
         failed=1
     fi
-    printf 'note:      /tmp does not survive a restart; keep scratch work under ~/work\n'
+    printf 'note:      /tmp does not survive a restart, and shares the 19 GiB root\n'
+    printf 'note:      scripts/ksp-guest-scratch.sh --apply lays out a scratch\n'
+    printf 'note:      layout on the data disk and prints the variables to export\n'
 
     return "$failed"
 }

@@ -148,6 +148,24 @@ impl Layout {
         self.root.join("admin")
     }
 
+    /// The sealed **administrator** vault: the file `admin seal-vault` writes.
+    ///
+    /// # Why this is not [`Self::vault_file`]
+    ///
+    /// Two sealed files live in one home and they are different artefacts.
+    /// `admin-vault.cbor` is the administrator's own vault, written by
+    /// `admin seal-vault`; `vault.cbor` is the copy handed to the user by
+    /// `admin user add`. A predicate that asks "has the admin's vault been
+    /// sealed" must name the first, and `ksp-op`'s step 7 named neither — it
+    /// tested a path under `admin/` that nothing creates, so the step never
+    /// skipped and a second `setup` refused.
+    ///
+    /// The name comes from [`crate::vault::ADMIN_VAULT_FILE`] rather than a
+    /// literal here, so the two cannot drift.
+    pub fn admin_vault_file(&self) -> PathBuf {
+        self.root.join(crate::vault::ADMIN_VAULT_FILE)
+    }
+
     /// The trust anchor: the admin public key this host pins.
     pub fn admin_anchor_file(&self) -> PathBuf {
         self.root.join("admin-anchor.cbor")
@@ -263,6 +281,26 @@ impl Layout {
     /// (FR-009, NFR-001).
     pub fn capability_config_file(&self) -> PathBuf {
         self.root.join(crate::capability_config::FILE_NAME)
+    }
+
+    /// The import ledger: what each import wrote, and the digest of each value.
+    ///
+    /// In the home rather than under a principal, unlike `issuance.jsonl` and
+    /// `policy-events.jsonl`: an import is the admin's own act and she is the
+    /// only writer, so a per-principal directory would add a boundary with one
+    /// occupant. Plan KDD-1 places it here.
+    pub fn imports_ledger(&self) -> PathBuf {
+        self.root
+            .join(crate::import::provenance::IMPORTS_LEDGER_FILE)
+    }
+
+    /// Where adapter declarations live: one TOML file per manager.
+    ///
+    /// A data file that names a command is a capability, so this directory is
+    /// owner-only: an account that can write here can name a binary this program
+    /// will run. It is read on every use and never trusted from a previous run.
+    pub fn integrations(&self) -> PathBuf {
+        self.root.join(crate::import::adapter::INTEGRATIONS_DIR)
     }
 }
 

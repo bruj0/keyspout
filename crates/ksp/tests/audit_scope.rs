@@ -526,7 +526,7 @@ fn the_passphrase_file_still_reads_the_view() {
 /// FR-041 asks for one object per record so a consumer reads a record at a time,
 /// and a log grows without bound, so a stream is the right shape. It is the only
 /// command whose `--json` is not a single object, which is why the shape is
-/// asserted here rather than left to the reader of `QUICKSTART.md`.
+/// asserted here rather than left to the reader of `USER_MANUAL.md`.
 #[test]
 fn the_json_view_is_a_header_line_then_one_line_per_record() {
     let home = tempfile::tempdir().unwrap();
@@ -785,20 +785,20 @@ fn audit_with_open_stdin_for(home: &Path, args: &[&str]) -> (i32, String) {
     }
 }
 
-/// `QUICKSTART.md` documents the JSONL shape and the two flags.
+/// `USER_MANUAL.md` documents the JSONL shape and the two flags.
 ///
 /// The shape is the only one in the CLI that is not a single object, so a reader
 /// who learns the pattern from every other command is surprised by it. The
 /// sentence is asserted rather than trusted, because a documentation line that
 /// silently disappears is how the surprise comes back.
 #[test]
-fn the_quickstart_documents_the_jsonl_shape_and_the_flags() {
+fn the_user_manual_documents_the_jsonl_shape_and_the_flags() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
         .expect("the crate lives two levels below the workspace root");
     let text =
-        std::fs::read_to_string(root.join("QUICKSTART.md")).expect("QUICKSTART.md is readable");
+        std::fs::read_to_string(root.join("USER_MANUAL.md")).expect("USER_MANUAL.md is readable");
 
     for needle in [
         "JSONL",
@@ -809,7 +809,7 @@ fn the_quickstart_documents_the_jsonl_shape_and_the_flags() {
     ] {
         assert!(
             text.contains(needle),
-            "QUICKSTART.md must document {needle:?}: a consumer that learns the \
+            "USER_MANUAL.md must document {needle:?}: a consumer that learns the \
              single-object pattern from every other command is surprised by this one"
         );
     }

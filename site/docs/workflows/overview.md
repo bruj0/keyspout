@@ -110,6 +110,56 @@ sequenceDiagram
    silently lose an update.
 7. The audit record is appended **before** the success report.
 
+### Workflow 2b: Ingest a whole file or a manager
+
+Workflow 2 stores one value you type. When the values already exist - in a
+`.env` file, or in a Bitwarden or Vaultwarden vault the team uses - `ksp import`
+reads them and seals each one instead. Team, group and organisation management
+stay in the manager; this path does not replace it.
+
+```mermaid
+sequenceDiagram
+  participant Op as Operator
+  participant Ksp as ksp binary
+  participant Mgr as Manager or file
+  participant Store as Sealed store
+
+  Op->>Ksp: ksp import --from-file .env --to-principal UUID
+  Ksp->>Ksp: parse - one refused line refuses the whole file
+  Ksp->>Ksp: resolve the recipient before any seal
+  loop every key that writes
+    Ksp->>Store: seal one version at the admin level
+    Ksp->>Store: append the ledger row - source, key, version, digest
+  end
+  Ksp-->>Op: vault, source, selector, per-key disposition, count
+```
+
+**Steps:**
+
+1. The source is acquired: a `.env` or JSON file, or a declared manager through
+   `--from`. Both end in the same shape, so everything after this step exists
+   once.
+2. The file is parsed through a named subset. A refused construct refuses the
+   whole file and names every offending line, so a partial import cannot be
+   expressed.
+3. The destination is resolved: `--own` or `--to-principal`, and never a vault
+   name. An unenrolled principal, a missing recipient key, no target at all -
+   each refuses **here**, before the first seal, so the store is untouched.
+4. Each key is reconciled against `imports.jsonl`. A key whose value did not
+   move is reported `unchanged` and **not** written again, which is what stops a
+   re-import duplicating the store.
+5. Each writing key is sealed at the `admin` level, mirroring `admin put`.
+6. The ledger row is appended per key. A seal that fails partway records what it
+   already wrote before it refuses, so the next run reports those keys
+   `unchanged` rather than `new`.
+7. The report names the vault it wrote to, so a wrong `KSP_HOME` is visible in
+   the answer rather than only in the tree.
+
+**What it does not do.** It does not export. `ksp export` refuses in every form,
+because handing a plaintext value to a service the admin does not control spends
+the admin-zero-knowledge property the design rests on. It also does not sync:
+there is no mirror back to the source, and re-importing is the update.
+
 ### Workflow 3: Mint a lease
 
 This is the workflow with the most steps, because it is the one that has to be
