@@ -1065,27 +1065,44 @@ mod tests {
     #[test]
     fn a_command_given_no_home_reads_the_environment() {
         let fake = Fake::default();
+
+        // The branch is chosen by what `cmd_home` **actually consults**:
+        // `Env::resolve(None, ...)` asks `home_from_env`, never the caller's
+        // `$HOME`. Gating on `home_from_env` instead made the assertion true on a
+        // machine with no `KSP_HOME` and a writable `$HOME` while `cmd_home`
+        // resolved nothing at all, and false on a runner whose `$HOME` was
+        // unset but whose `KSP_HOME` was — the two disagree, and only the first
+        // was ever tested.
+        //
+        // The same defaults `cmd_home` derives from an empty argument list, so a
+        // change to either cannot make this probe answer for a different command.
+        let options = Options::parse(&[]).expect("no arguments always parses");
+        let resolves = Env::resolve(options.vault(), options.admin_account(), false).is_ok();
         let code = cmd_home(&[]);
-        // `cmd_home` reads the environment itself. Its exit code is 0 when a home
-        // resolved and 1 when none could; the assertion is that a present
-        // `KSP_HOME` is never reported absent.
-        if ksp::app::home_from_env().is_some() {
+        if resolves {
             assert_eq!(
                 code, OK,
-                "a home exists in this environment, so `home` must succeed rather \
-                 than report it missing"
+                "`home` can resolve in this environment, so it must succeed rather \
+                 than report a missing one"
+            );
+        } else {
+            assert_eq!(
+                code, REFUSED,
+                "`home` cannot resolve here, so it must refuse rather than print a path \
+                 it never resolved"
             );
         }
+
         // And the dry run through a command that takes `None`, which is the shape
         // the dispatcher uses. The assertion is on the **exit code**: a command
         // refused for a missing home it was not given would return 1, and that is
         // the exact bug — a real run passing `None` and being told to set a
         // variable that is already set.
         let code = cmd_setup(&fake, &MustNotBeRead, None, &["--dry-run".to_string()]);
-        if ksp::app::home_from_env().is_some() {
+        if resolves {
             assert_eq!(
                 code, OK,
-                "a home exists in this environment, so `setup --dry-run` must not \
+                "a home resolves in this environment, so `setup --dry-run` must not \
                  refuse for a missing one"
             );
         }
