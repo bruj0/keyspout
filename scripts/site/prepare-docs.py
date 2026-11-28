@@ -59,6 +59,7 @@ ASSETS: dict[str, str] = {
 DOCUMENTS: dict[str, str] = {
     "README.md": "overview.md",
     "QUICKSTART.md": "QUICKSTART.md",
+    "USER_MANUAL.md": "USER_MANUAL.md",
     "SECURITY.md": "SECURITY.md",
     "CONTEXT-MAP.md": "CONTEXT-MAP.md",
     "DEVELOPMENT.md": "DEVELOPMENT.md",
@@ -93,6 +94,7 @@ CONTEXTS: dict[str, str] = {
 PUBLISHED: dict[str, str] = {
     "README.md": "overview.md",
     "QUICKSTART.md": "QUICKSTART.md",
+    "USER_MANUAL.md": "USER_MANUAL.md",
     "SECURITY.md": "SECURITY.md",
     "CONTEXT-MAP.md": "CONTEXT-MAP.md",
     "DEVELOPMENT.md": "DEVELOPMENT.md",

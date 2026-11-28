@@ -18,6 +18,10 @@
 
 set -uo pipefail
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/scratch-guard.sh
+. "${script_dir}/lib/scratch-guard.sh"
+
 KSP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/target/debug/ksp"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
@@ -41,6 +45,23 @@ chmod 0711 "$H"
 # opened, never created, so a stale value refuses at exit 7.
 unset KSP_STORE
 export KSP_HOME="$H"
+
+# This walkthrough asserts on file ownership in three places (the 0000 level, the
+# `chown`ed vault, the unreadable record). On a virtiofs share `chown` returns 0
+# and the owner does not change — measured — so on that path the assertions are
+# answered by nothing and the run reports a result it did not measure. Refuse
+# rather than continue, and name the fix.
+#
+# `/tmp` is guest disk on every colima guest, so the default is accepted and the
+# refusal only fires when a caller has redirected `TMPDIR` at the mount.
+if ! scratch_is_local "$H"; then
+    printf 'error: the two-account walkthrough needs its home on guest disk.\n' >&2
+    printf '       %s is not, and this script asserts on file ownership there.\n' "$H" >&2
+    printf '       Fix: unset TMPDIR (it is probably pointing at a shared mount),\n' >&2
+    printf '       or run scripts/ksp-guest-scratch.sh --apply and set TMPDIR to\n' >&2
+    printf '       /mnt/lima-colima/ksp/tmp.\n' >&2
+    exit 2
+fi
 
 fail=0
 step() { printf '%-46s' "$1"; shift; }

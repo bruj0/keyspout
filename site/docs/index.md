@@ -208,9 +208,11 @@ ksp secret share my-api-key --agent deploy-bot --out /tmp/lease.ksp
 ksp run --token /tmp/lease.ksp --consume -- ./deploy.sh
 ```
 
-The [Quickstart](reference/QUICKSTART.md) walks the whole path with the
-commands as they are run. The [design specification](reference/design-spec.md)
-is the authority on what the system does and why.
+The [Quickstart](reference/QUICKSTART.md) is the short path: one script, seven
+commands. The [User manual](reference/USER_MANUAL.md) is the long one, with every
+command and the output it produced. The
+[design specification](reference/design-spec.md) is the authority on what the
+system does and why.
 
 ## Architecture Summary
 

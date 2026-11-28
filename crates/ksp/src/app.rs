@@ -8,10 +8,10 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::commands::{Cli, Command};
+use crate::commands::{Cli, Command, ImportArgs};
 use crate::config::{self, Layout};
 use crate::exit::{self, Outcome};
-use crate::output::{Emitter, Report};
+use crate::output::{Emitter, ImportRowView, Report};
 use crate::probe::{self, OverwritePolicy, ProbeSummary};
 use crate::vault::{VaultHome, run as run_vault};
 
@@ -72,6 +72,32 @@ pub fn dispatch(cli: &Cli, home: &Path) -> Outcome {
             // The version is not a secret and carries no state.
             let _ = writeln!(std::io::stdout(), "ksp {}", env!("CARGO_PKG_VERSION"));
             Outcome::Success
+        }
+        Command::Export { .. } => {
+            // Refused before anything is read, and the arguments are ignored on
+            // purpose: the refusal is a property of the verb. A sentence that
+            // varied with what was typed after it would suggest some spelling
+            // might work, and none does.
+            //
+            // The reason is stated rather than assumed, because an operator who
+            // reads only this line is deciding whether the tool fits their need.
+            // Ingest brings a value *in* and seals it, so the copy is bounded by
+            // keys that never leave this host. Export would hand the plaintext to
+            // a service whose operators can read it, which is the one thing §1.0
+            // separates the admin's signing key from a recipient key to prevent.
+            let mut emitter = Emitter::new(cli.json, std::io::stdout());
+            let _ = emitter.refusal(
+                "export is not implemented: handing a plaintext value to a service the admin \
+                 does not control would spend the admin-zero-knowledge property. Ingest \
+                 (`ksp import`) is the supported direction; to end a lease early, use \
+                 `ksp secret rm`",
+            );
+            Outcome::Failed(exit::USAGE)
+        }
+        Command::Import(args) => {
+            let layout = Layout::new(home.to_path_buf());
+            let mut emitter = Emitter::new(cli.json, std::io::stdout());
+            run_import(&layout, args, &mut emitter)
         }
         Command::Status => {
             let layout = Layout::new(home.to_path_buf());
@@ -655,7 +681,7 @@ const STDIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 /// `IsTerminal` says "is this a terminal", and a pipe carrying a password is not
 /// one. Refusing every non-terminal would break the shape that worked before this
 /// change: a caller that pipes the password and closes the pipe, which
-/// `QUICKSTART.md` documents. The question is not "is this a terminal" but "will a
+/// `USER_MANUAL.md` documents. The question is not "is this a terminal" but "will a
 /// read return", so the read happens on a worker thread and the wait is bounded.
 /// A pipe holding data returns at once; an open pipe does not return at all, and
 /// the caller is told about `--passphrase-file` instead of being left waiting.
@@ -2113,6 +2139,210 @@ fn report_or_internal<W: Write>(emitter: &mut Emitter<W>, report: &Report) -> Ou
         Ok(()) => Outcome::Success,
         Err(_) => Outcome::Failed(exit::INTERNAL),
     }
+}
+
+/// `ksp import`.
+///
+/// # The two reads come first
+///
+/// `--schema` and `--list-adapters` are answered before any configuration is
+/// loaded, because both must work on a host with no deployment and an empty
+/// `integrations/` directory. An agent has to be able to ask what a declaration
+/// looks like *before* one exists, which was the operator's explicit request and
+/// is why `emit_schema` takes no argument.
+///
+/// # One target, resolved before the first seal
+///
+/// The rest of this function is the order T001 mandates. `target::parse_target`
+/// turns the two flags into exactly one destination, and `import::run` resolves
+/// it against the deployment before anything is written. A refusal therefore
+/// leaves no record, which is the property the refusal message promises.
+fn run_import<W: Write>(layout: &Layout, args: &ImportArgs, emitter: &mut Emitter<W>) -> Outcome {
+    use crate::import::adapter;
+
+    // A read that needs no deployment.
+    if args.schema {
+        let emitted = adapter::emit_schema();
+        return match write_json(emitter, &emitted) {
+            Ok(()) => Outcome::Success,
+            Err(_) => Outcome::Failed(exit::INTERNAL),
+        };
+    }
+
+    if args.list_adapters {
+        let loaded = adapter::load_dir(&layout.integrations());
+        let adapters: Vec<AdapterView> = loaded
+            .adapters
+            .iter()
+            .map(|declaration| {
+                let capabilities = declaration.capabilities();
+                AdapterView {
+                    name: declaration.name.clone(),
+                    kind: format!("{:?}", declaration.kind).to_lowercase(),
+                    target: declaration.target().to_string(),
+                    list: capabilities.list,
+                    read: capabilities.read,
+                    write: capabilities.write,
+                }
+            })
+            .collect();
+        // A file that did not load is reported rather than dropped. One broken
+        // declaration must not hide the others, and an operator who sees only a
+        // short list would conclude the file was never written.
+        let failures: Vec<AdapterFailureView> = loaded
+            .failures
+            .iter()
+            .map(|(path, error)| AdapterFailureView {
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            })
+            .collect();
+
+        let view = AdaptersView {
+            directory: layout.integrations().display().to_string(),
+            adapters,
+            failures,
+        };
+        return match write_json(emitter, &view) {
+            Ok(()) => Outcome::Success,
+            Err(_) => Outcome::Failed(exit::INTERNAL),
+        };
+    }
+
+    // Exactly one source, and the parser already refuses both or neither. The
+    // refusal here exists for a caller that reached this branch with neither,
+    // which clap permits because each flag conflicts only with the others.
+    let source = match (&args.from_file, &args.from) {
+        (Some(path), None) => {
+            let format = match args.format.as_deref() {
+                Some("json") => crate::import::parse::FileFormat::Json,
+                Some("env") => crate::import::parse::FileFormat::Env,
+                Some(_) => {
+                    return refused(
+                        emitter,
+                        exit::USAGE,
+                        "`--format` accepts `env` or `json`: pass one of those, or omit it and let \
+                         the file's extension decide",
+                    );
+                }
+                None => match path.extension().and_then(|extension| extension.to_str()) {
+                    Some("json") => crate::import::parse::FileFormat::Json,
+                    Some("env") => crate::import::parse::FileFormat::Env,
+                    // A `.env` file is conventionally named `.env`, which has no
+                    // extension at all, so a missing extension is the env
+                    // format rather than an error.
+                    _ => crate::import::parse::FileFormat::Env,
+                },
+            };
+            crate::import::Source::File {
+                path: path.clone(),
+                format,
+            }
+        }
+        (None, Some(name)) => {
+            let Some(selector) = args.selector.as_ref() else {
+                return refused(
+                    emitter,
+                    exit::USAGE,
+                    "`--from` needs `--selector`: pass the search term, path or collection the \
+                     adapter should read, so a selector broader than intended cannot be the \
+                     default",
+                );
+            };
+            crate::import::Source::Adapter {
+                name: name.clone(),
+                selector: selector.clone(),
+            }
+        }
+        _ => {
+            return refused(
+                emitter,
+                exit::USAGE,
+                "`ksp import` reads exactly one source: pass `--from-file <path>` for a `.env` or \
+                 JSON file, or `--from <adapter> --selector <s>` for a declared manager",
+            );
+        }
+    };
+
+    // The target, resolved from the two flags before any store is opened.
+    let destination =
+        match crate::import::target::parse_target(args.to_principal.as_deref(), args.own) {
+            Ok(destination) => destination,
+            Err(error) => return refused(emitter, exit::USAGE, &error.to_string()),
+        };
+
+    match crate::import::run(layout, &source, &destination) {
+        Ok(imported) => {
+            let report = Report::Import {
+                vault: imported.vault,
+                source_id: imported.source_id,
+                selector: imported.selector,
+                records: imported.records,
+                rows: imported
+                    .rows
+                    .into_iter()
+                    .map(|row| ImportRowView {
+                        key: row.key,
+                        disposition: row.disposition.as_str().to_string(),
+                        version: row.version,
+                        source_id: String::new(),
+                    })
+                    .collect(),
+            };
+            report_or_internal(emitter, &report)
+        }
+        // Every arm of `ImportError` is a well-formed invocation this binary will
+        // not perform, so every one is `USAGE` and names the accepted form. The
+        // typed sentence is printed rather than only its code: a refusal that
+        // returns an integer tells the caller to stop and nothing about why.
+        Err(error) => refused(emitter, exit::USAGE, &error.to_string()),
+    }
+}
+
+/// Write one serialisable view, honouring `--json`.
+fn write_json<W: Write, T: serde::Serialize>(
+    emitter: &mut Emitter<W>,
+    value: &T,
+) -> std::io::Result<()> {
+    emitter.document(value)
+}
+
+/// One declared adapter, as `--list-adapters` prints it.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AdapterView {
+    /// The name `--from` selects.
+    name: String,
+    /// `cli` or `http`.
+    kind: String,
+    /// The binary or the endpoint.
+    target: String,
+    /// Whether `list` is implemented.
+    list: bool,
+    /// Whether `read` is implemented.
+    read: bool,
+    /// Whether `write` is implemented.
+    write: bool,
+}
+
+/// A declaration that failed to load.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AdapterFailureView {
+    /// The file.
+    path: String,
+    /// Why it was refused.
+    reason: String,
+}
+
+/// What `--list-adapters` prints.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AdaptersView {
+    /// The directory that was read, so an operator can see it is the one they
+    /// wrote into.
+    directory: String,
+    /// The declarations that loaded.
+    adapters: Vec<AdapterView>,
+    /// The files that did not.
+    failures: Vec<AdapterFailureView>,
 }
 
 #[cfg(test)]

@@ -385,7 +385,7 @@ The one that matters is `ksp run --consume`: it is the only path that hands a
 value to a process without putting it in `argv`, in your shell history or in an
 environment you have to clean up afterwards.
 
-**[`QUICKSTART.md`](QUICKSTART.md) walks through every step with the real
+**[`USER_MANUAL.md`](USER_MANUAL.md) walks through every step with the real
 output**, including the two refusals above and what each one asks you to do.
 
 ---
@@ -558,7 +558,7 @@ above, and every run discloses it.
 | Document | What it is |
 |---|---|
 | [The documentation site](https://bruj0.github.io/keyspout/) | All of the below, plus the architecture and a deep dive per crate, rendered and searchable. |
-| [`QUICKSTART.md`](QUICKSTART.md) | Every step from nothing to a delivered secret, with real output. |
+| [`USER_MANUAL.md`](USER_MANUAL.md) | Every step from nothing to a delivered secret, with real output. |
 | [`docs/keyspout-design-spec.md`](docs/keyspout-design-spec.md) | The design. Normative, and it wins over anything you infer from the code. |
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | Toolchain, services, and the platform facts that cost time to learn. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to build, test, and the rules that are not stylistic. |
@@ -587,7 +587,7 @@ a promise about when a copy dies. With a one-hour sweep the shortest admissible
 lease is two hours, so a fifteen-minute lease is refused by design. Run
 `ksp backend test --ttl <seconds>` to ask before you mint.
 
-[`QUICKSTART.md`](QUICKSTART.md) walks the whole chain with the real output,
+[`USER_MANUAL.md`](USER_MANUAL.md) walks the whole chain with the real output,
 including the refusal you get before the first proof.
 
 ---

@@ -11,16 +11,30 @@ copy, delivers it, and rotates the keys.
 
 ## The one thing to get right
 
-**`admin policy` replaces the whole grant set.** A call naming one agent revokes
-every other grant on the host. Before you re-sign, read what is there:
+**`admin policy` merges by default.** A call naming one agent **adds** that grant
+and keeps every other one — measured, and the report names what was added. That
+is the opposite of what this skill said until 2026-11-27, when the behaviour was
+changed to match FR-016: a second policy for the same secret version *adds an
+entry and never replaces the artifact*, so one grant can no longer break
+another's.
+
+Read what is there before writing:
 
 ```bash
 ksp admin policy --show
 ```
 
-If grants exist, name **all** of them in the re-sign, not just the new one. This
-is the single most destructive mistake available in this skill, and it fails
-silently: the first agent's share simply starts being refused.
+**`--replace` is the only whole-set form.** It writes the named grants and
+withdraws every other, and it is the one destructive call in this skill:
+
+```bash
+ksp admin policy --replace --agent <a> --secret <r1> --agent <b> --secret <r2>
+```
+
+Omitting a grant from a `--replace` revokes it, silently — that agent's next
+share starts being refused. For dropping **one** grant and recording the
+decision, use `ksp admin revoke` instead; it re-signs without that grant and
+keeps a record of why, which `--replace` does not.
 
 ## Before you start
 
@@ -66,14 +80,15 @@ A grant is a policy statement. It delivers nothing.
 ksp admin policy --show
 ```
 
-Read the current grants first. Then re-sign with every grant you intend to keep:
+Read the current grants first. Then add the new one. **It merges** — every grant
+this invocation does not name is kept:
 
 ```bash
 ksp admin policy --agent <agent-uuid> --secret <record-id>
 ```
 
-With more than one grant, pass the flags once per grant in the same invocation.
-Then confirm:
+With more than one new grant, pass the flags once per grant in the same
+invocation. Then confirm:
 
 ```bash
 ksp admin policy --show
@@ -173,8 +188,9 @@ out of band.** Say so explicitly.
 
 ### What this cannot do
 
-- **`admin policy` replaces the whole grant set.** Re-sign with every grant named
-  or the others are revoked.
+- **`--replace` revokes what it does not name.** The plain form merges, so the
+  destructive case is now opt-in. Use `admin revoke` to drop one grant and keep
+  the record of why.
 - **Rotation does not revoke old offline pairs.** It changes future minting and
   new trust state. Revoking an issued token is `token revoke`; revoking the
   upstream credential is a separate action.
@@ -186,7 +202,8 @@ out of band.** Say so explicitly.
 
 ## Refusals
 
-Report the exit code and the message verbatim and stop.
+Report the exit code and the message verbatim and stop. The table is the
+contract from spec 010 — a machine branches on these, so do not paraphrase one.
 
 | Code | What it means here |
 |---|---|
@@ -197,6 +214,8 @@ Report the exit code and the message verbatim and stop.
 | `9` | The delete failed; the record may still be present and a retry may help |
 | `10` | The child ran after the record was removed; retrying cannot help |
 | `11` | A compliant run was refused because the backend requires consumption |
+| `12` | The audit chain did not verify against the pinned material |
+| `13` | The invocation was malformed — a flag, a value or a missing argument. The message names the accepted form |
 
 `9` and `10` are separate on purpose: one says try again, the other says ask for
 a new delivery.

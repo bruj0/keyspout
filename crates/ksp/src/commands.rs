@@ -147,6 +147,83 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+
+    /// Read secrets out of a file or an external manager into this store.
+    ///
+    /// Feature 018. Ingest only: this copies a value **into** the sealed store and
+    /// never hands one out. Team, group and organisation management stays in the
+    /// external manager, and `ksp run` continues to read the sealed store only.
+    ///
+    /// `--schema` and `--list-adapters` are flags rather than subcommands on
+    /// purpose: the surface guard then sees one entry, `import`, instead of three,
+    /// and a reader asking "what shape is a declaration" does not have to know the
+    /// command tree to find the answer.
+    ///
+    /// Every refusal here exits `13` (`USAGE`), because each one is a well-formed
+    /// invocation of something this binary will not do, and the message names the
+    /// accepted form.
+    Import(ImportArgs),
+
+    /// Refused: this binary does not export.
+    ///
+    /// A verb that refuses rather than a verb that is absent, so that
+    /// `ksp export --to bitwarden` answers with a reason instead of an unknown-flag
+    /// error. Export is the one direction that hands a plaintext value to a service
+    /// the admin does not control, which spends the admin-zero-knowledge property
+    /// §1.0 exists to hold. Accepts and ignores any arguments for that reason: the
+    /// refusal is a property of the verb, not of what was typed after it.
+    Export {
+        /// Ignored. Present so any spelling reaches the refusal.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        ignored: Vec<String>,
+    },
+}
+
+/// `ksp import`.
+///
+/// One command with two ways to acquire a value, because the parse, the target, the
+/// vault binding, the provenance and the report are the same for both. Only where
+/// the bytes come from differs.
+#[derive(Debug, clap::Args)]
+pub struct ImportArgs {
+    /// Read a file: a `.env` or a JSON object of string values.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["from", "schema", "list_adapters"])]
+    pub from_file: Option<PathBuf>,
+
+    /// The file's format, when the extension does not say.
+    #[arg(long, value_name = "env|json", requires = "from_file")]
+    pub format: Option<String>,
+
+    /// Read through a declared adapter in `<KSP_HOME>/integrations/`.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["from_file", "schema", "list_adapters"])]
+    pub from: Option<String>,
+
+    /// What to read through the adapter: a search term, a path, a collection.
+    ///
+    /// Required with `--from`, because an adapter without a selector would read
+    /// whatever it defaults to, and a selector broader than intended is how one
+    /// team's secrets reach another team's vault.
+    #[arg(long, value_name = "SELECTOR", requires = "from")]
+    pub selector: Option<String>,
+
+    /// Seal to this principal's key, in their subtree.
+    #[arg(long, value_name = "UUID", conflicts_with = "own")]
+    pub to_principal: Option<String>,
+
+    /// Seal into the admin's own vault instead of a principal's key.
+    #[arg(long)]
+    pub own: bool,
+
+    /// List the adapters this host declares, and what each can do.
+    #[arg(long)]
+    pub list_adapters: bool,
+
+    /// Print the adapter declaration contract, and exit.
+    ///
+    /// Reads no configuration and needs no deployment, so an automated agent can
+    /// ask what shape a declaration takes before one exists.
+    #[arg(long)]
+    pub schema: bool,
 }
 
 /// A head digest in the form verification prints it: 64 hex characters.
@@ -951,6 +1028,16 @@ mod tests {
                 "backend arm-sweep",
                 "backend list",
                 "backend test",
+                // Feature 018: ingest only. The design spec's §6 list predates
+                // this command and is amended by the feature that ships it; the
+                // comment here is the record until then, exactly as `ksp audit`
+                // did it under feature 002.
+                "import",
+                // Feature 018: a deliberate refusal, not a feature. It exists so
+                // that `ksp export --to bitwarden` answers with a reason rather
+                // than an unknown-flag error, and so that the absence of an
+                // export path is visible to a reader rather than merely true.
+                "export",
                 "version",
             ];
             paths.sort();

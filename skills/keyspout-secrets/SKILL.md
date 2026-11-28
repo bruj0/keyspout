@@ -142,6 +142,41 @@ line explains that no sweep can remove anything. The command still exits `0`,
 because it ran; it did not clean anything. **Do not report a cleanup from the
 exit code.** Report `removed` and `not_yet_due`.
 
+## Hand a secret to an agent
+
+Two ways, and the difference is who can decrypt:
+
+```bash
+# A leased copy. Sealed to the agent, deleted on expiry or after --uses.
+ksp secret share <id> --agent <agent-uuid> --out token.ksp [--ttl 3600] [--uses 3]
+
+# Through a grant the admin signed. Takes no password: the publication entry is
+# already sealed to the agent, and this command only copies the artifact out.
+ksp secret share <id> --policy <policy-uuid> --out token.ksp
+```
+
+**Prefer `--policy` when a grant exists.** A committed policy is what the admin
+signed, so the artifact was sealed at `admin policy create` time and the share
+carries no content key at all. A minted lease is a fresh copy sealed to this
+agent, and it is the only option when no grant names it.
+
+Then deliver it. `--env` puts the value in the child's environment; it is never
+the child's argv:
+
+```bash
+ksp run --token token.ksp --env DB_PASSWORD -- psql
+```
+
+**What `share` does not do.** It does not make the record readable to the agent
+by path — the agent's copy is at its own level, and the original stays at the
+user's. It does not prove the agent received it; that is `--consume` plus the
+acknowledgement journal, and consume is not exactly once. A copy taken before
+the lease expired survives it.
+
+**Listing what was shared** is `ksp token list` (this host's minted tokens) and
+`ksp admin policy list` (every grant). A token minted on another host is
+invisible to both.
+
 ## Report
 
 ### What I did

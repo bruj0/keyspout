@@ -65,6 +65,13 @@ pub const AGENT_KEY_MODE: u32 = 0o700;
 /// and readable without a key file — that is the point of keeping them apart.
 pub const ENROLMENTS_MODE: u32 = 0o755;
 
+/// Adapter declarations: one TOML file per manager.
+///
+/// Owner-only, because a declaration names a binary and an argv, so write access
+/// is the ability to choose what this program executes (misfit E). Plan KDD-8
+/// states the same mode.
+pub const INTEGRATIONS_MODE: u32 = 0o700;
+
 /// The store root. Traversable by every principal, because each level directory
 /// below it carries its own owner and mode.
 ///
@@ -392,6 +399,35 @@ pub fn table_at(root: &Path, store: Option<std::path::PathBuf>) -> Vec<RootSpec>
             kind: RootKind::File,
             reason: "signed policy: readable by every principal, replaceable only with the admin key",
             refusal: true,
+        },
+        // Adapter declarations: one TOML file per manager. A data file that
+        // names a command is a capability, so this row refuses rather than
+        // advises: a widened directory lets another account name the binary this
+        // program runs (misfit E).
+        RootSpec {
+            path: layout.integrations(),
+            mode: INTEGRATIONS_MODE,
+            kind: RootKind::Directory,
+            reason: "holds adapter declarations, which name a command and an argv; \
+                     an account that can write here chooses what this program runs",
+            refusal: true,
+        },
+        // The import ledger. A file row, so its *owner* and its mode are judged
+        // once it exists; the table measures and never creates it, because an
+        // empty ledger would make "never imported" indistinguishable from
+        // "imported nothing" (WP04 T001).
+        RootSpec {
+            path: layout.imports_ledger(),
+            mode: crate::import::provenance::IMPORTS_LEDGER_MODE,
+            kind: RootKind::File,
+            reason: "names which keys came from which import source, and the digest of each \
+                     value; owner-only, because it is the admin's own act",
+            // Advisory rather than refusing: the ledger is provenance, not
+            // authority. A widened ledger lets a reader see which keys were
+            // imported, which discloses nothing a level listing does not, so
+            // reporting it is the right response rather than refusing a
+            // delivery over it.
+            refusal: false,
         },
     ]
 }

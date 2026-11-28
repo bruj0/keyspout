@@ -12,9 +12,10 @@ tags:
 # Keyspout — design spec
 
 **Status:** design revised 2026-10-21; command surface amended 2026-10-24 (authorized
-by the operator, see §6) to carry `ksp audit` and `backend arm-sweep`. Two features
-merged to `main` by 2026-10-26: `001-keyspout-mvp` and
-`002-file-os-split-sweeper`. This is a specification, not evidence of implemented
+by the operator, see §6) to carry `ksp audit` and `backend arm-sweep`; amended again
+2026-11-27 (authorized by the operator, see §6 and §14) to carry `ksp import` and to
+make `ksp export` a refusal in every form. Features `001`–`018`
+merged to `main` by 2026-11-28. This is a specification, not evidence of implemented
 controls — read the **Status legend** below for what the code actually does.
 
 Derived from the "If building the missing thing: a design spec" section of
@@ -55,12 +56,12 @@ Three rules keep these markers honest:
 2. **A marker never changes a normative rule.** Each normative rule lives in the
    section that owns its subject, and that section wins over any historical text
    wherever the two disagree.
-3. **A marker is dated.** The snapshot below was taken on **2026-11-17**, after
-   features `001`–`014` merged into `main`.
+3. **A marker is dated.** The snapshot below was taken on **2026-11-28**, after
+   features `001`–`018` merged into `main`.
 
-### Implementation snapshot — 2026-11-17
+### Implementation snapshot — 2026-11-28
 
-Verified against the merged tree on `main`. Features `001`–`014` are implemented;
+Verified against the merged tree on `main`. Features `001`–`018` are implemented;
 `003` is research only and shipped no code.
 
 | Area | Marker | Evidence |
@@ -101,6 +102,11 @@ Verified against the merged tree on `main`. Features `001`–`014` are implement
 | Policy read surface: the deployment-wide list and show, and the same join scoped to the calling principal — artifact, ledger, agent pin, publication and withdrawal — reporting `dangling` rather than omitting a policy whose link is gone | **[Implemented]** | `crates/ksp/src/policy_view.rs`; tests `crates/ksp/tests/policy_read_surfaces.rs`, `crates/ksp/tests/policy_read_back.rs`. Feature `014-policy-scoped-sharing`. |
 | Cooperative target (`AnyEnrolled`): labelled `cooperative` on every surface, never rendered as an enforced restriction, and issuing no token | **[Implemented]** | `crates/ksp-identity/src/policy_edge.rs` (`PolicyTarget`), `crates/ksp/src/token.rs` (`TokenError::Cooperative`). Feature `014-policy-scoped-sharing`. |
 | Linux test environment for the gate: one idempotent VM provisioner, a `ksp-vm.sh status` report that reads the ABI the binary prints, and one guard that refuses rather than reporting a host answer as the kernel's | **[Implemented]** | `scripts/ksp-vm.sh`, `scripts/ksp-vm-provision.sh`, `scripts/lib/vm-guard.sh`. Feature `014-policy-scoped-sharing`. |
+| Ingest: `ksp import` from a `.env`/JSON file or a declared manager, sealed into this deployment, with a provenance ledger that makes a re-import report `unchanged` rather than duplicate | **[Implemented]** | `crates/ksp/src/import/mod.rs`, `parse.rs`, `target.rs`, `provenance.rs`; tests `crates/ksp/tests/import_end_to_end.rs`. Feature `018-keyspout-secret-manager-integration-adap`. |
+| Import adapter declarations as data: one TOML file per manager, validated and binary-probed on every use, carrying no destination and no credential value, with `kind = "cli"` and `kind = "http"` | **[Implemented]** | `crates/ksp/src/import/adapter/declaration.rs`, `validate.rs`, `runner.rs`, `http.rs`; the shipped `integrations/bitwarden.toml`; `docs/bitwarden-adapter.md`. |
+| The emitted declaration contract, `ksp import --schema`, generated from the type the parser deserialises so the two cannot drift | **[Implemented]** | `crates/ksp/src/import/adapter/schema.rs`; test `every_field_the_type_declares_appears_in_the_canonical_example`. |
+| `ksp export` | **[Absent by decision]** — `crates/ksp/src/commands.rs` | The verb exists and refuses with exit `13` in every form: handing a plaintext value to a service the admin does not control spends the admin-zero-knowledge property §1.0 exists to hold. Ingest is the supported direction. |
+| Sync or mirror back to the source manager | **[Absent by decision]** — no file | Each is an export primitive by another name. Re-importing is the update, and the ledger reports what actually changed. |
 | Durable owner-only key lifecycle for agent and admin identities | **[Implemented]** | `crates/ksp-key-lifecycle/src/` |
 | Local session agent (§3.6) | **[Not implemented]** | The subcommands are **absent, not hidden**: `agent start`, `agent stop`, `agent status`, `agent lock-timeout`. A test in `crates/ksp/src/commands.rs` asserts their absence. |
 | `ksp vault unseal` and `ksp vault seal` | **[Absent by decision]** | Every operation unseals inside its own process and exits. The command list has no such verbs: `crates/ksp/src/commands.rs`. |
@@ -874,7 +880,114 @@ cannot reset the phrase or recover user plaintext without Alice's participation.
 5. An old *valid* signed policy replay is detected if a trusted checkpoint exists;
    without one, the client refuses to promise rollback detection.
 
+### 3.2.3 Ingest from a file or an external manager
+
+> **Status: [Implemented] —** `crates/ksp/src/import/mod.rs` is the pipeline;
+> `parse.rs`, `target.rs` and `provenance.rs` sit beside it, and the manager arm
+> is `crates/ksp/src/import/adapter/declaration.rs`. Tests are
+> `crates/ksp/tests/import_end_to_end.rs`.
+
+An operator who already keeps secrets in a `.env` file, or in a Bitwarden or
+Vaultwarden vault their team uses, should not retype them. `ksp import` reads one
+source and seals each value into this deployment. **Team, group and organisation
+management stay in the external manager**; this design does not grow them, and
+this section does not describe them.
+
+#### The direction is one way
+
+Ingest copies a value **in**. `ksp export` refuses in every form, and that
+refusal is a decision rather than unfinished work: handing a plaintext value to a
+service the admin does not control spends the admin-zero-knowledge property §1.0
+exists to hold. A sync or a mirror back to the source would be the same primitive
+by another name, so neither exists. Re-importing is the update.
+
+#### A destination can never come from data
+
+The target is `--own` or `--to-principal <UUID>`. There is no `--vault` flag, and
+a declaration that names a vault, a level, a destination or a principal is
+**refused** rather than honoured. A destination read from a file is a decision
+made by data, and the operator cannot see it in their own command.
+
+The destination is resolved **before the first seal**. A malformed UUID, an
+unenrolled principal, a principal with no recipient key and a host with no admin
+vault are all refusals that leave the store untouched, so no path exists on which
+a refused import writes a record.
+
+#### A declaration is data, and data here is a capability
+
+An adapter is one TOML file in `$KSP_HOME/integrations/`, named by `--from`. It
+names a binary and an argv, so writing one is as good as running that command as
+the operator. Four consequences follow, and each is enforced rather than
+remembered:
+
+- **It is validated on every use**, never trusted from a previous run, and its
+  binary is probed for presence **and** for the execute bit.
+- **It can express no destination.** The refused-key set is checked against the
+  raw document, so the refusal can name the key and why, rather than reporting an
+  unknown field.
+- **It carries a credential variable *name*, never a value.** A file holding a
+  session token would be a secret in a file the operator edits by hand.
+- **It reaches no shell.** An argv vector is passed to the child, and a
+  placeholder is substituted inside one element, so `;` and `$()` are bytes.
+
+`kind` is a closed set of two. `cli` runs a binary; `http` makes one request,
+with the credential in a header and redirects **refused**, because following one
+would carry that header to a host the declaration never named. A manager whose
+authentication is challenge-response or OAuth needs a new Rust arm rather than a
+new file: the boundary is auth shape, not provider identity.
+
+`ksp import --schema` emits the declaration contract, derived from the type the
+parser deserialises so the two cannot drift. It takes no argument and needs no
+deployment, because an agent has to be able to ask what a declaration looks like
+**before** one exists.
+
+#### A file is read through a named subset, all or nothing
+
+The `.env` reader accepts the consensus subset — `KEY=value`, quoted values,
+comments, a UTF-8 BOM and CRLF — and refuses construct by construct:
+interpolation, an unquoted space, a key outside `[A-Za-z_][A-Za-z0-9_]*`, a
+quote that never closes, text after a closing quote, and a carriage return that
+is not part of a CRLF pair. A refused construct refuses the **whole file** and
+names every offending line in one pass, so a partial import cannot be expressed.
+`ParseOutcome` has no third arm for that reason.
+
+#### The ledger is what makes a re-import honest
+
+A sealed blob uses a random nonce, so equal plaintext seals to different
+ciphertext and the record cannot answer "is this the same value". `imports.jsonl`
+records a SHA-256 digest per key, so the next import of the same source reports
+`new`, `changed`, `unchanged`, `absent (not in source)` or `absent (removed)`
+instead of re-writing everything. A key the source still names but a sweep
+removed is `absent (removed)` and is written back; a key the source stopped
+naming is `absent (not in source)` and is left alone.
+
+A seal that fails partway records what it already wrote **before** it refuses.
+Without that, the store holds values with no ledger row, the next import calls
+them `new`, and it writes a second version of every one of them. The refusal
+therefore states how many keys were written and what a re-run will report for
+them, rather than claiming a clean slate.
+
+#### The level is the provenance, and it mirrors `admin put`
+
+An import writes at `Level::Admin` for both forms. `admin put` and
+`admin put --own` differ in the **recipient key** and the **subtree**, not the
+level: the `admin` level says the admin wrote the value and delegated it, which
+is what makes a later delivery of it require a policy. Copying that rule rather
+than inventing a second one is what keeps the two commands from disagreeing.
+
+#### What an adapter's `list` answer must carry
+
+A list enumerates what the selector matches, and each listed item must carry an
+`id` or a `key` — a list position is not a stable name, and the store is joined
+on it. Whether the listing also carries the value depends on whether the
+declaration names a `read`: with one, each item is fetched by its own name and
+the value comes from `[ops.read].extract`; without one, each item is its own
+record and the value comes from `[ops.list].extract`, or from a `value` member.
+Both rules are stated by `ksp import --schema`, so a declaration author reads
+them without opening this repository.
+
 ### 3.3 User operations
+
 
 > **Status: [Partial] — the commands below are proposals, not the command
 > surface.** Enrolment is `ksp admin user add`, run by the admin, not
@@ -3301,6 +3414,18 @@ ksp secret     ls | get | set | rm | share | purge-expired | gc
                                         #   no password, because the token holds no key
                                         # purge-expired = lazy sweep (§4.5)
                                         # gc = batch sweep, foreground, exits (§4.5)
+ksp import     --from-file PATH [--format env|json] | --from NAME --selector S
+                                        # copies a value IN and seals it (§3.2.3).
+                                        #   The target is --own or
+                                        #   --to-principal UUID, never a vault
+                                        #   name: a destination read from data
+                                        #   is one the operator cannot see.
+               --list-adapters | --schema
+                                        # --schema emits the declaration
+                                        #   contract derived from the type, so
+                                        #   an agent writes one without reading
+                                        #   this repository.
+ksp export     <anything>               # refuses, exit 13, in every form (§1.2)
 ksp policy     list | show              # the same join as admin policy, scoped to the caller
 ksp run        --token F | --agent ID | --env NAME=secret | --env-all | --consume -- <command>
 ksp backend    list | test | arm-sweep
@@ -4070,11 +4195,34 @@ It does not replace Infisical for a team that wants a central policy engine and 
 central audit datastore today. It also no longer shares storage with a password
 vault, which is a real trade: **migration work for a cleaner security model.** For
 an operator who wants "secrets out of `.env`, still in my password vault",
-`vaultwarden-secrets-api` remains the shorter path and Keyspout is the wrong
-recommendation.
+`vaultwarden-secrets-api` remains the shorter path — and Keyspout is the wrong
+tool **for that**, not wrong in general.
 
-What Keyspout is uniquely suited to is a single operator who will not run a secret
-service at all — and who accepts sealing their own store.
+### Ingest changes the migration cost, and nothing else
+
+*Authorized by the operator on 2026-11-27; see §6.*
+
+The paragraph above used to say Keyspout "is the wrong tool" whenever secrets
+already live in a vault. Feature 018 makes that too strong in one direction and
+leaves it exactly right in the other:
+
+- **Wrong for export.** Handing a plaintext value to a service the admin does not
+  control spends the admin-zero-knowledge property (§1.0). `ksp export` refuses in
+  every form, and this is a design position rather than unfinished work.
+- **Right about the storage model.** An import copies a value **in** and re-seals
+  it under this deployment's keys. The manager keeps its team, group and
+  organisation features; Keyspout does not grow any of them (§1.2).
+- **Cheaper to migrate.** The "migration work" objection was about typing every
+  value again by hand. `ksp import` reads a `.env` file or a declared manager and
+  seals the result, so the objection is now a command rather than a project. What
+  it does not do is keep the two in step: there is no sync, no mirror and no
+  reconciliation back to the source, because each of those would be an export
+  primitive arriving through the back door.
+
+The honest summary: an operator who wants their secrets to **stay** in Bitwarden
+and be read there still wants `vaultwarden-secrets-api`. An operator who wants
+them out of `.env`, sealed locally, and willing to leave team management where it
+already is now has a first-class path instead of a rewrite.
 
 ---
 
