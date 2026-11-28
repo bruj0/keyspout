@@ -7,6 +7,10 @@ version = "0.10"
 [imports.google]
 url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
 
+[[exemptions.adler2]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.aead]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
@@ -347,6 +351,10 @@ criteria = "safe-to-deploy"
 version = "1.0.5"
 criteria = "safe-to-deploy"
 
+[[exemptions.dyn-clone]]
+version = "1.0.20"
+criteria = "safe-to-deploy"
+
 [[exemptions.ed25519]]
 version = "3.0.0"
 criteria = "safe-to-deploy"
@@ -393,6 +401,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.find-msvc-tools]]
 version = "0.1.15"
+criteria = "safe-to-deploy"
+
+[[exemptions.flate2]]
+version = "1.1.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.fnv]]
@@ -687,6 +699,10 @@ criteria = "safe-to-deploy"
 version = "0.2.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.miniz_oxide]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.mio]]
 version = "1.2.4"
 criteria = "safe-to-deploy"
@@ -823,6 +839,14 @@ criteria = "safe-to-deploy"
 version = "1.8.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.ref-cast]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+
+[[exemptions.ref-cast-impl]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+
 [[exemptions.regex]]
 version = "1.13.1"
 criteria = "safe-to-deploy"
@@ -883,6 +907,14 @@ criteria = "safe-to-deploy"
 version = "0.1.30"
 criteria = "safe-to-deploy"
 
+[[exemptions.schemars]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.schemars_derive]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+
 [[exemptions.sec1]]
 version = "0.8.1"
 criteria = "safe-to-deploy"
@@ -909,6 +941,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.serde_derive]]
 version = "1.0.229"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_derive_internals]]
+version = "0.30.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde_json]]
@@ -941,6 +977,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.signature]]
 version = "3.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.simd-adler32]]
+version = "0.3.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.slab]]
@@ -1083,8 +1123,20 @@ criteria = "safe-to-deploy"
 version = "0.9.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.ureq]]
+version = "3.5.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.ureq-proto]]
+version = "0.7.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.url]]
 version = "2.5.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.utf8-zero]]
+version = "0.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.utf8_iter]]
@@ -1129,6 +1181,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-shared]]
 version = "0.2.129"
+criteria = "safe-to-deploy"
+
+[[exemptions.webpki-roots]]
+version = "1.0.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows-link]]
@@ -1245,6 +1301,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.zerovec-derive]]
 version = "0.11.7"
+criteria = "safe-to-deploy"
+
+[[exemptions.zlib-rs]]
+version = "0.6.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.zmij]]
