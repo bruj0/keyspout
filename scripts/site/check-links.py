@@ -90,7 +90,12 @@ def resolve(page: Path, target: str) -> Path | None:
         return None
     if target.startswith("/"):
         return None
-    return (page.parent / target).resolve()
+    # The fragment is not part of the path. Keeping it made every cross-page
+    # anchor resolve to a file literally named `USER_MANUAL.md#install`, which
+    # never exists, so the existence check failed before the anchor was ever
+    # looked at and a correct link was reported as broken on every platform.
+    path_part, _, _fragment = target.partition("#")
+    return (page.parent / path_part).resolve()
 
 
 def main(argv: list[str]) -> int:

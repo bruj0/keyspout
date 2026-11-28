@@ -785,8 +785,6 @@ db_password	s3cr3t-value-1
 ```
 
 The prompt does not echo, and `get` without `--reveal` prints `db_password	••••`.
-db_password	s3cr3t-value-1
-```
 
 `get` without `--reveal` prints `db_password	••••`.
 
