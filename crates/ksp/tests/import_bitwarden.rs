@@ -10,8 +10,16 @@
 //!
 //! | Test | In the gate | Needs |
 //! |---|---|---|
-//! | The refusal with no usable session | **always** | nothing; `bw status` answers locally |
+//! | The refusal with no usable session | **always**, when `bw` is installed | a `bw` on `PATH` |
 //! | The item round trip | `KSP_TEST_BW=1` | a logged-in `bw` with an unlocked vault |
+//!
+//! The refusal tests drive the real CLI, so they need the binary. That is the
+//! whole point: they assert what `bw status` actually answers, and a stub would
+//! assert the stub. They skipped when it was absent and the reason was recorded,
+//! rather than failing: before that, a host that happened to have `bw` installed
+//! ran them and the CI runner did not, so the gate was green locally and red on
+//! every push. A gate that cannot run on the machine that gates the release is
+//! not a gate.
 //!
 //! `KSP_TEST_BW=1` with no usable session **fails**. A gate that skips when it was
 //! asked to run reports a green result for a test that did not happen.
@@ -80,6 +88,27 @@ fn bw_with_session(session: Option<&str>, args: &[&str]) -> std::process::Output
         command.env_remove("BW_SESSION");
     }
     command.output().expect("bw is on PATH")
+}
+
+/// Whether `bw` is installed, which the refusal tests need in order to run.
+///
+/// They drive the **production** path against the real CLI, so a missing binary
+/// is a machine without the test's subject rather than a failing assertion.
+/// Returns false after printing the reason, because a silent skip is a green
+/// result for a test that did not happen.
+fn bw_is_installed() -> bool {
+    match Command::new("bw").arg("--version").output() {
+        Ok(_) => true,
+        Err(error) => {
+            eprintln!(
+                "SKIP: the refusal tests drive the real `bw` CLI and it is not on PATH \
+                 ({error}). Install it with `brew install bitwarden-cli`, or install the \
+                 release binary. The declaration, the shape and the session guards in \
+                 this file do not need it and still run."
+            );
+            false
+        }
+    }
 }
 
 /// Whether `bw` reports a usable, unlocked vault.
@@ -166,6 +195,9 @@ fn the_shipped_declaration_names_the_shape_each_operation_actually_returns() {
 
 #[test]
 fn the_refusal_names_both_fixes_with_bw_session_unset() {
+    if !bw_is_installed() {
+        return;
+    }
     let (code, sentence) = session_refusal(NoSession::Unset);
     assert_nonzero(code);
     assert_both_fixes(&sentence);
@@ -176,6 +208,9 @@ fn the_refusal_names_both_fixes_with_bw_session_empty() {
     // A shell with no variable at all and a shell with an empty one are different
     // states, and the operator's fix is the same. If the code treated them
     // differently, one of the two would produce a worse sentence than the other.
+    if !bw_is_installed() {
+        return;
+    }
     let (code, sentence) = session_refusal(NoSession::Empty);
     assert_nonzero(code);
     assert_both_fixes(&sentence);
@@ -185,6 +220,9 @@ fn the_refusal_names_both_fixes_with_bw_session_empty() {
 fn the_refusal_names_both_fixes_with_bw_session_invalid() {
     // An obviously-invalid value rather than a session-shaped one, because a
     // realistic key here would put a secret in the test source.
+    if !bw_is_installed() {
+        return;
+    }
     let (code, sentence) = session_refusal(NoSession::Invalid("not-a-session"));
     assert_nonzero(code);
     assert_both_fixes(&sentence);
@@ -194,6 +232,9 @@ fn the_refusal_names_both_fixes_with_bw_session_invalid() {
 fn the_three_no_session_states_produce_the_same_sentence() {
     // Criterion 1: "three states, one sentence". A refusal that varied by state
     // would make the operator's search for the cause depend on which state they hit.
+    if !bw_is_installed() {
+        return;
+    }
     let unset = session_refusal(NoSession::Unset).1;
     let empty = session_refusal(NoSession::Empty).1;
     let invalid = session_refusal(NoSession::Invalid("not-a-session")).1;
@@ -213,6 +254,9 @@ fn the_refusal_needs_no_network() {
     // `bw status` answers locally, which is what lets these tests live in the gate.
     // A refusal that needed the server would be red on every machine without a route
     // to the operator's Vaultwarden.
+    if !bw_is_installed() {
+        return;
+    }
     let output = bw_with_session(None, &["status"]);
     assert!(
         output.status.success(),
